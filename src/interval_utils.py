@@ -1,9 +1,10 @@
-from abstract_gradient_training.bounded_models import IntervalBoundedModel
+from abstract_gradient_training.bounded_models import IntervalBoundedModel, BoundedModel
 from src.IntervalTensor import IntervalTensor
 import src.verification.verify as verify
 
 import torch
-from typing import Callable
+import torch.nn as nn
+from typing import Callable, Iterable
 import copy
 import cooper
 import tqdm
@@ -21,8 +22,7 @@ def _bounded_model_width(bounded_model: IntervalBoundedModel) -> torch.Tensor:
 
 
 def _objective_fn(
-    bounded_model: IntervalBoundedModel,
-    alpha: float,
+    bounded_model: IntervalBoundedModel, alpha: float, mask: Iterable | None = None
 ) -> torch.Tensor:
     """
     This is the objective function for the primal problem that the optimizer will try to maximize.
@@ -43,10 +43,18 @@ def _objective_fn(
     logvol = torch.tensor(0.0, device=bounded_model.device)
     width = torch.tensor(0.0, device=bounded_model.device)
     nparams = 0
-    for p_l, p_u in zip(bounded_model.param_l, bounded_model.param_u):
-        logvol += torch.log(p_u - p_l + 1e-6).sum()
-        width += (p_u - p_l).sum()
-        nparams += p_l.numel()
+    if mask:
+        for p_l, p_u, m in zip(bounded_model.param_l, bounded_model.param_u, mask):
+            p_l *= ~m
+            p_u *= ~m
+            logvol += torch.log(p_u - p_l + 1e-6).sum()
+            width += (p_u - p_l).sum()
+            nparams += p_l.numel()
+    else:
+        for p_l, p_u in zip(bounded_model.param_l, bounded_model.param_u):
+            logvol += torch.log(p_u - p_l + 1e-6).sum()
+            width += (p_u - p_l).sum()
+            nparams += p_l.numel()
 
     objective = (alpha * logvol + (1 - alpha) * width).sum()
 
@@ -239,6 +247,15 @@ def get_lr_schedulers(
     return primal_scheduler, dual_scheduler
 
 
+def _create_hook(mask: torch.Tensor):
+    final_mask = mask.float()
+
+    def hook_fn(grad: torch.Tensor):
+        return grad * (1 - final_mask)
+
+    return hook_fn
+
+
 def compute_rashomon_set(
     model: torch.nn.Sequential,
     dataset: torch.utils.data.Dataset,
@@ -259,6 +276,7 @@ def compute_rashomon_set(
     custom_objective: Callable | None = None,
     param_select_fn: Callable | None = None,
     domain_map_fn: Callable | None = None,
+    param_mask: Iterable | None = None,
 ) -> tuple[list[IntervalBoundedModel], list[float]]:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -304,6 +322,12 @@ def compute_rashomon_set(
         pu.data += init_bbox
         pl.requires_grad = True
         pu.requires_grad = True
+
+    hooks = []
+    if param_mask:
+        for pl, pu, m in zip(bounded_model.param_l, bounded_model.param_u, param_mask):
+            hooks.append(pl.register_hook(_create_hook(m)))
+            hooks.append(pu.register_hook(_create_hook(m)))
 
     if context_mask is not None:
         bounded_model.param_l[-1].data -= (1 - context_mask) * MAX_PARAMETER_WIDTH
@@ -460,6 +484,10 @@ def compute_rashomon_set(
         f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask):.2f}",
     )
 
+    # Remove the hooks created for masking
+    for handle in hooks:
+        handle.remove()
+
     # compute the final checkpoint certificates over the entire dataset
     print(f"Computing final certificates over {certificate_samples} samples")
     checkpoint_certs = []
@@ -480,3 +508,15 @@ def compute_rashomon_set(
 
     print(f"{' Finished Computing Rashomon set ':-^80}")
     return checkpoint_models, checkpoint_certs
+
+
+def create_violation_mask(model: nn.Module, bounded_model: BoundedModel):
+    mask = []
+    for p_l, p, p_u in zip(
+        bounded_model.param_l, model.parameters(), bounded_model.param_u
+    ):
+        # compute a distance to the bounds, which should be 0 if all parameters are within the bounds
+        layer_mask = ((p_l - p).clamp(min=0) + (p - p_u).clamp(min=0)) == 0
+        mask.append(layer_mask)
+
+    return mask

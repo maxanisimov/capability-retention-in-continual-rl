@@ -7,7 +7,7 @@ from src import utils
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import Callable
+from typing import Callable, Iterable
 from tqdm import tqdm
 
 
@@ -134,6 +134,7 @@ class IntervalTrainer(BaseTrainer):
         callback: Callable | None = None,
         use_outer_bbox: bool = True,
         context_id: int | None = None,
+        param_mask: Iterable | None = None,
     ) -> None:
         """
         Compute the Rashomon set on the given data.
@@ -179,6 +180,7 @@ class IntervalTrainer(BaseTrainer):
             if hasattr(self, "domain_map_fn")
             else None,
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
+            param_mask=param_mask,
             **self.rashomon_kwargs,
         )
         self.bounds = bounded_models
@@ -195,6 +197,7 @@ class IntervalTrainer(BaseTrainer):
         optimizer: torch.optim.Optimizer,
         loss_fn: Callable,
         regulariser: BaseRegulariser = None,
+        project: bool = True,
         **kwargs: dict,
     ) -> tuple[float, float]:
         model.train()
@@ -207,11 +210,11 @@ class IntervalTrainer(BaseTrainer):
         outputs = model(inputs)
         loss = loss_fn(outputs, targets)
         if regulariser is not None:
-            loss += regulariser(model=model, inputs=inputs)
+            loss += regulariser(model=model, inputs=inputs, targets=targets)
         loss.backward()
         optimizer.step()
-
-        self._project_parameters(model, self.bounds, inputs, targets)
+        if project:
+            self._project_parameters(model, self.bounds, inputs, targets)
 
         acc = (outputs.argmax(dim=1) == targets).sum().item() / len(targets)
 

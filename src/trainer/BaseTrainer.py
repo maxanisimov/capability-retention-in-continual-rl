@@ -56,7 +56,11 @@ class BaseTrainer(ABC):
         )
         optimizer = kwargs.get(
             "optimizer",
-            torch.optim.Adam(self.model.parameters(), lr=kwargs.get("lr", 0.001)),
+            torch.optim.Adam(
+                self.model.parameters(),
+                lr=kwargs.get("lr", 0.001),
+                weight_decay=kwargs.get("weight_decay", 0),
+            ),
         )
         loss_fn = kwargs.get("loss_fn", nn.CrossEntropyLoss())
         self.model = self._train(
@@ -105,6 +109,7 @@ class BaseTrainer(ABC):
             )
 
         print_bold(f"Test Results: {outputs}")
+        return outputs
 
     @abstractmethod
     @torch.no_grad()

@@ -44,7 +44,7 @@ class SimpleTrainer(BaseTrainer):
                 outputs = model(inputs)
                 loss = loss_fn(outputs, targets)
                 if regulariser is not None:
-                    loss += regulariser(model=model, inputs=inputs)
+                    loss += regulariser(model=model, inputs=inputs, targets=targets)
                 loss.backward()
                 optimizer.step()
 
@@ -62,7 +62,7 @@ class SimpleTrainer(BaseTrainer):
                     outputs = model(inputs)
                     loss = loss_fn(outputs, targets)
                     if regulariser is not None:
-                        loss += regulariser(model=model, inputs=inputs)
+                        loss += regulariser(model=model, inputs=inputs, targets=targets)
                     val_loss += loss.item()
                     correct += (outputs.argmax(dim=1) == targets).sum().item()
             val_loss /= len(val_loader)
