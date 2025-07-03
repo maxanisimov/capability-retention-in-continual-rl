@@ -101,3 +101,27 @@ def print_bold(text):
     bold_end = "\033[0m"
 
     print(bold_start + text + bold_end)
+
+def print_colored(text: str, color: str):
+    """
+    Prints text to the console in a specified color.
+
+    Args:
+        text (str): The text to print.
+        color (str): The desired color. Accepts 'green', 'red', or 'amber'.
+    """
+    # ANSI color codes
+    colors = {
+        "green": "\033[92m", # 🟩
+        "amber": "\033[93m", # 🟨
+        "red": "\033[91m"    # 🟥
+    }
+    reset_code = "\033[0m"
+    
+    color_code = colors.get(color.lower())
+    
+    if color_code:
+        print(f"{color_code}{text}{reset_code}")
+    else:
+        # If the color is not found, print the text without color
+        print(text)

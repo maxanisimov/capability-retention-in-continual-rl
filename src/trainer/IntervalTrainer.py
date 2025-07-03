@@ -19,11 +19,14 @@ class IntervalTrainer(BaseTrainer):
         n_certificate_samples=256,
         min_acc_increment=0.05,
         min_acc_limit=0.9,
-        seed: int = 42,
         paradigm: str = "TIL",
+        domain_map_fn: Callable = None,
+        seed: int = 42,
         **rashomon_kwargs: dict,
     ):
-        super().__init__(model=model, seed=seed)
+        super().__init__(
+            model=model, paradigm=paradigm, domain_map_fn=domain_map_fn, seed=seed
+        )
         self._last_projection = None
         self.projection_strategy = projection_strategy
         self.n_certificate_samples = n_certificate_samples
@@ -31,12 +34,6 @@ class IntervalTrainer(BaseTrainer):
         self.min_acc_limit = min_acc_limit
         self.bounds = []
         self.paradigm = paradigm
-        if paradigm == "DIL":
-            self.domain_map_fn = rashomon_kwargs.get("domain_map_fn", None)
-            assert (
-                self.domain_map_fn is not None
-            ), "A domain map function has to be provided in DIL settings."
-            del rashomon_kwargs["domain_map_fn"]
         self.rashomon_kwargs = rashomon_kwargs
 
     def get_current_bbox(self) -> BoundedModel | None:
@@ -135,6 +132,7 @@ class IntervalTrainer(BaseTrainer):
         use_outer_bbox: bool = True,
         context_id: int | None = None,
         param_mask: Iterable | None = None,
+        **kwargs: dict,
     ) -> None:
         """
         Compute the Rashomon set on the given data.
@@ -149,9 +147,8 @@ class IntervalTrainer(BaseTrainer):
             y = self.domain_map_fn(y)
 
         task_acc = (self.model(X).argmax(dim=1) == y).float().mean().item()
-
+        self._set_context(self.model, context_id)
         if isinstance(self.model[-1], utils.InContextHead):
-            self.model[-1].set_context(context_id)
             model = self.model[:-1]
             context_mask = self.model[-1].mask
         else:
@@ -198,6 +195,7 @@ class IntervalTrainer(BaseTrainer):
         loss_fn: Callable,
         regulariser: BaseRegulariser = None,
         project: bool = True,
+        context_id: int = None,
         **kwargs: dict,
     ) -> tuple[float, float]:
         model.train()
@@ -205,6 +203,7 @@ class IntervalTrainer(BaseTrainer):
 
         if hasattr(self, "domain_map_fn") and self.domain_map_fn:
             targets = self.domain_map_fn(targets)
+        self._set_context(model, context_id)
 
         optimizer.zero_grad()
         outputs = model(inputs)
@@ -240,62 +239,57 @@ class IntervalTrainer(BaseTrainer):
         epochs_no_improve = 0
         best_model_state = None
         val_acc = None
+        stopping = False
 
-        if (
-            self.paradigm == "TIL"
-            and (context := kwargs.get("context_id", None)) is not None
-            and isinstance(model[-1], utils.InContextHead)
-        ):
-            model[-1].set_context(context)
+        self._set_context(model, kwargs.get("context_id", None))
 
         for epoch in (pbar := tqdm(range(epochs), desc="Training Epochs")):
             model.train()
-            for inputs, targets in train_loader:
+            for i, (inputs, targets) in enumerate(train_loader):
                 loss, _ = self._train_step(
                     model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{loss:.4f}",
-                    "val_acc": f"{val_acc:.4f}" if val_acc is not None else None,
-                    "proj": self._last_projection,
-                }
-            )
+                if i % kwargs.get("val_freq", 10):
+                    val_loss, val_acc = self._validate_model(
+                        model,
+                        val_loader,
+                        loss_fn,
+                        regulariser,
+                        kwargs.get("context_id", None),
+                    )
 
-            val_loss, val_acc = self._validate_model(
-                model,
-                val_loader,
-                loss_fn,
-                regulariser,
-                domain_map_fn=self.domain_map_fn
-                if hasattr(self, "domain_map_fn")
-                else None,
-            )
+                    pbar.set_postfix(
+                        {
+                            "val_loss": f"{val_loss:.4f}",
+                            "val_acc": f"{val_acc:.4f}"
+                            if val_acc is not None
+                            else None,
+                            "proj": self._last_projection,
+                        }
+                    )
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{loss:.4f}",
-                    "val_acc": f"{val_acc:.4f}" if val_acc is not None else None,
-                    "proj": self._last_projection,
-                }
-            )
+                    if early_stopping:
+                        stopping, epochs_no_improve = self.check_early_stopping(
+                            curr_loss=val_loss,
+                            prev_loss=best_val_loss
+                            if best_val_loss != float("inf")
+                            else None,
+                            patience=kwargs.get("patience", 5),
+                            no_improvement=epochs_no_improve,
+                        )
 
-            if early_stopping:
-                stopping, epochs_no_improve = self.check_early_stopping(
-                    curr_loss=val_loss,
-                    prev_loss=best_val_loss if best_val_loss != float("inf") else None,
-                    patience=kwargs.get("patience", 5),
-                    no_improvement=epochs_no_improve,
-                )
+                        best_val_loss = min(val_loss, best_val_loss)
 
-                if stopping:
-                    print(f"Early stopping at epoch {epoch + 1}")
-                    if best_model_state is not None:
-                        model.load_state_dict(best_model_state)
-                    break
-                else:
-                    best_model_state = model.state_dict()
+                        if stopping:
+                            print(f"Early stopping at epoch {epoch + 1}")
+                            if best_model_state is not None:
+                                model.load_state_dict(best_model_state)
+                            break
+                        else:
+                            best_model_state = model.state_dict()
+            if stopping:
+                break
 
         return model
 
@@ -307,17 +301,10 @@ class IntervalTrainer(BaseTrainer):
         total_loss = 0.0
         correct = 0
 
-        if (
-            self.paradigm == "TIL"
-            and kwargs.get("context_id", None) is not None
-            and isinstance(self.model[-1], utils.InContextHead)
-        ):
-            self.model[-1].set_context(kwargs["context_id"])
-
         for i, (inputs, targets) in enumerate(test_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
-            if hasattr(self, "domain_map_fn"):
+            if hasattr(self, "domain_map_fn") and self.domain_map_fn:
                 targets = self.domain_map_fn(targets)
 
             outputs = self.model(inputs)

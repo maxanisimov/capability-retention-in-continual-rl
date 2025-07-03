@@ -1,4 +1,5 @@
 import torch
+import torchvision
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset, random_split, Subset
 from typing import Tuple
@@ -67,6 +68,30 @@ def get_emnist_digits(
     return train_dataset, val_dataset, test_dataset
 
 
+def get_mnist(
+    random_seed: int = 42, train_val_split_ratio: float = 0.8
+) -> tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
+    """Get the MNIST dataset."""
+    transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor()])
+    train_dataset = torchvision.datasets.MNIST(
+        root="./data", train=True, transform=transform, download=True
+    )
+    test_dataset = torchvision.datasets.MNIST(
+        root=".", train=False, transform=transform, download=True
+    )
+
+    total_train_size = len(train_dataset)
+    train_size = int(train_val_split_ratio * total_train_size)
+    val_size = total_train_size - train_size
+
+    # Set random seed for reproducibility of the split
+    torch.manual_seed(random_seed)
+
+    train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
+
+    return train_dataset, val_dataset, test_dataset
+
+
 def _extract_targets(dataset):
     """
     Extract the targets from a dataset of various types.
@@ -110,7 +135,7 @@ def get_mnist_tasks(
     n_tasks=5, seed=42
 ) -> tuple[list[Dataset], list[Dataset], list[Dataset]]:
     """Get the MNIST dataset split into random tasks."""
-    train_dataset, val_dataset, test_dataset = get_emnist_digits()
+    train_dataset, val_dataset, test_dataset = get_mnist()
     train_tasks = []
     val_tasks = []
     test_tasks = []

@@ -1,7 +1,6 @@
 from src.trainer.IntervalTrainer import IntervalTrainer
 from src.buffer import Buffer
 from src.regulariser.BaseRegulariser import BaseRegulariser
-from src.utils import InContextHead
 
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
@@ -36,9 +35,9 @@ class BufferTrainer(IntervalTrainer):
         Else -> Exit without full convergence
         """
         target_acc = kwargs.get("target_acc", None)
-        assert (
-            target_acc is not None
-        ), "Target accuracy must be provided for BufferTrainer."
+        assert target_acc is not None, (
+            "Target accuracy must be provided for BufferTrainer."
+        )
 
         best_loss = float("inf")
 
@@ -49,12 +48,6 @@ class BufferTrainer(IntervalTrainer):
         while _running:
             pbar.update(1)
             for inputs, targets in train_loader:
-                if isinstance(model[-1], InContextHead):
-                    context_id = kwargs.get("context_id", None)
-                    assert (
-                        context_id is not None
-                    ), "Context id must be set when using a context head."
-                    model[-1].set_context(context_id)
                 loss, acc = super()._train_step(
                     model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
@@ -63,7 +56,7 @@ class BufferTrainer(IntervalTrainer):
                     {
                         "Training loss": loss,
                         "Training accuracy": acc,
-                        "no_improvement": no_improvement,
+                        "Buffer Data Consumed": self.buffer.samples_consumed(),
                     }
                 )
 
@@ -86,7 +79,7 @@ class BufferTrainer(IntervalTrainer):
                         (buffer_X, buffer_y), _ = self.buffer.consume()
                         self.compute_rashomon_set(
                             TensorDataset(buffer_X, buffer_y),
-                            context_id=self.rashomon_kwargs.get("context_id", None),
+                            context_id=kwargs.get("context_id", None),
                             use_outer_bbox=False,
                         )
                         no_improvement = 0  # Reset early stopping mechanism

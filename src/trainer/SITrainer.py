@@ -2,12 +2,13 @@ from src.trainer import IntervalTrainer
 from src.helpers.SITracker import SITracker
 import src.utils as utils
 from src.regulariser import BaseRegulariser
-from typing import Callable
 
 import torch.nn as nn
 import torch
 from tqdm import tqdm
 from torch.utils.data import Dataset
+from typing import Callable
+from copy import deepcopy
 
 
 class SITrainer(IntervalTrainer):
@@ -32,98 +33,6 @@ class SITrainer(IntervalTrainer):
             paradigm=paradigm,
             **rashomon_kwargs,
         )
-
-        self.si = SITracker(self.model)
-
-    def _train(
-        self,
-        model: nn.Module,
-        train_loader: torch.utils.data.DataLoader,
-        val_loader: torch.utils.data.DataLoader,
-        optimizer: torch.optim.Optimizer,
-        loss_fn: Callable,
-        epochs: int = 5,
-        early_stopping: bool = False,
-        regulariser: BaseRegulariser = None,
-        **kwargs: dict,
-    ) -> nn.Module:
-        assert self.bounds, "Bounds must have been computed prior to calling train."
-
-        self._project_parameters(model, self.bounds)
-
-        best_train_loss = float("inf")
-        epochs_no_improve = 0
-        best_model_state = None
-        val_acc = None
-        stopping = False
-
-        if (
-            self.paradigm == "TIL"
-            and (context := kwargs.get("context_id", None)) is not None
-            and isinstance(model[-1], utils.InContextHead)
-        ):
-            model[-1].set_context(context)
-
-        for epoch in (pbar := tqdm(range(epochs), desc="Training Epochs")):
-            model.train()
-            for inputs, targets in train_loader:
-                loss, _ = self._train_step(
-                    model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
-                )
-
-                # Track synaptic intelligence
-                self.si.update_importance()
-
-                if early_stopping:
-                    stopping, epochs_no_improve = self.check_early_stopping(
-                        curr_loss=loss,
-                        prev_loss=best_train_loss
-                        if best_train_loss != float("inf")
-                        else None,
-                        patience=kwargs.get("patience", 5),
-                        no_improvement=epochs_no_improve,
-                    )
-
-                    best_train_loss = min(best_train_loss, loss)
-
-                    if stopping:
-                        print(f"Early stopping at epoch {epoch + 1}")
-                        if best_model_state is not None:
-                            model.load_state_dict(best_model_state)
-                        break
-                    else:
-                        best_model_state = model.state_dict()
-
-            pbar.set_postfix(
-                {
-                    "loss": f"{loss:.4f}",
-                    "val_acc": f"{val_acc:.4f}" if val_acc is not None else None,
-                    "proj": self._last_projection,
-                }
-            )
-
-            val_loss, val_acc = self._validate_model(
-                model,
-                val_loader,
-                loss_fn,
-                regulariser,
-                domain_map_fn=self.domain_map_fn
-                if hasattr(self, "domain_map_fn")
-                else None,
-            )
-
-            pbar.set_postfix(
-                {
-                    "loss": f"{loss:.4f}",
-                    "val_acc": f"{val_acc:.4f}" if val_acc is not None else None,
-                    "proj": self._last_projection,
-                }
-            )
-
-            if stopping:
-                break
-
-        return model
 
     def _get_mask(
         self, si_scores: list[torch.Tensor], percentage: float = 0.3
@@ -151,12 +60,54 @@ class SITrainer(IntervalTrainer):
     def compute_rashomon_set(
         self,
         dataset: Dataset,
-        prune_prop: float = 0.3,
         callback: Callable = None,
         use_outer_bbox: bool = True,
         context_id: int = None,
+        **kwargs: dict,
     ) -> None:
-        mask = self._get_mask(self.si.importance_scores, prune_prop)
+        prune_prop = kwargs.get("prune_prop", None)
+        si_batch = kwargs.get("si_batch", None)
+        si_steps = kwargs.get("si_steps", 50)
+
+        assert prune_prop is not None, (
+            "prune_prop required for SITrainer.compute_rashomon_set"
+        )
+        assert si_batch is not None or prune_prop == 0, (
+            "si_batch required for SITrainer.compute_rashomon_set when prun_prop > 0"
+        )
+
+        if self.paradigm == "TIL":
+            assert context_id is not None, (
+                "context_id required for SITrainer.compute_rashomon_set for TIL"
+            )
+            assert "si_context_id" in kwargs or prune_prop == 0, (
+                "si_context_id required for SITrainer.compute_rashomon_set for TIL"
+            )
+
+        mask = None
+        if prune_prop > 0:
+            temp_model = deepcopy(self.model)
+            optimizer = torch.optim.Adam(
+                temp_model.parameters(), lr=kwargs.get("si_lr", 0.001)
+            )
+            loss_fn = nn.CrossEntropyLoss()
+
+            si = SITracker(temp_model)
+            temp_model.train()
+            for _ in range(si_steps):
+                inputs, targets = si_batch
+                loss, _ = self._train_step(
+                    temp_model,
+                    inputs,
+                    targets,
+                    optimizer,
+                    loss_fn,
+                    project=False,
+                    context_id=kwargs.get("si_context_id", None),
+                )
+                si.update_importance()
+
+            mask = self._get_mask(si.importance_scores, prune_prop)
         return super().compute_rashomon_set(
             dataset, callback, use_outer_bbox, context_id, param_mask=mask
         )

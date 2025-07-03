@@ -176,3 +176,6 @@ cython_debug/
 data/
 
 notebooks/wandb/
+notebooks/MNIST/
+MNIST/
+wandb/
