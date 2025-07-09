@@ -77,7 +77,7 @@ def get_mnist(
         root="./data", train=True, transform=transform, download=True
     )
     test_dataset = torchvision.datasets.MNIST(
-        root=".", train=False, transform=transform, download=True
+        root="./data", train=False, transform=transform, download=True
     )
 
     total_train_size = len(train_dataset)
