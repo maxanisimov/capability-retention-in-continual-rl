@@ -39,57 +39,58 @@ class InterContiNetTrainer(BaseTrainer):
         self,
         dataset: torch.utils.data.Dataset,
         context_id: int | None = None,
-        **kwargs: dict
+        **kwargs: dict,
     ):
-            dual = DualModel(
-                self.model,
-                [
-                    (
-                        list(self.model.parameters())[i].clone().detach(),
-                        list(self.model.parameters())[i + 1].clone().detach(),
-                    )
-                    for i in range(0, len(list(self.model.parameters())), 2)
-                ],
-                epsilons=self.epsilons,
-                default_epsilon=self.rashomon_kwargs.get('default_eps', 0.1),
-                seed=self.seed
-            )
-            loader = DataLoader(
-                dataset,
-                batch_size=kwargs.get('batch_size', 64),
-                shuffle=True,
-                generator=torch.Generator().manual_seed(self.seed),
-            )
-            criterion = max_loss
-            optimizer = torch.optim.AdamW(
-                [w for w, _ in dual.vs] + [b for _, b in dual.vs], lr=kwargs.get('lr', 0.01)
-            )
+        dual = DualModel(
+            self.model,
+            [
+                (
+                    list(self.model.parameters())[i].clone().detach(),
+                    list(self.model.parameters())[i + 1].clone().detach(),
+                )
+                for i in range(0, len(list(self.model.parameters())), 2)
+            ],
+            epsilons=self.epsilons,
+            default_epsilon=self.rashomon_kwargs.get("default_eps", 0.1),
+            seed=self.seed,
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=kwargs.get("batch_size", 64),
+            shuffle=True,
+            generator=torch.Generator().manual_seed(self.seed),
+        )
+        criterion = max_loss
+        optimizer = torch.optim.AdamW(
+            [w for w, _ in dual.vs] + [b for _, b in dual.vs], lr=kwargs.get("lr", 0.01)
+        )
 
-            self._set_context(self.model, context_id)
-            end = False
-            for _ in (pbar := tqdm.trange(kwargs.get('epochs', 100))):
-                for x, y in loader:
-                    x, y = x.to(dual.device), y.to(dual.device)
-                    if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
-                        y = self.domain_map_fn(y)
-                    optimizer.zero_grad()
-                    out = dual(x)
-                    loss = criterion(out, y)
-                    acc = min_acc(y, out)
-                    if acc >= self.min_acc_limit:
-                        end = True
-                        break
-                    loss.backward()
-                    optimizer.step()
-                pbar.set_postfix({"max loss": f"{loss.item():.4f}", "min acc": f"{acc.item():.4}"})
-                if end:
+        self._set_context(self.model, context_id)
+        end = False
+        for _ in (pbar := tqdm.trange(kwargs.get("epochs", 100))):
+            for x, y in loader:
+                x, y = x.to(dual.device), y.to(dual.device)
+                if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
+                    y = self.domain_map_fn(y)
+                optimizer.zero_grad()
+                out = dual(x)
+                loss = criterion(out, y)
+                acc = min_acc(y, out)
+                if acc >= self.min_acc_limit:
+                    end = True
                     break
+                loss.backward()
+                optimizer.step()
+            pbar.set_postfix(
+                {"max loss": f"{loss.item():.4f}", "min acc": f"{acc.item():.4}"}
+            )
+            if end:
+                break
 
-            self.epsilons = dual.extract_epsilons()
-            # self.epsilons[-1] = (torch.ones_like(self.epsilons[-1][0]), torch.ones_like(self.epsilons[-1][1]))
+        self.epsilons = dual.extract_epsilons()
 
-            eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in self.epsilons])
-            print(f"LID size: {eps_size:.4f}")
+        eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in self.epsilons])
+        print(f"LID size: {eps_size:.4f}")
 
     def _train_step(
         self,
@@ -120,7 +121,7 @@ class InterContiNetTrainer(BaseTrainer):
         acc = (outputs.argmax(dim=1) == targets).sum().item() / len(targets)
 
         return loss.item(), acc
-    
+
     def _train(
         self,
         model: nn.Module,
@@ -140,12 +141,14 @@ class InterContiNetTrainer(BaseTrainer):
 
         self._set_context(model, kwargs.get("context_id", None))
 
-        wrapped = ModelWrapper(model, [w for w, _ in self.epsilons], [b for _, b in self.epsilons])
+        wrapped = ModelWrapper(
+            model, [w for w, _ in self.epsilons], [b for _, b in self.epsilons]
+        )
         optimizer = torch.optim.Adam(
-                wrapped.parameters(),
-                lr=kwargs.get("lr", 0.1),
-                weight_decay=kwargs.get("weight_decay", 0),
-            )
+            wrapped.parameters(),
+            lr=kwargs.get("lr", 0.1),
+            weight_decay=kwargs.get("weight_decay", 0),
+        )
         for epoch in (pbar := tqdm.trange(epochs, desc="Training Epochs")):
             model.train()
             for i, (inputs, targets) in enumerate(train_loader):
@@ -216,21 +219,7 @@ class InterContiNetTrainer(BaseTrainer):
         accuracy = correct / len(test_loader.dataset)
 
         return round(avg_loss, 4), round(accuracy, 4)
-    
-    def _set_context(self, model: nn.Module, context_id: int) -> None:
-        super()._set_context(model, context_id)
-        # if len(self.context_us) > context_id and isinstance(self.model, (ModelWrapper, DualModel)) and context_id is not None:
-        #     weight_u, bias_u = self.context_us[context_id]
-        #     w_eps, b_eps = self.eps[context_id]
-        #     layer = self.model[-1]
-        #     combined_weight = (
-        #         layer.weight + torch.nn.functional.tanh(weight_u) * w_eps
-        #     )
-        #     combined_bias = layer.bias + torch.nn.functional.tanh(bias_u) * b_eps
-        #     self.model[-1].weight = combined_weight
-        #     self.model[-1].bias = combined_bias
 
-        #     self.epsilons[-1] = (w_eps, b_eps)
 
 class DualModel(nn.Module):
     def __init__(self, model, prev_params, epsilons=None, default_epsilon=0.1, seed=43):
@@ -350,6 +339,7 @@ class DualModel(nn.Module):
 
         return torch.stack((lower, upper), dim=2)
 
+
 class ModelWrapper(nn.Module):
     def __init__(self, model, epsilon_weights=None, epsilon_bias=None):
         super().__init__()
@@ -387,7 +377,7 @@ class ModelWrapper(nn.Module):
 
     def __getitem__(self, key):
         return self.model[key]
-    
+
     def __setitem__(self, key, item):
         self.model[key] = item
 
@@ -455,7 +445,6 @@ class ModelWrapper(nn.Module):
 
     def parameters(self):
         params = [val for val in self.weight_u + self.bias_u]
-        # if isinstance(self.model[-1], InContextHead):
-        #     params += list(self.model[-1].parameters())
-        #     print("Has InContextHead")
+        if isinstance(self.model[-1], InContextHead):
+            params += list(self.model[-1].parameters())
         return params
