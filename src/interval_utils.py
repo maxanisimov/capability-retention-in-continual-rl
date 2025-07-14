@@ -520,3 +520,28 @@ def create_violation_mask(model: nn.Module, bounded_model: BoundedModel):
         mask.append(layer_mask)
 
     return mask
+
+def max_loss(y_pred: torch.Tensor, y_true: torch.Tensor):
+    y_true = y_true.squeeze(dim=-1)
+    y_true_one_hot = torch.nn.functional.one_hot(
+        y_true, num_classes=y_pred.shape[1]
+    ).float()
+    pred_l, pred_u = torch.unbind(y_pred, dim=-1)
+    min_log = y_true_one_hot * pred_l  # get lower bound prediction for target
+    min_log += (
+        torch.ones_like(y_true_one_hot) - y_true_one_hot
+    ) * pred_u  # get upper bound prediction for non targets
+    return torch.nn.functional.cross_entropy(min_log, y_true)
+
+
+def min_acc(y_true: torch.Tensor, y_pred: torch.Tensor):
+    y_true = y_true.squeeze(dim=-1)
+    y_true_one_hot = torch.nn.functional.one_hot(
+        y_true, num_classes=y_pred.shape[1]
+    ).float()
+    pred_l, pred_u = torch.unbind(y_pred, dim=-1)
+    min_log = y_true_one_hot * pred_l  # get lower bound prediction for target
+    min_log += (
+        torch.ones_like(y_true_one_hot) - y_true_one_hot
+    ) * pred_u  # get upper bound prediction for non targets
+    return torch.sum(torch.argmax(min_log, dim=1) == y_true) / y_pred.shape[0]
