@@ -125,3 +125,14 @@ def print_colored(text: str, color: str):
     else:
         # If the color is not found, print the text without color
         print(text)
+
+
+def seed_worker(worker_id):
+    """
+    Sets the random seed for a DataLoader worker.
+    Ensures that data loading is reproducible across runs.
+    """
+    # Get the initial seed set in the main process and add the worker ID
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed + worker_id)
+    random.seed(worker_seed + worker_id)

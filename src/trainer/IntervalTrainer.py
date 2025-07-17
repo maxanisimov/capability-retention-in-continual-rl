@@ -146,7 +146,7 @@ class IntervalTrainer(BaseTrainer):
         if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
             y = self.domain_map_fn(y)
 
-        task_acc = (self.model(X).argmax(dim=1) == y).float().mean().item()
+        task_acc = (self.model(X).argmax(dim=1) == y).float().mean()
         self._set_context(self.model, context_id)
         if isinstance(self.model[-1], utils.InContextHead):
             model = self.model[:-1]
@@ -156,7 +156,7 @@ class IntervalTrainer(BaseTrainer):
             context_mask = None
 
         if self.min_acc_increment and self.min_acc_limit:
-            min_acc_limit = min(task_acc - self.min_acc_increment, self.min_acc_limit)
+            min_acc_limit = min(max(task_acc - self.min_acc_increment, task_acc / 2), self.min_acc_limit)
         elif self.min_acc_increment:
             min_acc_limit = task_acc - self.min_acc_increment
         elif self.min_acc_limit:
@@ -215,9 +215,9 @@ class IntervalTrainer(BaseTrainer):
         if project:
             self._project_parameters(model, self.bounds, inputs, targets)
 
-        acc = (outputs.argmax(dim=1) == targets).sum().item() / len(targets)
+        acc = (outputs.argmax(dim=1) == targets).sum() / len(targets)
 
-        return loss.item(), acc
+        return loss, acc
 
     def _train(
         self,
@@ -250,12 +250,11 @@ class IntervalTrainer(BaseTrainer):
                     model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
-                if i % kwargs.get("val_freq", 10):
+                if not i % kwargs.get("val_freq", 10):
                     val_loss, val_acc = self._validate_model(
                         model,
                         val_loader,
                         loss_fn,
-                        regulariser,
                         kwargs.get("context_id", None),
                     )
 
@@ -286,7 +285,7 @@ class IntervalTrainer(BaseTrainer):
                             if best_model_state is not None:
                                 model.load_state_dict(best_model_state)
                             break
-                        else:
+                        elif val_loss == best_val_loss:
                             best_model_state = model.state_dict()
             if stopping:
                 break

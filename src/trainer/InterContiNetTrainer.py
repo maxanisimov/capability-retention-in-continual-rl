@@ -158,12 +158,11 @@ class InterContiNetTrainer(BaseTrainer):
                     wrapped, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
-                if i % kwargs.get("val_freq", 10):
+                if not i % kwargs.get("val_freq", 10):
                     val_loss, val_acc = self._validate_model(
                         wrapped,
                         val_loader,
                         loss_fn,
-                        regulariser,
                         kwargs.get("context_id", None),
                     )
 

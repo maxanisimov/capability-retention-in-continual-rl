@@ -84,10 +84,13 @@ def get_mnist(
     train_size = int(train_val_split_ratio * total_train_size)
     val_size = total_train_size - train_size
 
-    # Set random seed for reproducibility of the split
-    torch.manual_seed(random_seed)
+    val_dataset = None
 
-    train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
+    if train_val_split_ratio < 1:
+        # Set random seed for reproducibility of the split
+        torch.manual_seed(random_seed)
+
+        train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
 
     return train_dataset, val_dataset, test_dataset
 
@@ -132,10 +135,14 @@ def split_mnist_by_labels(
 
 
 def get_mnist_tasks(
-    n_tasks=5, seed=42
+    n_tasks=5, seed=42, emnist: bool = False, train_val_split_ratio: float = 0.8
 ) -> tuple[list[Dataset], list[Dataset], list[Dataset]]:
     """Get the MNIST dataset split into random tasks."""
-    train_dataset, val_dataset, test_dataset = get_mnist()
+    train_dataset, val_dataset, test_dataset = (
+        get_emnist_digits(train_val_split_ratio=train_val_split_ratio)
+        if emnist
+        else get_mnist(train_val_split_ratio=train_val_split_ratio)
+    )
     train_tasks = []
     val_tasks = []
     test_tasks = []
@@ -150,7 +157,8 @@ def get_mnist_tasks(
     for task_id in range(n_tasks):
         labels_to_keep = even_labels[task_id].tolist() + odd_labels[task_id].tolist()
         train_tasks.append(split_mnist_by_labels(train_dataset, labels_to_keep))
-        val_tasks.append(split_mnist_by_labels(val_dataset, labels_to_keep))
+        if val_dataset is not None:
+            val_tasks.append(split_mnist_by_labels(val_dataset, labels_to_keep))
         test_tasks.append(split_mnist_by_labels(test_dataset, labels_to_keep))
 
     return train_tasks, val_tasks, test_tasks

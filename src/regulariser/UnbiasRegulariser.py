@@ -33,4 +33,4 @@ class UnbiasRegulariser(BaseRegulariser):
         probs = logits.softmax(dim=-1)
         penalty = (probs - probs.mean(dim=1).unsqueeze(1)).norm(dim=1).sum()
 
-        return penalty.item() * self.lmbd
+        return penalty * self.lmbd

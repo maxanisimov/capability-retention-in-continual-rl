@@ -67,7 +67,6 @@ class SIBufferTrainer(SITrainer):
                 model,
                 val_loader,
                 loss_fn,
-                regulariser,
                 kwargs.get("context_id", None),
             )
             # If the extracted performance is greater than target performance -> exit

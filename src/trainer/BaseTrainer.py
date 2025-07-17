@@ -27,7 +27,8 @@ class BaseTrainer(ABC):
             if isinstance(model, nn.Module)
             else next(model.param_l).device
         )
-        self.set_seed(seed)
+        if seed is not None:
+            self.set_seed(seed)
         self.paradigm = paradigm
         if paradigm == "DIL":
             assert domain_map_fn, "domain_map_fn required for DIL"
@@ -97,7 +98,7 @@ class BaseTrainer(ABC):
             train_data,
             batch_size=kwargs.get("batch_size", 32),
             shuffle=True,
-            generator=torch.Generator().manual_seed(self.seed),
+            generator=torch.Generator().manual_seed(self.seed) if self.seed is not None else None,
         )
         val_loader = DataLoader(
             val_data, batch_size=kwargs.get("batch_size", 32), shuffle=False
@@ -212,7 +213,6 @@ class BaseTrainer(ABC):
         model: nn.Module,
         val_loader: DataLoader,
         loss_fn: Callable,
-        regulariser: BaseRegulariser = None,
         context_id: int = None,
     ) -> tuple[float, float]:
         """
@@ -249,8 +249,6 @@ class BaseTrainer(ABC):
 
                 outputs = model(inputs)
                 loss = loss_fn(outputs, targets)
-                if regulariser is not None:
-                    loss += regulariser(model=model, inputs=inputs)
                 val_loss += loss.item()
                 correct += (outputs.argmax(dim=1) == targets).sum().item()
         val_loss /= len(val_loader)

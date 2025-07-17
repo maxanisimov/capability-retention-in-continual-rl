@@ -36,13 +36,13 @@ class SimpleTrainer(BaseTrainer):
         epochs_no_improve = 0
         best_model_state = None
         stopping = False
+        val_loss, val_acc = 0, 0
 
-        pbar = tqdm(range(epochs), desc="Training Epochs", postfix={"val_loss": "N\A"})
+        pbar = tqdm(range(epochs), desc="Training Epochs")
         for epoch in pbar:
             model.train()
             for i, (inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
-
                 if hasattr(self, "domain_map_fn") and self.domain_map_fn:
                     targets = self.domain_map_fn(targets)
 
@@ -50,20 +50,41 @@ class SimpleTrainer(BaseTrainer):
                 outputs = model(inputs)
                 loss = loss_fn(outputs, targets)
                 if regulariser is not None:
-                    loss += regulariser(model=model, inputs=inputs, targets=targets)
+                    loss += regulariser(
+                        model=model,
+                        inputs=inputs,
+                        targets=targets,
+                        domain=[
+                            torch.zeros(1, 1, 28, 28, device=self.device),
+                            torch.ones(1, 1, 28, 28, device=self.device),
+                        ],
+                    )
                 loss.backward()
                 optimizer.step()
 
-                if i % kwargs.get("val_freq", 10):
+                pbar.set_postfix(
+                    {
+                        "train_loss": f"{loss.item():.4f}",
+                        "val_loss": val_loss,
+                        "val_acc": val_acc,
+                    }
+                )
+
+                if min(1, i) % kwargs.get("val_freq", 50) == 0:
                     val_loss, val_acc = self._validate_model(
                         model,
                         val_loader,
                         loss_fn,
-                        regulariser,
                         context_id=kwargs.get("context_id", None),
                     )
 
-                    pbar.set_postfix({"val_loss": val_loss, "val_acc": val_acc})
+                    pbar.set_postfix(
+                        {
+                            "val_loss": val_loss,
+                            "val_acc": val_acc,
+                            "train_loss": f"{loss.item():.4f}",
+                        }
+                    )
 
                     if early_stopping:
                         stopping, epochs_no_improve = self.check_early_stopping(
@@ -82,7 +103,7 @@ class SimpleTrainer(BaseTrainer):
                             if best_model_state is not None:
                                 model.load_state_dict(best_model_state)
                             break
-                        else:
+                        elif val_loss == best_val_loss:
                             best_model_state = model.state_dict()
             if stopping:
                 break
