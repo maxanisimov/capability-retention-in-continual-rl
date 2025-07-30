@@ -41,7 +41,7 @@ def set_figure_size(
             Dimensions of figure in inches
     """
     width_pt = (
-        397.48499  # document width in pt, as revealed by \showthe\textwidth in latex
+        505.89  # document width in pt, as revealed by \showthe\textwidth in latex
     )
 
     # Width of figure (in pts)
