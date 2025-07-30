@@ -1,7 +1,5 @@
 from src.trainer import IntervalTrainer
 from src.helpers.SITracker import SITracker
-import src.utils as utils
-from src.regulariser import BaseRegulariser
 
 import torch.nn as nn
 import torch

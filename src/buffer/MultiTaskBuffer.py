@@ -56,13 +56,22 @@ class MultiTaskBuffer(Buffer):
     def current_tasks_in_buffer(self):
         return [buffer._name for buffer in self._buffers]
 
-    def add_data(self, data: Dataset) -> None:
+    def add_data(self, data: Dataset, task_id: int, k: int = 200) -> None:
         k = (
             self._buffers[0]._k
             if self._buffers
-            else 200
-            if 200 < len(data)
+            else k
+            if k < len(data)
             else len(data)
         )
-        buffer = SingleTaskBuffer(data, k)
+        buffer = SingleTaskBuffer(data, k, task_id=task_id)
         self._buffers.append(buffer)
+
+    def drop_buffer(self, id: int) -> None:
+        if id < len(self._buffers) - 1:
+            self._buffers = self._buffers[:id] + self._buffers[id+1:]
+        elif id < len(self._buffers):
+            self._buffers = self._buffers[:id]
+
+    def num_of_tasks(self) -> int:
+        return len(self._buffers)

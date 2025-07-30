@@ -1,22 +1,6 @@
 from abc import ABC, abstractmethod
 import torch
 from torch.utils.data import TensorDataset, ConcatDataset, Dataset
-from src.data_utils import TaskAugmentedDataset
-
-
-class TensorWrapper(Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        sample = self.dataset[idx]
-        return tuple(
-            torch.tensor(x) if not isinstance(x, torch.Tensor) else x for x in sample
-        )
-
 
 class Buffer(ABC):
     def __init__(self):
@@ -31,17 +15,7 @@ class Buffer(ABC):
         if r[0] is None:
             return None, None, r[1]
         X, Y = r[0]
-        if isinstance(X, torch.Tensor):
-            new_dataset = TensorDataset(X, Y)
-        else:
-            datasets = []
-            for i in torch.unique(X[1]):
-                datasets.append(
-                    TaskAugmentedDataset(
-                        TensorDataset(X[0][X[1] == i], Y[X[1] == i]), i.item()
-                    )
-                )
-            new_dataset = ConcatDataset(datasets)
+        new_dataset = TensorDataset(X, Y)
         if dataset:
             new_dataset = ConcatDataset([dataset, new_dataset])
 

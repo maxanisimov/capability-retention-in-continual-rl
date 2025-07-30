@@ -1,8 +1,33 @@
 import torch
 import torchvision
 from torchvision import datasets, transforms
-from torch.utils.data import Dataset, random_split, Subset
+from torch.utils.data import Dataset, random_split, Subset, DataLoader
 from typing import Tuple
+import os
+import numpy as np
+
+
+class TensorWrapper(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        # For Subsets from random_split, idx will be correct
+        image, label = self.dataset[idx]
+        return image, torch.tensor(label, dtype=torch.long)
+
+    @property
+    def targets(self) -> torch.Tensor:
+        """Access the targets of the underlying dataset and return as a tensor."""
+        # Access the .targets attribute of the original dataset
+        original_targets = self.dataset.targets
+        # Ensure the output is a tensor, handling both list and tensor inputs
+        if not isinstance(original_targets, torch.Tensor):
+            return torch.tensor(original_targets, dtype=torch.long)
+        return original_targets.long()
 
 
 def get_emnist_digits(
@@ -35,9 +60,6 @@ def get_emnist_digits(
         (train_dataset, val_dataset, test_dataset).
     """
 
-    if not (0 < train_val_split_ratio < 1):
-        raise ValueError("train_val_split_ratio must be between 0 and 1 (exclusive).")
-
     # Define a default transform if none is provided
     if transform is None:
         transform = transforms.Compose(
@@ -46,24 +68,37 @@ def get_emnist_digits(
             ]
         )
 
-    full_train_dataset = datasets.EMNIST(
-        root=root, split="digits", train=True, download=download, transform=transform
+    train_dataset = TensorWrapper(
+        datasets.EMNIST(
+            root=root,
+            split="digits",
+            train=True,
+            download=download,
+            transform=transform,
+        )
     )
 
-    test_dataset = datasets.EMNIST(
-        root=root, split="digits", train=False, download=download, transform=transform
+    test_dataset = TensorWrapper(
+        datasets.EMNIST(
+            root=root,
+            split="digits",
+            train=False,
+            download=download,
+            transform=transform,
+        )
     )
 
-    total_train_size = len(full_train_dataset)
+    total_train_size = len(train_dataset)
     train_size = int(train_val_split_ratio * total_train_size)
     val_size = total_train_size - train_size
 
-    # Set random seed for reproducibility of the split
-    torch.manual_seed(random_seed)
+    val_dataset = None
 
-    train_dataset, val_dataset = random_split(
-        full_train_dataset, [train_size, val_size]
-    )
+    if train_val_split_ratio < 1:
+        # Set random seed for reproducibility of the split
+        torch.manual_seed(random_seed)
+
+        train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
 
     return train_dataset, val_dataset, test_dataset
 
@@ -108,6 +143,8 @@ def _extract_targets(dataset):
         return dataset.tensors[1]
     if hasattr(dataset, "labels"):
         return torch.tensor(dataset.labels)
+    if hasattr(dataset, "_labels"):
+        return torch.tensor(dataset._labels)
     raise AttributeError(f"Cannot extract targets from dataset of type {type(dataset)}")
 
 
@@ -164,23 +201,13 @@ def get_mnist_tasks(
     return train_tasks, val_tasks, test_tasks
 
 
-def get_batch(dataset, seed=0, device="cpu", batchsize=100, domain_map_fn=None):
-    """Utility function to get a batch of data from the dataset."""
-    torch.manual_seed(seed)
-    dl = torch.utils.data.DataLoader(dataset, batch_size=batchsize)
-    batch, labels = next(iter(dl))
-    batch, labels = batch.to(device), labels.to(device)
-    labels = domain_map_fn(labels) if domain_map_fn else labels
-    return batch, labels
-
-
 def get_context_sets(
     datasets: list[torch.utils.data.Dataset],
 ) -> list[list[torch.Tensor]]:
     """Get the context sets for each dataset."""
     context_sets = []
     for dataset in datasets:
-        _, labels = get_batch(dataset)
+        _, labels = get_batch(dataset, batch_size=100)
         context_sets.append(labels.unique().tolist())
     return context_sets
 
@@ -212,7 +239,7 @@ class BinaryMNIST(Dataset):
 
 
 def create_holdout_set(
-    dataset: Dataset, holdout_fraction: float = 0.1, random_seed: int = 42
+    dataset: Dataset, holdout_size: int = 400, random_seed: int = 42
 ) -> Tuple[Dataset, Dataset]:
     """
     Splits a PyTorch Dataset into a training set and a random holdout set.
@@ -227,12 +254,8 @@ def create_holdout_set(
     Returns:
         Tuple[Dataset, Dataset]: A tuple containing the training dataset and the holdout dataset.
     """
-    if not 0 < holdout_fraction < 1:
-        raise ValueError("holdout_fraction must be between 0 and 1.")
-
     # 1. Calculate the sizes of the splits
     dataset_size = len(dataset)
-    holdout_size = int(dataset_size * holdout_fraction)
     train_size = dataset_size - holdout_size
 
     # 2. Use a generator for reproducibility
@@ -244,3 +267,135 @@ def create_holdout_set(
     )
 
     return train_dataset, holdout_dataset
+
+
+def count_labels(labels_tensor: torch.Tensor) -> tuple[list[int], list[int]]:
+    """
+    Counts the occurrences of each label in a torch tensor.
+
+    Args:
+      labels_tensor: A torch tensor of labels.
+
+    Returns:
+      A tuple containing two tensors: (unique_labels, counts).
+    """
+    values, counts = torch.unique(labels_tensor, return_counts=True)
+    return values.tolist(), counts.tolist()
+
+
+def get_batch(
+    dataset: Dataset,
+    batch_size: int,
+    shuffle: bool = False,
+    seed: int = 42,
+    device: str = "cuda",
+) -> tuple[torch.Tensor]:
+    loader = DataLoader(
+        dataset,
+        batch_size,
+        shuffle=shuffle,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    x, y = next(iter(loader))
+    return x.to(device), y.to(device)
+
+def balance_dataset_by_duplication(dataset):
+    """
+    Given a PyTorch dataset with binary labels (0 and 1),
+    returns a new dataset where class 1 is duplicated until classes are balanced.
+    """
+    # Step 1: Collect indices by class
+    class_0_indices = []
+    class_1_indices = []
+
+    for i in range(len(dataset)):
+        _, label = dataset[i]
+        if isinstance(label, torch.Tensor):
+            label = label.item()
+        if label == 0:
+            class_0_indices.append(i)
+        elif label == 1:
+            class_1_indices.append(i)
+        else:
+            raise ValueError(f"Dataset contains classes other than 0 and 1: {label}")
+
+    # Step 2: Duplicate class 1 to match class 0
+    n_0 = len(class_0_indices)
+    n_1 = len(class_1_indices)
+    if n_1 > n_0:
+        temp = class_0_indices  # swap balance
+        class_0_indices = class_1_indices
+        class_1_indices = temp
+        temp = n_0
+        n_0 = n_1
+        n_1 = temp
+
+    if n_1 == 0:
+        raise ValueError("No class 1 samples found — cannot balance.")
+
+    multiplier = n_0 // n_1
+    remainder = n_0 % n_1
+
+    duplicated_1_indices = class_1_indices * multiplier + class_1_indices[:remainder]
+
+    # Step 3: Combine and shuffle
+    balanced_indices = class_0_indices + duplicated_1_indices
+    balanced_indices = torch.tensor(balanced_indices)[torch.randperm(len(balanced_indices))]
+
+    return Subset(dataset, balanced_indices)
+
+class NpyDataset(torch.utils.data.Dataset):
+    def __init__(self, feature_path: str, label_path: str, mmap=True):
+        self._features = np.load(feature_path, mmap_mode="r" if mmap else None)
+        self._labels = np.load(label_path)
+
+    def __len__(self):
+        return self._labels.shape[0]
+
+    def __getitem__(self, idx):
+        return torch.from_numpy(self._features[idx]), torch.tensor(self._labels[idx])
+
+class EmbeddingDatasetExtractor:
+    def __init__(self, base_path: str):
+        self._base_path = base_path
+        self._dataset_cache = {}
+
+    def get_embedding_dataset(
+        self, model_name: str, dataset_name: str, val_ratio: float = 0.1, seed=42, balance=True, use_cache=True
+    ):
+        result_data = None
+        if model_name not in self._dataset_cache:
+            self._dataset_cache[model_name] = {}
+        if dataset_name not in self._dataset_cache[model_name] or not use_cache:
+            print("Dataset not found or cache not used, extracting it now.")
+
+            dataset = NpyDataset(
+                os.path.join(self._base_path, f"{dataset_name}_{model_name}_features.npy"),
+                os.path.join(self._base_path, f"{dataset_name}_{model_name}_labels.npy"),
+            )
+            dataset_size = len(dataset)
+            val_size = int(dataset_size * val_ratio)
+
+            # Deterministic shuffling
+            generator = torch.Generator().manual_seed(seed)
+            shuffled_indices = torch.randperm(dataset_size, generator=generator).tolist()
+
+            val_indices = shuffled_indices[:val_size]
+            train_indices = shuffled_indices[val_size:]
+
+            train_dataset = Subset(dataset, train_indices)
+            val_dataset = Subset(dataset, val_indices)
+
+            result_data = (
+                (train_dataset, val_dataset),  # non-balanced version
+                (balance_dataset_by_duplication(train_dataset), balance_dataset_by_duplication(val_dataset)),
+            )
+            if use_cache:
+                self._dataset_cache[model_name][dataset_name] = result_data
+        else:
+            result_data = self._dataset_cache[model_name][dataset_name]  # using cache here
+
+        if balance:
+            return result_data[1]
+        else:
+            return result_data[0]

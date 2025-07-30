@@ -1,3 +1,146 @@
+INTER_CONTI_NET = {
+    "CIL": {
+        "method": "bayes",
+        "metric": {"name": "final_total_accuracy", "goal": "maximize"},
+        "parameters": {
+            "ours": True,
+            "init.seed": {"values": list(range(5))},
+            "init.n_certificate_samples": {"value": 400},
+            "init.min_acc_limit": {
+                "distribution": "uniform",
+                "min": 0.8,
+                "max": 1,
+            },
+            "init.min_acc_increment": {
+                "distribution": "uniform",
+                "min": 0.05,
+                "max": 0.25,
+            },
+            "init.paradigm": {"value": "CIL"},
+            "init.checkpoint": {"values": [10, 20, 50, 100]},
+            "train.l2_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+            "train.unbias_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+            "train.lr": {
+                "distribution": "uniform",
+                "min": 1e-3,
+                "max": 2e-1,
+            },
+            "train.weight_decay": {
+                "distribution": "uniform",
+                "min": 0,
+                "max": 1e-1,
+            },
+            "train.epochs": {"values": [3, 5, 10]},
+            "train.batch_size": {"values": [32, 64, 128, 256]},
+            "simple_train.epochs": {"values": [3, 5, 10]},
+            "simple_train.batch_size": {"values": [32, 64, 128, 256]},
+            "simple_train.lr": {
+                "distribution": "uniform",
+                "min": 1e-3,
+                "max": 2e-1,
+            },
+            "simple_train.weight_decay": {
+                "distribution": "uniform",
+                "min": 0,
+                "max": 1e-1,
+            },
+        },
+    },
+    "TIL": {
+        "method": "bayes",
+        "metric": {"name": "final_total_accuracy", "goal": "maximize"},
+        "parameters": {
+            "ours": {"value": True},
+            "init.n_certificate_samples": {"value": 400},
+            "init.min_acc_limit": {
+                "distribution": "uniform",
+                "min": 0.8,
+                "max": 1,
+            },
+            "init.min_acc_increment": {
+                "distribution": "uniform",
+                "min": 0.05,
+                "max": 0.25,
+            },
+            "init.paradigm": {"value": "TIL"},
+            "init.checkpoint": {"values": [10, 20, 50, 100]},
+            "train.l2_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+            "train.unbias_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+            "train.lr": {
+                "distribution": "uniform",
+                "min": 1e-3,
+                "max": 2e-1,
+            },
+            "train.weight_decay": {
+                "distribution": "uniform",
+                "min": 0,
+                "max": 1e-1,
+            },
+            "train.epochs": {"values": [3, 5, 10]},
+            "train.batch_size": {"values": [32, 64, 128, 256]},
+            "simple_train.epochs": {"values": [3, 5, 10]},
+            "simple_train.batch_size": {"values": [32, 64, 128, 256]},
+            "simple_train.lr": {
+                "distribution": "uniform",
+                "min": 1e-3,
+                "max": 2e-1,
+            },
+            "simple_train.weight_decay": {
+                "distribution": "uniform",
+                "min": 0,
+                "max": 1e-1,
+            },
+        },
+    },
+    "DIL": {
+        "method": "bayes",
+        "metric": {"name": "final_total_accuracy", "goal": "maximize"},
+        "parameters": {
+            "ours": {"value": True},
+            "init.seed": {"values": list(range(5))},
+            "init.n_certificate_samples": {"value": 400},
+            "init.min_acc_limit": {
+                "distribution": "uniform",
+                "min": 0.8,
+                "max": 1,
+            },
+            "init.min_acc_increment": {
+                "distribution": "uniform",
+                "min": 0.05,
+                "max": 0.25,
+            },
+            "init.paradigm": {"value": "DIL"},
+            "init.checkpoint": {"values": [10, 20, 50, 100]},
+            "train.l2_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+            "train.unbias_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+            "train.lr": {
+                "distribution": "uniform",
+                "min": 1e-3,
+                "max": 2e-1,
+            },
+            "train.weight_decay": {
+                "distribution": "uniform",
+                "min": 0,
+                "max": 1e-1,
+            },
+            "train.epochs": {"values": [3, 5, 10]},
+            "train.batch_size": {"values": [32, 64, 128, 256]},
+            "simple_train.epochs": {"values": [3, 5, 10]},
+            "simple_train.batch_size": {"values": [32, 64, 128, 256]},
+            "simple_train.lr": {
+                "distribution": "uniform",
+                "min": 1e-3,
+                "max": 2e-1,
+            },
+            "simple_train.weight_decay": {
+                "distribution": "uniform",
+                "min": 0,
+                "max": 1e-1,
+            },
+        },
+    }
+}
+
 MNIST = {
     "SITrainer": {
         "CIL": {
@@ -32,7 +175,9 @@ MNIST = {
                     "max": 10,
                 },
                 "init.checkpoint": {"values": [10, 20, 50, 100]},
-                "init.projection_strategy": {"values": ["closest", "sample_largest_closest"]},
+                "init.projection_strategy": {
+                    "values": ["closest", "sample_largest_closest"]
+                },
                 "train.si_batch_size": {"values": [32, 64, 128, 256]},
                 "train.si_steps": {"values": [1, 3, 5, 10, 25, 50, 100]},
                 "train.prune_prop": {
@@ -70,7 +215,9 @@ MNIST = {
             "method": "bayes",
             "metric": {"name": "final_total_accuracy", "goal": "maximize"},
             "parameters": {
-                "init.projection_strategy": {"values": ["closest", "sample_largest_closest"]},
+                "init.projection_strategy": {
+                    "values": ["closest", "sample_largest_closest"]
+                },
                 "init.seed": {"values": list(range(5))},
                 "init.n_certificate_samples": {"value": 400},
                 "init.min_acc_limit": {
@@ -102,7 +249,11 @@ MNIST = {
                 },
                 "init.checkpoint": {"values": [10, 20, 50, 100]},
                 "train.l2_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
-                "train.unbias_lambda": {"distribution": "uniform", "min": 0, "max": 3e-1},
+                "train.unbias_lambda": {
+                    "distribution": "uniform",
+                    "min": 0,
+                    "max": 3e-1,
+                },
                 "train.lr": {
                     "distribution": "uniform",
                     "min": 1e-3,
@@ -129,7 +280,8 @@ MNIST = {
                 },
             },
         },
-    }
+    },
+    "InterContiNetTrainer": INTER_CONTI_NET,
 }
 
 SWEEP_CONFIGS = {"MNIST": MNIST}

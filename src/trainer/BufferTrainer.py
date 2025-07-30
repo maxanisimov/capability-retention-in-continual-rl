@@ -1,95 +1,159 @@
 from src.trainer.IntervalTrainer import IntervalTrainer
-from src.buffer import Buffer
-from src.regulariser.BaseRegulariser import BaseRegulariser
+from src.buffer import MultiTaskBuffer
+from src.data_utils import get_mnist_tasks
+from src import interval_utils
 
+from abstract_gradient_training.bounded_models import IntervalBoundedModel
+
+import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, TensorDataset
-from torch.optim import Optimizer
-from typing import Callable
-from tqdm import tqdm
+from torch.utils.data import DataLoader, Dataset, ConcatDataset
+import copy
+import itertools
 
 
 class BufferTrainer(IntervalTrainer):
     def __init__(
-        self, model: nn.Module, buffer: Buffer, seed: int = 42, **rashomon_kwargs: dict
+        self,
+        model: nn.Module,
+        buffer: MultiTaskBuffer,
+        seed: int = 42,
+        **rashomon_kwargs: dict,
     ):
         super().__init__(model=model, seed=seed, **rashomon_kwargs)
         self.buffer = buffer
 
-    def _train(
-        self,
-        model: nn.Module,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        optimizer: Optimizer,
-        loss_fn: Callable,
-        epochs: int = 5,
-        early_stopping: bool = False,
-        regulariser: BaseRegulariser = None,
-        **kwargs: dict,
-    ) -> nn.Module:
-        """
-        Train the model until either reaching the target accuracy or plateuing.
-        If target accuracy reached -> continue until plateu and then exit
-        Elif buffer has data -> recompute bounds
-        Else -> Exit without full convergence
-        """
-        target_acc = kwargs.get("target_acc", None)
-        assert target_acc is not None, (
-            "Target accuracy must be provided for BufferTrainer."
+        self.task_bounds = []
+        self.task_certificates = []
+        self.task_bounds_intersection = None
+        self.intersection_certificates = None
+        self.recall_dataset = None
+        self.recall_iter = None
+
+    def get_largest_bounds(self, k: int = 2) -> tuple[IntervalBoundedModel, float]:
+        sizes = torch.tensor(
+            [interval_utils._bounded_model_width(bm) for bm in self.bounds]
         )
 
-        best_loss = float("inf")
+        largest_bounds = torch.topk(sizes, k)[1]
+        return [self.bounds[i] for i in largest_bounds], [
+            self.certificates[i] for i in largest_bounds
+        ]
 
-        _running = True
-        pbar = tqdm(desc="Processing items")
-        no_improvement = 0
-        buffer_no_improvement = 0
-        while _running:
-            pbar.update(1)
-            for inputs, targets in train_loader:
-                loss, acc = super()._train_step(
-                    model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
+    def add_to_buffer(self, dataset: Dataset, task_id: int, k: int = 200) -> None:
+        self.buffer.add_data(dataset, task_id, k=k)
+
+    def remove_oldest_buffer(self) -> None:
+        if isinstance(self.buffer, MultiTaskBuffer):
+            self.buffer.drop_buffer(0)
+
+    def train(
+        self,
+        train_data,
+        val_data,
+        epochs=5,
+        early_stopping=False,
+        regulariser=None,
+        **kwargs,
+    ):
+        batch_size = kwargs.get("batch_size", 32)
+        if self.recall_dataset:
+            self.recall_iter = iter(
+                DataLoader(
+                    self.recall_dataset,
+                    batch_size=batch_size
+                    if len(self.recall_dataset) >= batch_size
+                    else len(self.recall_dataset),
+                    shuffle=True,
+                    generator=torch.Generator().manual_seed(self.seed),
                 )
+            )
+        return super().train(
+            train_data, val_data, epochs, early_stopping, regulariser, **kwargs
+        )
 
-                pbar.set_postfix(
-                    {
-                        "Training loss": loss,
-                        "Training accuracy": acc,
-                        "Buffer Data Consumed": self.buffer.samples_consumed(),
-                    }
+    def _train_step(
+        self,
+        model,
+        X,
+        y,
+        optimizer,
+        loss_fn,
+        regulariser=None,
+        project=True,
+        context_id=None,
+        **kwargs,
+    ):
+        if self.recall_iter:
+            recall_X, recall_y = next(self.recall_iter, (None, None))
+            if recall_X is None:
+                self.recall_iter = iter(
+                    DataLoader(
+                        self.recall_dataset,
+                        batch_size=len(X)
+                        if len(self.recall_dataset) >= len(X)
+                        else len(self.recall_dataset),
+                        shuffle=True,
+                        generator=torch.Generator().manual_seed(self.seed),
+                    )
                 )
+                recall_X, recall_y = next(self.recall_iter)
+            X = torch.cat([X, recall_X], dim=0)
+            y = torch.cat([y, recall_y], dim=0)
 
-                stop, no_improvement = super().check_early_stopping(
-                    curr_loss=loss,
-                    prev_loss=best_loss,
-                    patience=kwargs.get("patience", 10),
-                    no_improvement=no_improvement,
-                )
-                if not no_improvement:
-                    buffer_no_improvement = 0
-                best_loss = min(loss, best_loss)
-                if stop:
-                    if (
-                        not self.buffer.is_empty()
-                        and acc < target_acc
-                        and buffer_no_improvement < 3
-                    ):
-                        print("Using buffer to continue training.")
-                        (buffer_X, buffer_y), _ = self.buffer.consume()
-                        self.compute_rashomon_set(
-                            TensorDataset(buffer_X, buffer_y),
-                            context_id=kwargs.get("context_id", None),
-                            use_outer_bbox=False,
-                        )
-                        no_improvement = 0  # Reset early stopping mechanism
-                        buffer_no_improvement += 1
-                    else:
-                        print(f"Exiting with final training accuracy of {acc:.4f}")
-                        _running = False
-                        break
+        return super()._train_step(
+            model, X, y, optimizer, loss_fn, regulariser, project, context_id, **kwargs
+        )
 
-        return model
+    ### Below methods only needed if bounds are split to be updated individually
+    def _generate_intersection(
+        self, bounds: list[IntervalBoundedModel]
+    ) -> IntervalBoundedModel:
+        train, val, test = get_mnist_tasks(seed=self.seed)
 
-    def add_to_buffer(self, dataset: Dataset) -> None:
-        self.buffer.add_data(dataset)
+        intersect = copy.deepcopy(bounds[0])
+        for bound in bounds[1:]:
+            for i, (curr, new) in enumerate(zip(intersect._param_l, bound._param_l)):
+                if not curr or not new:
+                    continue
+                curr_w, curr_b = curr
+                new_w, new_b = new
+                inter_w = torch.max(curr_w, new_w)
+                inter_b = torch.max(curr_b, new_b)
+
+                intersect._param_l[i] = [inter_w, inter_b]
+
+            for i, (curr, new) in enumerate(zip(intersect._param_u, bound._param_u)):
+                if not curr or not new:
+                    continue
+                curr_w, curr_b = curr
+                new_w, new_b = new
+                inter_w = torch.min(curr_w, new_w)
+                inter_b = torch.min(curr_b, new_b)
+
+                intersect._param_u[i] = [inter_w, inter_b]
+
+        for task in val:
+            inputs, targets = next(iter(DataLoader(task, batch_size=128)))
+            inputs, targets = inputs.to(self.device), targets.to(self.device)
+            print(
+                f"{interval_utils._get_min_acc(intersect, inputs, targets).item():.4f}",
+                end=" ",
+            )
+        print()
+
+        return intersect
+
+    def _get_bounds_intersection(
+        self, bounds: list[list[IntervalBoundedModel]], certificates: list[list[float]]
+    ) -> tuple[list[IntervalBoundedModel], list[float]]:
+        intersections = []
+        certs = []
+        for bound_pairs, certificate_pairs in zip(
+            itertools.product(*bounds), itertools.product(*certificates)
+        ):
+            intersection = self._generate_intersection(bound_pairs)
+            intersections.append(intersection)
+            certs.append(certificate_pairs)
+
+        return intersections, certs

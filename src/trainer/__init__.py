@@ -8,6 +8,11 @@ from .SITrainer import SITrainer
 from .FisherTrainer import FisherTrainer
 from .SIBufferTrainer import SIBufferTrainer
 from .InterContiNetTrainer import InterContiNetTrainer
+from .EWCTrainer import EWCTrainer
+from .LwFTrainer import LwFTrainer
+from .AGEMTrainer import AGEMTrainer
+from .IntervalAGEMTrainer import IntervalAGEMTrainer
+from .AGEMBufferTrainer import AGEMBufferTrainer
 
 # The __all__ variable defines the public API of the package.
 # It specifies which names will be imported when a client uses `from src.trainer import *`.
@@ -20,5 +25,10 @@ __all__ = [
     "SITrainer",
     "FisherTrainer",
     "SIBufferTrainer",
-    "InterContiNetTrainer"
+    "InterContiNetTrainer",
+    "EWCTrainer",
+    "LwFTrainer",
+    "AGEMTrainer",
+    "IntervalAGEMTrainer",
+    "AGEMBufferTrainer"
 ]

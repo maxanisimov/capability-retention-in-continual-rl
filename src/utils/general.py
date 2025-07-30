@@ -63,13 +63,17 @@ class InContextHead(torch.nn.Module):
         for i in self.context_list[context]:
             self.mask[i] = 1
 
-
-def set_random_seed(random_seed=42):
-    random.seed(random_seed)
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
+def set_seed(seed: int = 42, device: str = "cuda") -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device == "mps":
+        torch.mps.manual_seed(seed)
+    elif device == "cuda":
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def check_inclusion(
@@ -102,6 +106,7 @@ def print_bold(text):
 
     print(bold_start + text + bold_end)
 
+
 def print_colored(text: str, color: str):
     """
     Prints text to the console in a specified color.
@@ -112,14 +117,14 @@ def print_colored(text: str, color: str):
     """
     # ANSI color codes
     colors = {
-        "green": "\033[92m", # 🟩
-        "amber": "\033[93m", # 🟨
-        "red": "\033[91m"    # 🟥
+        "green": "\033[92m",  # 🟩
+        "amber": "\033[93m",  # 🟨
+        "red": "\033[91m",  # 🟥
     }
     reset_code = "\033[0m"
-    
+
     color_code = colors.get(color.lower())
-    
+
     if color_code:
         print(f"{color_code}{text}{reset_code}")
     else:

@@ -41,11 +41,13 @@ class FisherTrainer(IntervalTrainer):
         if all_scores.numel() == 0:
             return [torch.zeros_like(s, dtype=torch.bool) for s in fisher_diagonal]
 
+        print("Parameter importance sum:", (torch.sum(all_scores).item()))
+        print("Non zero params:", torch.count_nonzero(all_scores).item())
         prune_fraction = percentage
         threshold = torch.quantile(all_scores, prune_fraction)
 
         print(
-            f"To keep top {1 - percentage:.0%}, found global Fisher threshold: {threshold.item():.4f}"
+            f"To keep top {1 - percentage:.0%}, found global Fisher threshold: {threshold.item():.8f}"
         )
 
         pruning_masks = []
@@ -54,18 +56,25 @@ class FisherTrainer(IntervalTrainer):
             mask = scores < threshold
             pruning_masks.append(mask)
 
+        print("Remaining number of parameters:", sum([torch.count_nonzero(mask) for mask in pruning_masks]))
+
         return pruning_masks
 
-    def _compute_fisher_diagonal(self, dataloader: DataLoader) -> None:
+    def _compute_fisher_diagonal(
+        self, batch: tuple[torch.Tensor, torch.Tensor], epochs: int = 10
+    ) -> None:
         fisher = [
             torch.zeros_like(p) for p in self.model.parameters() if p.requires_grad
         ]
         self.model.eval()
         num_samples = 0
 
-        for inputs, targets in tqdm(dataloader, desc="Computing Fisher Information"):
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
+        inputs, targets = batch
+        inputs = inputs.to(self.device)
+        targets = targets.to(self.device)
+        if self.domain_map_fn:
+            targets = self.domain_map_fn(targets)
+        for _ in range(epochs):
             num_samples += inputs.size(0)
             outputs = self.model(inputs)
 
@@ -85,11 +94,22 @@ class FisherTrainer(IntervalTrainer):
     def compute_rashomon_set(
         self,
         dataset: Dataset,
+        next_task_data: Dataset,
         prune_prop: float = 0.3,
         callback: Callable = None,
         use_outer_bbox: bool = True,
         context_id: int = None,
+        **kwargs: dict,
     ) -> None:
+        loader = DataLoader(
+            next_task_data,
+            batch_size=kwargs.get("fisher_batch_size", 64),
+            shuffle=True,
+            generator=torch.Generator().manual_seed(self.seed),
+        )
+        self._compute_fisher_diagonal(
+            next(iter(loader)), epochs=kwargs.get("fisher_epochs", None)
+        )
         mask = (
             self._get_mask(self.fisher_matrix, prune_prop)
             if self.fisher_matrix

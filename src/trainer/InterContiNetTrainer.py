@@ -2,7 +2,6 @@ from src.trainer.BaseTrainer import BaseTrainer
 from src.regulariser.BaseRegulariser import BaseRegulariser
 from abstract_gradient_training import interval_arithmetic
 from src.interval_utils import max_loss, min_acc
-from src.utils import InContextHead
 
 from typing import Callable
 import torch.nn as nn
@@ -30,10 +29,29 @@ class InterContiNetTrainer(BaseTrainer):
         self.min_acc_limit = min_acc_limit
         self.min_acc_increment = min_acc_increment
         self.rashomon_kwargs = rashomon_kwargs
-        self.epsilons = None
+        self.epsilons = list(
+                zip(
+                    [
+                        nn.Parameter(torch.full_like(m.weight, 1)).to(
+                            self.device
+                        )
+                        for m in model
+                        if self.compatible_layer(m)
+                    ],
+                    [
+                        nn.Parameter(torch.full_like(m.bias, 1)).to(
+                            self.device
+                        )
+                        for m in model
+                        if self.compatible_layer(m)
+                    ],
+                )
+            )
 
-        self.context_us = []
-        self.eps = []
+        self.final_certificates = []
+
+    def compatible_layer(self, layer) -> bool:
+        return isinstance(layer, (nn.Linear, nn.Conv2d))
 
     def compute_rashomon_set(
         self,
@@ -41,6 +59,8 @@ class InterContiNetTrainer(BaseTrainer):
         context_id: int | None = None,
         **kwargs: dict,
     ):
+        self._set_context(self.model, context_id)
+        
         dual = DualModel(
             self.model,
             [
@@ -56,18 +76,20 @@ class InterContiNetTrainer(BaseTrainer):
         )
         loader = DataLoader(
             dataset,
-            batch_size=kwargs.get("batch_size", 64),
+            batch_size=kwargs.get("batch_size", 128),
             shuffle=True,
             generator=torch.Generator().manual_seed(self.seed),
         )
         criterion = max_loss
-        optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.Adam(
             [w for w, _ in dual.vs] + [b for _, b in dual.vs], lr=kwargs.get("lr", 0.01)
         )
 
-        self._set_context(self.model, context_id)
+        eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in dual.epsilons])
+        print(f"LID size: {eps_size:.4f}.")
+
         end = False
-        for _ in (pbar := tqdm.trange(kwargs.get("epochs", 100))):
+        for _ in (pbar := tqdm.trange(kwargs.get("epochs", 500))):
             for x, y in loader:
                 x, y = x.to(dual.device), y.to(dual.device)
                 if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
@@ -81,16 +103,19 @@ class InterContiNetTrainer(BaseTrainer):
                     break
                 loss.backward()
                 optimizer.step()
+
+            eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in dual.extract_epsilons()])
             pbar.set_postfix(
-                {"max loss": f"{loss.item():.4f}", "min acc": f"{acc.item():.4}"}
+                {"loss": f"{loss.item():.4f}", "acc": f"{acc.item():.4}", "size": f"{eps_size:.2f}"}
             )
             if end:
                 break
-
+        
         self.epsilons = dual.extract_epsilons()
+        self.final_certificates.append(acc)
 
         eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in self.epsilons])
-        print(f"LID size: {eps_size:.4f}")
+        print(f"LID size: {eps_size:.4f} with certificate of {acc}.")
 
     def _train_step(
         self,
@@ -146,7 +171,7 @@ class InterContiNetTrainer(BaseTrainer):
         )
         optimizer = torch.optim.Adam(
             wrapped.parameters(),
-            lr=kwargs.get("lr", 0.1),
+            lr=kwargs.get("lr", 0.001),
             weight_decay=kwargs.get("weight_decay", 0),
         )
         for epoch in (pbar := tqdm.trange(epochs, desc="Training Epochs")):
@@ -158,7 +183,7 @@ class InterContiNetTrainer(BaseTrainer):
                     wrapped, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
-                if not i % kwargs.get("val_freq", 10):
+                if not i % kwargs.get("val_freq", 100):
                     val_loss, val_acc = self._validate_model(
                         wrapped,
                         val_loader,
@@ -218,8 +243,7 @@ class InterContiNetTrainer(BaseTrainer):
         accuracy = correct / len(test_loader.dataset)
 
         return round(avg_loss, 4), round(accuracy, 4)
-
-
+    
 class DualModel(nn.Module):
     def __init__(self, model, prev_params, epsilons=None, default_epsilon=0.1, seed=43):
         super().__init__()
@@ -229,12 +253,12 @@ class DualModel(nn.Module):
         self.vs = list(
             zip(
                 [
-                    nn.Parameter(torch.randn_like(m.weight)).to(self.device)
+                    nn.Parameter(torch.full_like(m.weight, 5)).to(self.device)
                     for m in model
                     if self.valid_layer(m)
                 ],
                 [
-                    nn.Parameter(torch.randn_like(m.bias)).to(self.device)
+                    nn.Parameter(torch.full_like(m.bias, 5)).to(self.device)
                     for m in model
                     if self.valid_layer(m)
                 ],
@@ -345,12 +369,12 @@ class ModelWrapper(nn.Module):
         self.device = next(model.parameters()).device
         self.model = copy.deepcopy(model)
         self.weight_u = [
-            nn.Parameter(torch.randn_like(m.weight)).to(self.device)
+            nn.Parameter(torch.full_like(m.weight, 5)).to(self.device)
             for m in model
             if self.valid_layer(m)
         ]
         self.bias_u = [
-            nn.Parameter(torch.randn_like(m.bias)).to(self.device)
+            nn.Parameter(torch.full_like(m.bias, 5)).to(self.device)
             for m in model
             if self.valid_layer(m)
         ]
@@ -444,6 +468,4 @@ class ModelWrapper(nn.Module):
 
     def parameters(self):
         params = [val for val in self.weight_u + self.bias_u]
-        if isinstance(self.model[-1], InContextHead):
-            params += list(self.model[-1].parameters())
         return params

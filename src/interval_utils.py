@@ -1,6 +1,7 @@
 from abstract_gradient_training.bounded_models import IntervalBoundedModel, BoundedModel
 from src.IntervalTensor import IntervalTensor
 import src.verification.verify as verify
+from src.data_utils import _extract_targets
 
 import torch
 import torch.nn as nn
@@ -125,12 +126,13 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self,
         bounded_model: IntervalBoundedModel,
         dataloader: torch.utils.data.DataLoader,
-        min_acc_limit: float,
+        min_acc_limits: list[float] | float,
         penalty_coefficient: float,
         objective_fn: Callable,
         obj_alpha: float,
         context_mask: torch.Tensor | None = None,
         domain_map_fn: Callable | None = None,
+        task_labels: list[tuple[int, int]] = None,
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -138,7 +140,11 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.dataloader = dataloader
         self.data_iter = iter(dataloader)
         self.obj_alpha = obj_alpha
-        self.min_acc_limit = min_acc_limit
+        self.min_acc_limits = (
+            min_acc_limits + [0.0] * (5 - len(min_acc_limits))
+            if isinstance(min_acc_limits, list)
+            else [min_acc_limits] * 5
+        )  # TODO: *5 implies 5 tasks, so not dynamic
         self.context_mask = context_mask
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn
@@ -147,18 +153,25 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 growth_factor=1.01, violation_tolerance=0.05
             )
         )
-        multiplier = cooper.multipliers.DenseMultiplier(
-            init=torch.zeros(1, device=device)
-        )
-        self.constraint = cooper.Constraint(
-            multiplier=multiplier,
-            constraint_type=cooper.ConstraintType.INEQUALITY,
-            formulation_type=cooper.formulations.AugmentedLagrangian,
-            penalty_coefficient=cooper.penalty_coefficients.DensePenaltyCoefficient(
-                init=torch.tensor(penalty_coefficient, device=device),
-            ),
-        )
-        self.defect_strict = 0.0
+        self.new = True
+        self.task_labels = (
+            task_labels
+            or torch._unique(_extract_targets(dataloader.dataset))[0].tolist()
+        )  # if there is only one task then we can extract the task labels as opposed to having to provide them
+        for i in range(len(self.task_labels)):
+            multiplier = cooper.multipliers.DenseMultiplier(
+                init=torch.zeros(1, device=device)
+            )
+            constraint = cooper.Constraint(
+                multiplier=multiplier,
+                constraint_type=cooper.ConstraintType.INEQUALITY,
+                formulation_type=cooper.formulations.AugmentedLagrangian,
+                penalty_coefficient=cooper.penalty_coefficients.DensePenaltyCoefficient(
+                    init=torch.tensor(penalty_coefficient, device=device),
+                ),
+            )
+            setattr(self, f"constraint{i}", constraint)
+            setattr(self, f"defect_strict{i}", 0.0)
 
     def compute_cmp_state(self) -> cooper.CMPState:
         """
@@ -171,39 +184,67 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             self.data_iter = iter(self.dataloader)
             X, y = next(self.data_iter)
 
-        if self.domain_map_fn is not None:
-            y = self.domain_map_fn(y)
         X, y = X.to(self.bounded_model.device), y.to(self.bounded_model.device)
 
         # apply projection
         _project_bounded_model(self.bounded_model, context_mask=self.context_mask)
         loss = -self.objective_fn(self.bounded_model, self.obj_alpha)
-        soft_min_acc = _get_min_acc(
-            self.bounded_model, X, y, soft=True, context_mask=self.context_mask
-        )
-        min_acc = _get_min_acc(
-            self.bounded_model, X, y, soft=False, context_mask=self.context_mask
-        )
 
-        self.defect = self.min_acc_limit - soft_min_acc
-        self.defect_strict = self.min_acc_limit - min_acc
-        constraint_state = cooper.ConstraintState(
-            violation=self.defect, strict_violation=self.defect_strict
-        )
-        observed_constraints = {self.constraint: constraint_state}
+        misc_info = {}
+        observed_constraints = {}
+        for i, task in enumerate(self.task_labels):
+            mask = torch.isin(y, torch.tensor(task).to(y.device))
+            if not mask.any():
+                continue
+            inputs = X[mask]
+            targets = y[mask]
+            if self.domain_map_fn is not None:
+                targets = self.domain_map_fn(targets)
+
+            soft_min_acc = _get_min_acc(
+                self.bounded_model,
+                inputs,
+                targets,
+                soft=True,
+                context_mask=self.context_mask,
+            )
+            min_acc = _get_min_acc(
+                self.bounded_model,
+                inputs,
+                targets,
+                soft=False,
+                context_mask=self.context_mask,
+            )
+
+            defect = self.min_acc_limits[i] - soft_min_acc
+            setattr(self, f"defect{i}", defect)
+            defect_strict = self.min_acc_limits[i] - min_acc
+            setattr(self, f"defect_strict{i}", defect_strict)
+            constraint_state = cooper.ConstraintState(
+                violation=getattr(self, f"defect{i}"),
+                strict_violation=getattr(self, f"defect_strict{i}"),
+            )
+
+            misc_info = misc_info | {
+                "obj": -loss.item(),
+                "defect": getattr(self, f"defect{i}").item(),
+                "strict_defect": getattr(self, f"defect_strict{i}").item(),
+                "min_acc": min_acc.item(),
+                "min_soft_acc": soft_min_acc.item(),
+                "penalty": getattr(self, f"constraint{i}").penalty_coefficient().item(),
+            }
+            observed_constraints = observed_constraints | {
+                getattr(self, f"constraint{i}"): constraint_state
+            }
+
         self.penalty_updater.step(observed_constraints)  # type: ignore
-        self.constraint.penalty_coefficient.value.clamp_(max=1e3)
+        for constraint in observed_constraints.keys():
+            constraint.penalty_coefficient.value.clamp_(max=1e3)
+
         return cooper.CMPState(
             loss=loss,
             observed_constraints=observed_constraints,
-            misc={
-                "obj": -loss.item(),
-                "defect": self.defect.item(),
-                "strict_defect": self.defect_strict.item(),
-                "min_acc": min_acc.item(),
-                "min_soft_acc": soft_min_acc.item(),
-                "penalty": self.constraint.penalty_coefficient().item(),
-            },
+            misc=misc_info,
         )
 
 
@@ -226,11 +267,21 @@ def get_lr_schedulers(
 
     def lr_lambda(*args) -> float:
         nonlocal current_multiplier
+        max_violation = torch.max(
+            torch.tensor(
+                [getattr(cmp, f"defect_strict{i}") for i in range(len(cmp.task_labels))]
+            )
+        )
+        min_violation = torch.min(
+            torch.tensor(
+                [getattr(cmp, f"defect_strict{i}") for i in range(len(cmp.task_labels))]
+            )
+        )
         if (
-            cmp.defect_strict > 0.05
+            max_violation > 0.05
         ):  # decrease primal lr when constraint is violated with margin
             current_multiplier /= 1.1
-        elif cmp.defect_strict < 0.0:  # increase primal lr when constraint is satisfied
+        elif min_violation < 0.0:  # increase primal lr when constraint is satisfied
             current_multiplier *= 1.1
         current_multiplier = min(
             max(current_multiplier, 1 / 20), 20
@@ -277,6 +328,7 @@ def compute_rashomon_set(
     param_select_fn: Callable | None = None,
     domain_map_fn: Callable | None = None,
     param_mask: Iterable | None = None,
+    task_labels: list[tuple[float]] = None,
 ) -> tuple[list[IntervalBoundedModel], list[float]]:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -312,7 +364,10 @@ def compute_rashomon_set(
             If checkpoint is not -1, returns a list of models at each checkpoint.
         certificates (list[float]): The certificates for each checkpoint.
     """
-    print(f"{' Computing Rashomon set ':-^80}")
+    min_acc_limits = []
+    if isinstance(min_acc_limit, list):
+        min_acc_limits = min_acc_limit
+        min_acc_limit = min_acc_limit[-1]
     device = next(model.parameters()).device
     objective_fn = custom_objective if custom_objective is not None else _objective_fn
 
@@ -341,7 +396,10 @@ def compute_rashomon_set(
 
     # Create the dataloader for the optimization, and get sample the batch we use for our final certificates
     dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=True
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(42),
     )
     # Get the batch of data we'll use to report our certificates w.r.t.
     dl_cert = torch.utils.data.DataLoader(
@@ -399,11 +457,12 @@ def compute_rashomon_set(
         bounded_model,
         dataloader=dataloader,
         objective_fn=objective_fn,
-        min_acc_limit=min_acc_limit,
+        min_acc_limits=min_acc_limits or min_acc_limit,
         penalty_coefficient=penalty_coefficient,
         obj_alpha=obj_alpha,
         context_mask=context_mask,
         domain_map_fn=domain_map_fn,
+        task_labels=task_labels,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -521,6 +580,7 @@ def create_violation_mask(model: nn.Module, bounded_model: BoundedModel):
 
     return mask
 
+
 def max_loss(y_pred: torch.Tensor, y_true: torch.Tensor):
     y_true = y_true.squeeze(dim=-1)
     y_true_one_hot = torch.nn.functional.one_hot(
@@ -545,3 +605,20 @@ def min_acc(y_true: torch.Tensor, y_pred: torch.Tensor):
         torch.ones_like(y_true_one_hot) - y_true_one_hot
     ) * pred_u  # get upper bound prediction for non targets
     return torch.sum(torch.argmax(min_log, dim=1) == y_true) / y_pred.shape[0]
+
+
+def get_balanced_min_acc(
+    bounded_model: IntervalBoundedModel,
+    X: torch.Tensor,
+    y: torch.Tensor,
+    lower: bool = True,
+    context_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Compute the balanced minimum accuracy (average of recall for each class)
+    of the model on the given data using IBP."""
+    logits = IntervalTensor(*bounded_model.bound_forward(X, X))
+    if context_mask is not None:
+        logits = logits * context_mask
+
+    acc = verify.bound_balanced_accuracy(logits, y, lower=lower)
+    return acc

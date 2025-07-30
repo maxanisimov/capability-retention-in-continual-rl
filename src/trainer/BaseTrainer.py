@@ -1,6 +1,6 @@
 from src.regulariser.BaseRegulariser import BaseRegulariser
 from abstract_gradient_training.bounded_models import IntervalBoundedModel
-from src.utils import print_bold, InContextHead, print_colored
+from src.utils.general import print_bold, InContextHead, print_colored
 
 from abc import ABC, abstractmethod
 from typing import Tuple, Callable
@@ -30,9 +30,10 @@ class BaseTrainer(ABC):
         if seed is not None:
             self.set_seed(seed)
         self.paradigm = paradigm
+
+        self.domain_map_fn = domain_map_fn
         if paradigm == "DIL":
             assert domain_map_fn, "domain_map_fn required for DIL"
-            self.domain_map_fn = domain_map_fn
 
     def set_seed(self, seed: int) -> None:
         random.seed(seed)
@@ -98,7 +99,9 @@ class BaseTrainer(ABC):
             train_data,
             batch_size=kwargs.get("batch_size", 32),
             shuffle=True,
-            generator=torch.Generator().manual_seed(self.seed) if self.seed is not None else None,
+            generator=torch.Generator().manual_seed(self.seed)
+            if self.seed is not None
+            else None,
         )
         val_loader = DataLoader(
             val_data, batch_size=kwargs.get("batch_size", 32), shuffle=False
@@ -112,6 +115,8 @@ class BaseTrainer(ABC):
             ),
         )
         loss_fn = kwargs.get("loss_fn", nn.CrossEntropyLoss())
+        if "loss_fn" in kwargs:
+            del kwargs["loss_fn"]
 
         self._set_context(self.model, kwargs.get("context_id", None))
         self.model = self._train(
@@ -181,7 +186,8 @@ class BaseTrainer(ABC):
                 )
             )
 
-        print_bold(f"Test Results: {outputs}")
+        losses, accs = zip(*outputs)
+        print_bold(f"Test Results: {outputs} (Avg: ({np.mean(losses):.4f}, {np.mean(accs):.4f}))")
         return outputs
 
     @abstractmethod

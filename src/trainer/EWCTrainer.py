@@ -1,25 +1,71 @@
-from src.trainer.BaseTrainer import BaseTrainer
-from src.regulariser.BaseRegulariser import BaseRegulariser
-
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
+from src.trainer import SimpleTrainer
+from src.regulariser import BaseRegulariser
 from typing import Callable
+
+import torch.nn as nn
+import torch
 from tqdm import tqdm
+from torch.utils.data import Dataset
 
 
-class SimpleTrainer(BaseTrainer):
+class EWCTrainer(SimpleTrainer):
     def __init__(
         self,
         model: nn.Module,
-        paradigm: str = None,
-        domain_map_fn: Callable = None,
         seed: int = 42,
-        **kwargs: dict,
+        paradigm: str = "TIL",
+        domain_map_fn: Callable = None,
+        lmbd: float = 0.3,
+        **kwargs: dict
     ):
         super().__init__(
-            model=model, paradigm=paradigm, domain_map_fn=domain_map_fn, seed=seed
+            model, seed=seed, paradigm=paradigm, domain_map_fn=domain_map_fn
         )
+
+        self.fisher_at_task = []
+        self.params_at_task = []
+        self.lmbd = lmbd
+
+    def compute_fisher_information(
+        self,
+        model: nn.Module,
+        dataset: Dataset,
+        loss_fn: Callable,
+        context_id: int = None,
+        batch_size: int = 32,
+    ) -> None:
+        X, y = next(
+            iter(
+                torch.utils.data.DataLoader(
+                    dataset,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    generator=torch.Generator().manual_seed(self.seed)
+                    if self.seed is not None
+                    else None,
+                )
+            )
+        )
+        X, y = X.to(self.device), y.to(self.device)
+        if self.domain_map_fn is not None:
+            y = self.domain_map_fn(y)
+        self._set_context(model, context_id=context_id)
+
+        parameters = list(model.parameters())
+
+        for p in parameters:
+            p.requires_grad = True
+            p.grad = None
+
+        logits = model.forward(X)
+        loss = loss_fn(logits, y)
+        loss.backward()
+        fisher = [p.grad.pow(2).detach() for p in parameters]
+
+        params = [p.clone().detach() for p in model.parameters()]
+
+        self.fisher_at_task.append(fisher)
+        self.params_at_task.append(params)
 
     def _train_step(
         self,
@@ -42,8 +88,9 @@ class SimpleTrainer(BaseTrainer):
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = loss_fn(outputs, targets)
-        if regulariser is not None:
-            loss += regulariser(model=model, inputs=inputs, targets=targets)
+        for task_fisher, task_params in zip(self.fisher_at_task, self.params_at_task):
+            for p, f, pp in zip(model.parameters(), task_fisher, task_params):
+                loss += (self.lmbd / 2) * (f * (p - pp).pow(2)).sum()
         loss.backward()
         optimizer.step()
 
@@ -54,8 +101,8 @@ class SimpleTrainer(BaseTrainer):
     def _train(
         self,
         model: nn.Module,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
+        train_loader: torch.utils.data.DataLoader,
+        val_loader: torch.utils.data.DataLoader,
         optimizer: torch.optim.Optimizer,
         loss_fn: Callable,
         epochs: int = 5,
@@ -66,30 +113,16 @@ class SimpleTrainer(BaseTrainer):
         best_val_loss = float("inf")
         epochs_no_improve = 0
         best_model_state = None
+        val_acc = None
         stopping = False
-        val_loss, val_acc = 0, 0
 
-        pbar = tqdm(range(epochs), desc="Training Epochs")
-        for epoch in pbar:
+        self._set_context(model, kwargs.get("context_id", None))
+
+        for epoch in (pbar := tqdm(range(epochs), desc="Training Epochs")):
             model.train()
             for i, (inputs, targets) in enumerate(train_loader):
                 loss, _ = self._train_step(
-                    model,
-                    inputs,
-                    targets,
-                    optimizer,
-                    loss_fn,
-                    regulariser,
-                    context_id=kwargs.get("context_id", None),
-                )
-
-                pbar.set_postfix(
-                    {
-                        "train_loss": f"{loss.item():.4f}",
-                        "val_loss": val_loss,
-                        "val_acc": val_acc,
-                        "progress": f"{i / len(train_loader):.2f}"
-                    }
+                    model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
                 if max(1, i) % kwargs.get("val_freq", 100) == 0:
@@ -97,15 +130,15 @@ class SimpleTrainer(BaseTrainer):
                         model,
                         val_loader,
                         loss_fn,
-                        context_id=kwargs.get("context_id", None),
+                        kwargs.get("context_id", None),
                     )
 
                     pbar.set_postfix(
                         {
-                            "val_loss": val_loss,
-                            "val_acc": val_acc,
-                            "train_loss": f"{loss.item():.4f}",
-                            "progress": f"{i / len(train_loader):.2f}"
+                            "val_loss": f"{val_loss:.4f}",
+                            "val_acc": f"{val_acc:.4f}"
+                            if val_acc is not None
+                            else None,
                         }
                     )
 
@@ -131,28 +164,12 @@ class SimpleTrainer(BaseTrainer):
             if stopping:
                 break
 
+        self.compute_fisher_information(
+            model,
+            train_loader.dataset,
+            loss_fn,
+            context_id=kwargs.get('context_id', None),
+            batch_size=kwargs.get("fisher_batch", 32),
+        )
+
         return model
-
-    @torch.no_grad()
-    def _test(
-        self, test_loader: DataLoader, loss_fn: Callable, **kwargs: dict
-    ) -> tuple[float, float]:
-        self.model.eval()
-        total_loss = 0.0
-        correct = 0
-
-        for inputs, targets in test_loader:
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-
-            if hasattr(self, "domain_map_fn") and self.domain_map_fn:
-                targets = self.domain_map_fn(targets)
-
-            outputs = self.model(inputs)
-            loss = loss_fn(outputs, targets)
-            total_loss += loss.item()
-            correct += (outputs.argmax(dim=1) == targets).sum().item()
-
-        avg_loss = total_loss / len(test_loader)
-        accuracy = correct / len(test_loader.dataset)
-
-        return round(avg_loss, 4), round(accuracy, 4)

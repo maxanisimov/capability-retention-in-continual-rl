@@ -2,7 +2,7 @@ from src.trainer.BaseTrainer import BaseTrainer
 from src.regulariser.BaseRegulariser import BaseRegulariser
 from abstract_gradient_training.bounded_models import BoundedModel
 import src.interval_utils as interval_utils
-from src import utils
+import src.utils.general as utils
 
 import torch
 import torch.nn as nn
@@ -35,6 +35,8 @@ class IntervalTrainer(BaseTrainer):
         self.bounds = []
         self.paradigm = paradigm
         self.rashomon_kwargs = rashomon_kwargs
+        self.final_certificates = []
+        self.certificates = None
 
     def get_current_bbox(self) -> BoundedModel | None:
         """Get the current bounding box."""
@@ -55,6 +57,9 @@ class IntervalTrainer(BaseTrainer):
         X: torch.Tensor | None = None,
         y: torch.Tensor | None = None,
     ) -> None:
+        if not bounds: # No need to project if bounds are yet to be computed
+            return
+        
         distances = []
         for i, bounded_model in enumerate(bounds):
             distance = 0
@@ -146,8 +151,8 @@ class IntervalTrainer(BaseTrainer):
         if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
             y = self.domain_map_fn(y)
 
-        task_acc = (self.model(X).argmax(dim=1) == y).float().mean()
         self._set_context(self.model, context_id)
+        task_acc = (self.model(X).argmax(dim=1) == y).float().mean()
         if isinstance(self.model[-1], utils.InContextHead):
             model = self.model[:-1]
             context_mask = self.model[-1].mask
@@ -155,10 +160,12 @@ class IntervalTrainer(BaseTrainer):
             model = self.model
             context_mask = None
 
-        if self.min_acc_increment and self.min_acc_limit:
+        if isinstance(self.min_acc_limit, list):
+            min_acc_limit = self.min_acc_limit
+        elif self.min_acc_increment and self.min_acc_limit:
             min_acc_limit = min(max(task_acc - self.min_acc_increment, task_acc / 2), self.min_acc_limit)
         elif self.min_acc_increment:
-            min_acc_limit = task_acc - self.min_acc_increment
+            min_acc_limit = max(task_acc - self.min_acc_increment, task_acc / 2)
         elif self.min_acc_limit:
             min_acc_limit = self.min_acc_limit
         else:
@@ -231,14 +238,12 @@ class IntervalTrainer(BaseTrainer):
         regulariser: BaseRegulariser = None,
         **kwargs: dict,
     ) -> nn.Module:
-        assert self.bounds, "Bounds must have been computed prior to calling train."
-
-        self._project_parameters(model, self.bounds)
 
         best_val_loss = float("inf")
         epochs_no_improve = 0
         best_model_state = None
         val_acc = None
+        val_loss = 0
         stopping = False
 
         self._set_context(model, kwargs.get("context_id", None))
@@ -250,7 +255,18 @@ class IntervalTrainer(BaseTrainer):
                     model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
-                if not i % kwargs.get("val_freq", 10):
+                pbar.set_postfix(
+                    {
+                        "val_loss": f"{val_loss:.4f}",
+                        "val_acc": f"{val_acc:.4f}"
+                        if val_acc is not None
+                        else None,
+                        "proj": self._last_projection,
+                        "progress": f"{i / len(train_loader):.2f}"
+                    }
+                )
+
+                if max(1, i) % kwargs.get("val_freq", 100) == 0:
                     val_loss, val_acc = self._validate_model(
                         model,
                         val_loader,
@@ -265,6 +281,7 @@ class IntervalTrainer(BaseTrainer):
                             if val_acc is not None
                             else None,
                             "proj": self._last_projection,
+                            "progress": f"{i / len(train_loader):.2f}"
                         }
                     )
 
@@ -289,6 +306,9 @@ class IntervalTrainer(BaseTrainer):
                             best_model_state = model.state_dict()
             if stopping:
                 break
+        
+        if self._last_projection is not None and not hasattr(self, 'buffer'):
+            self.final_certificates.append(self.certificates[self._last_projection])
 
         return model
 
