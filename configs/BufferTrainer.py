@@ -10,13 +10,15 @@ MNIST = interval_config["MNIST"] | {
     "buffer_k": 200
 }
 
-CONFIG = interval_config["CIFAR"] | {
-    "initial_target_acc": 0.7,
-    "max_buffer_calls": 7,
-    "target_acc": 0.6,
+CIFAR = interval_config["CIFAR"] | {
     "loosening_thresh": 0.025,
     "loosening_step": 0.01,
-    "buffer_k": 200
+    "buffer_k": 200,
+    "min_acc_increment": 0.2,
+    'projection_strategy': 'best_loss',
+    "checkpoint": 2,
+    "lr": 0.02,
+    "batch_size": 128
 }
 
-CONFIG = {"MNIST": MNIST, "CIFAR": None}
+CONFIG = {"MNIST": MNIST, "CIFAR": CIFAR}
