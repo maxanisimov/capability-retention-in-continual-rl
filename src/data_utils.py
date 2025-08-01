@@ -2,7 +2,7 @@ import torch
 import torchvision
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset, random_split, Subset, DataLoader
-from typing import Tuple
+from typing import Tuple, Callable
 import os
 import numpy as np
 
@@ -317,7 +317,8 @@ def balance_dataset_by_duplication(dataset):
         elif label == 1:
             class_1_indices.append(i)
         else:
-            raise ValueError(f"Dataset contains classes other than 0 and 1: {label}")
+            print("Dataset contains labels other than 0 or 1, won't balance.")
+            return dataset
 
     # Step 2: Duplicate class 1 to match class 0
     n_0 = len(class_0_indices)
@@ -353,12 +354,13 @@ class NpyDataset(torch.utils.data.Dataset):
         return self._labels.shape[0]
 
     def __getitem__(self, idx):
-        return torch.from_numpy(self._features[idx]), torch.tensor(self._labels[idx])
+        return torch.from_numpy(self._features[idx]), torch.tensor(self._labels[idx]).long()
 
 class EmbeddingDatasetExtractor:
-    def __init__(self, base_path: str):
+    def __init__(self, base_path: str, label_map_fn: Callable[[np.ndarray], np.ndarray] | None = None):
         self._base_path = base_path
         self._dataset_cache = {}
+        self._label_map_fn = label_map_fn
 
     def get_embedding_dataset(
         self, model_name: str, dataset_name: str, val_ratio: float = 0.1, seed=42, balance=True, use_cache=True
@@ -373,6 +375,9 @@ class EmbeddingDatasetExtractor:
                 os.path.join(self._base_path, f"{dataset_name}_{model_name}_features.npy"),
                 os.path.join(self._base_path, f"{dataset_name}_{model_name}_labels.npy"),
             )
+            if self._label_map_fn is not None:
+                print("Applying map function to labels...")
+                dataset._labels = self._label_map_fn(dataset._labels)
             dataset_size = len(dataset)
             val_size = int(dataset_size * val_ratio)
 
