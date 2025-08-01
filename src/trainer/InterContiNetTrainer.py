@@ -60,6 +60,10 @@ class InterContiNetTrainer(BaseTrainer):
         **kwargs: dict,
     ):
         self._set_context(self.model, context_id)
+        if not self.min_acc_limit:
+            print("Target acc == 0, no need to recompute LID.")
+            self.final_certificates.append(0)
+            return
         
         dual = DualModel(
             self.model,
@@ -71,7 +75,7 @@ class InterContiNetTrainer(BaseTrainer):
                 for i in range(0, len(list(self.model.parameters())), 2)
             ],
             epsilons=self.epsilons,
-            default_epsilon=self.rashomon_kwargs.get("default_eps", 0.1),
+            default_epsilon=self.rashomon_kwargs.get("default_eps", 1),
             seed=self.seed,
         )
         loader = DataLoader(
@@ -102,6 +106,7 @@ class InterContiNetTrainer(BaseTrainer):
                     end = True
                     break
                 loss.backward()
+                # print("eps gradient sum:", max([torch.max(p.grad).item() for p in dual.parameters() if p.grad is not None]))
                 optimizer.step()
 
             eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in dual.extract_epsilons()])
@@ -112,7 +117,7 @@ class InterContiNetTrainer(BaseTrainer):
                 break
         
         self.epsilons = dual.extract_epsilons()
-        self.final_certificates.append(acc)
+        self.final_certificates.append(acc.item())
 
         eps_size = sum([(torch.sum(w) + torch.sum(b)).item() for w, b in self.epsilons])
         print(f"LID size: {eps_size:.4f} with certificate of {acc}.")
@@ -177,8 +182,6 @@ class InterContiNetTrainer(BaseTrainer):
         for epoch in (pbar := tqdm.trange(epochs, desc="Training Epochs")):
             model.train()
             for i, (inputs, targets) in enumerate(train_loader):
-                if hasattr(self, "domain_map_fn") and self.domain_map_fn:
-                    targets = self.domain_map_fn(targets)
                 loss, _ = self._train_step(
                     wrapped, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
@@ -245,7 +248,7 @@ class InterContiNetTrainer(BaseTrainer):
         return round(avg_loss, 4), round(accuracy, 4)
     
 class DualModel(nn.Module):
-    def __init__(self, model, prev_params, epsilons=None, default_epsilon=0.1, seed=43):
+    def __init__(self, model, prev_params, epsilons=None, default_epsilon=0.1, seed=42):
         super().__init__()
         self.device = next(model.parameters()).device
         self.model = copy.deepcopy(model)
@@ -369,12 +372,12 @@ class ModelWrapper(nn.Module):
         self.device = next(model.parameters()).device
         self.model = copy.deepcopy(model)
         self.weight_u = [
-            nn.Parameter(torch.full_like(m.weight, 5)).to(self.device)
+            nn.Parameter(torch.randn_like(m.weight)).to(self.device)
             for m in model
             if self.valid_layer(m)
         ]
         self.bias_u = [
-            nn.Parameter(torch.full_like(m.bias, 5)).to(self.device)
+            nn.Parameter(torch.randn_like(m.bias)).to(self.device)
             for m in model
             if self.valid_layer(m)
         ]

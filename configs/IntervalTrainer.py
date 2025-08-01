@@ -16,4 +16,11 @@ MNIST = {
     "batch_size": 64,
 }
 
-CONFIG = {"MNIST": MNIST, "CIFAR": None}
+CIFAR = MNIST | {
+    "projection_strategy": "best_loss",
+    "min_acc_increment": 0.2,
+    "lr": 0.02,
+    "batch_size": 128
+}
+
+CONFIG = {"MNIST": MNIST, "CIFAR": CIFAR}
