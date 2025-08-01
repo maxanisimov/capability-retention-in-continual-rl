@@ -8,12 +8,12 @@ plt.style.use(["science", "no-latex", "scatter"])
 
 # set plotting context
 tex_fonts = {
-    "axes.labelsize": 10,
-    "font.size": 10,
+    "axes.labelsize": 8,
+    "font.size": 8,
     "legend.fontsize": 8,
     "xtick.labelsize": 8,
     "ytick.labelsize": 8,
-    "axes.titlesize": 10,
+    "axes.titlesize": 8,
 }
 
 plt.rcParams.update(tex_fonts)
