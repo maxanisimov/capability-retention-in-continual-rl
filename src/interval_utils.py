@@ -145,6 +145,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             if isinstance(min_acc_limits, list)
             else [min_acc_limits] * 5
         )  # TODO: *5 implies 5 tasks, so not dynamic
+        print(self.min_acc_limits)
         self.context_mask = context_mask
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn
@@ -186,21 +187,32 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
 
         X, y = X.to(self.bounded_model.device), y.to(self.bounded_model.device)
 
+        curr_context_mask = self.context_mask
+        # print("original context_mask:", self.context_mask)
         # apply projection
         _project_bounded_model(self.bounded_model, context_mask=self.context_mask)
         loss = -self.objective_fn(self.bounded_model, self.obj_alpha)
 
         misc_info = {}
         observed_constraints = {}
+        encountered_tasks = 0
         for i, task in enumerate(self.task_labels):
             mask = torch.isin(y, torch.tensor(task).to(y.device))
             if not mask.any():
                 continue
+            encountered_tasks += 1
             inputs = X[mask]
             targets = y[mask]
+
+            if encountered_tasks > 1:
+                # Set the context mask properly in TIL
+                if self.context_mask is not None:
+                    self.context_mask = torch.zeros_like(self.context_mask)
+                    for i in self.task_labels[i]:
+                        self.context_mask[i] = 1
+                # print(self.context_mask)
             if self.domain_map_fn is not None:
                 targets = self.domain_map_fn(targets)
-
             soft_min_acc = _get_min_acc(
                 self.bounded_model,
                 inputs,
@@ -236,6 +248,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             observed_constraints = observed_constraints | {
                 getattr(self, f"constraint{i}"): constraint_state
             }
+
+        self.context_mask = curr_context_mask
 
         self.penalty_updater.step(observed_constraints)  # type: ignore
         for constraint in observed_constraints.keys():

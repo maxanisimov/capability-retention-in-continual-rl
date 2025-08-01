@@ -8,7 +8,7 @@ import wandb
 import torch
 
 config = {
-    "ours": True,
+    "ours": False,
     "init.projection_strategy": CONFIG["projection_strategy"],
     "init.n_certificate_samples": CONFIG["n_certificate_samples"],
     "init.min_acc_limit": CONFIG["min_acc_limit"],
@@ -26,16 +26,16 @@ config = {
     "train.epochs": CONFIG["epochs"],
     "train.batch_size": CONFIG["batch_size"],
     "benchmarks": {
-        "ewc": {"lmbd": 1e6, "fisher_batch": 64},
-        "sgd": None,
-        "lwf": {"lmbd": 0.05, "temp": 2, "lr": 0.001, "weight_decay": 0.01},
-        "icn": {"lr": 0.01, "batch_size": 128, "epochs": 30, "lid_lr": 100},
+        # "ewc": {"lmbd": 1e6, "fisher_batch": 64},
+        # "sgd": None,
+        # "lwf": {"lmbd": 0.001, "temp": 2, "lr": 0.001},
+        "icn": {"lr": 0.01, "batch_size": 128, "epochs": 15, "lid_lr": 100},
     },
 }
 
 
 def main():
-    tag = "final_mnist_til_new"
+    tag = "final_mnist_til_icn"
     total_seeds = 100
     benchmark_tags = [
         f"final_mnist_til_{bench}" for bench in config["benchmarks"].keys()
@@ -52,7 +52,7 @@ def main():
     print(f"Found {n_runs} existing runs with tag '{tag}'")
     print(f"Initializing the remaining {total_seeds - n_runs} runs...")
 
-    for i in range(n_runs, total_seeds):
+    for i in range(100):
         set_seed(i)
         config["init.seed"] = i
         train_tasks, val_tasks, test_tasks = get_mnist_tasks(seed=config["init.seed"])

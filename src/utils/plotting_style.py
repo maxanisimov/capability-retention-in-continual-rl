@@ -3,6 +3,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.image import imread
 from tempfile import NamedTemporaryFile
+import scienceplots
 
 plt.style.use(["science", "no-latex", "scatter"])
 

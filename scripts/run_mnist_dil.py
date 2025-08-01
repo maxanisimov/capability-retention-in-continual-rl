@@ -15,7 +15,7 @@ def domain_map_fn(labels: torch.Tensor) -> torch.Tensor:
 
 
 config = {
-    "ours": True,
+    "ours": False,
     "init.projection_strategy": CONFIG["projection_strategy"],
     "init.n_certificate_samples": CONFIG["n_certificate_samples"],
     "init.min_acc_limit": CONFIG["min_acc_limit"],
@@ -33,10 +33,10 @@ config = {
     "train.epochs": CONFIG["epochs"],
     "train.batch_size": CONFIG["batch_size"],
     "benchmarks": {
-        "ewc": {"lmbd": 1e6, "fisher_batch": 64},
-        "sgd": None,
-        "lwf": {"lmbd": 0.05, "temp": 2},
-        "icn": {"lr": 0.01, "batch_size": 128, "epochs": 30, "lid_lr": 100},
+        # "ewc": {"lmbd": 1e6, "fisher_batch": 64},
+        # "sgd": None,
+        # "lwf": {"lmbd": 0.05, "temp": 2},
+        "icn": {"lr": 0.01, "batch_size": 128, "epochs": 5, "lid_lr": 1000},
     },
 }
 
@@ -59,7 +59,7 @@ def main():
     print(f"Found {n_runs} existing runs with tag '{tag}'")
     print(f"Initializing the remaining {total_seeds - n_runs} runs...")
 
-    for i in range(n_runs, total_seeds):
+    for i in range(100):
         set_seed(i)
         config["init.seed"] = i
         train_tasks, val_tasks, test_tasks = get_mnist_tasks(seed=config["init.seed"])

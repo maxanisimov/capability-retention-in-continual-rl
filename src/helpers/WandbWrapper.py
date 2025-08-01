@@ -128,7 +128,7 @@ class WandbTrainerWrapper:
                             else [None] * len(self.test_tasks),
                         )
                         accs = [res[1] for res in results]
-                        if i == 0 and accs[0] < 0.8:
+                        if i == 0 and accs[0] < 0.7:
                             print("Initial Accuracy too low.")
                             wandb.finish(1)
                             return
@@ -178,30 +178,10 @@ class WandbTrainerWrapper:
             bconfig = config.get("benchmark_config", None)
             for benchmark in config.get("benchmarks", {}).keys():
                 b_acc_matrix = []
-
-                if benchmark == "icn":
-                    context_sets = get_context_sets(self.test_tasks)
-                    head = (
-                        InContextHead(context_sets, 10, device="cuda")
-                        if init_args["paradigm"] == "TIL"
-                        else None
-                    )
-                    if head:
-                        head.set_context(0)
-                    icn_model = get_fully_connected_model(
-                        device="cuda",
-                        output_dim=2 if init_args["paradigm"] == "DIL" else 10,
-                        input_dim=self.static_kwargs.get("input_dim") or 28 * 28,
-                        hidden_dim=400,
-                        head=head,
-                        dense_layers=2,
-                        seed=self.seed,
-                    )
-
                 print(f"Running benchmark: {benchmark}.")
                 bconfig = config["benchmarks"][benchmark] or {}
                 bt = bt_trainers[benchmark](
-                    model=self.model if benchmark != "icn" else icn_model,
+                    model=self.model,
                     seed=self.seed,
                     paradigm=init_args["paradigm"],
                     domain_map_fn=self.domain_map_fn
@@ -222,6 +202,8 @@ class WandbTrainerWrapper:
                         fisher_batch=bconfig.get("fisher_batch", 64),
                         lr=bconfig.get("lr", 0.01),
                         weight_decay=bconfig.get("weight_decay", 0),
+                        epochs=bconfig.get("epochs", 5),
+                        batch_size=bconfig.get("batch_size", 128)
                     )
                     results = bt.test(
                         self.test_tasks,
@@ -229,27 +211,33 @@ class WandbTrainerWrapper:
                         if init_args["paradigm"] == "TIL"
                         else [None] * len(self.test_tasks),
                     )
+                    if benchmark == "icn" and not i and results[0][1] < 0.65:
+                        wandb.finish(1)
+                        return
                     if benchmark == "icn" and i < len(self.train_tasks) - 1:
-                        target_acc = min(
-                            max(
-                                results[i][1] - bt.min_acc_increment, results[i][1] / 2
-                            ),
-                            bt.min_acc_limit,
+                        target_acc = max(
+                            results[i][1] - bt.min_acc_increment, results[i][1] / 2
                         )
                         bt.min_acc_limit = target_acc
+                        print(target_acc)
                         bt.compute_rashomon_set(
                             test,
                             context_id=i if init_args["paradigm"] == "TIL" else None,
                             lr=bconfig["lid_lr"],
-                            batch_size=bconfig["batch_size"],
+                            batch_size=init_args["n_certificate_samples"],
                             epochs=1000,
                         )
                     b_acc_matrix.append([res[1] for res in results])
 
+                if benchmark == "icn":
+                    b_acc_matrix.append(bt.final_certificates + [0])
+
                 wandb.log(
                     {
                         f"accuracy_matrix_{benchmark}": wandb.Table(
-                            data=b_acc_matrix, columns=columns, rows=rows[:-1]
+                            data=b_acc_matrix,
+                            columns=columns,
+                            rows=rows[:-1] if benchmark != "icn" else rows,
                         )
                     }
                 )
