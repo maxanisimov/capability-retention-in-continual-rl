@@ -7,4 +7,13 @@ MNIST = {
     "l2_lambda": 0.01
 }
 
-CONFIG = {"MNIST": MNIST, "CIFAR": None}
+CIFAR = {
+    "batch_size": 256,
+    "epochs": 3,
+    "lr": 0.001,
+    "weight_decay": 0,
+    "unbias_lambda": 0.01,
+    "l2_lambda": 0.01
+}
+
+CONFIG = {"MNIST": MNIST, "CIFAR": CIFAR}

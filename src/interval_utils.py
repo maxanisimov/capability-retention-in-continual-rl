@@ -188,7 +188,6 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         X, y = X.to(self.bounded_model.device), y.to(self.bounded_model.device)
 
         curr_context_mask = self.context_mask
-        # print("original context_mask:", self.context_mask)
         # apply projection
         _project_bounded_model(self.bounded_model, context_mask=self.context_mask)
         loss = -self.objective_fn(self.bounded_model, self.obj_alpha)
@@ -207,10 +206,17 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             if encountered_tasks > 1:
                 # Set the context mask properly in TIL
                 if self.context_mask is not None:
-                    self.context_mask = torch.zeros_like(self.context_mask)
-                    for i in self.task_labels[i]:
-                        self.context_mask[i] = 1
-                # print(self.context_mask)
+                    # Create a new mask tensor filled with zeros with the same shape and device.
+                    # This is a non-in-place operation, which is safe for autograd.
+                    new_mask = torch.zeros_like(self.context_mask)
+
+                    # Use advanced indexing to set the specified task labels to 1.
+                    # This is also a non-in-place operation on the original tensor.
+                    new_mask[self.task_labels[i]] = 1
+
+                    # Replace the old mask with the new one.
+                    self.context_mask = new_mask
+
             if self.domain_map_fn is not None:
                 targets = self.domain_map_fn(targets)
             soft_min_acc = _get_min_acc(
