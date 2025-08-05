@@ -141,3 +141,29 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed + worker_id)
     random.seed(worker_seed + worker_id)
+
+
+def acc(X: torch.Tensor, y: torch.Tensor, model: torch.nn.Module) -> float:
+    in_train_mode = model.training
+    device = next(model.parameters()).device
+
+    model.eval()
+
+    X, y = X.to(device), y.to(device)
+    outputs = model(X)
+
+    if outputs.dim() > 1 and outputs.size(1) > 1:
+        # multi-class classification
+        preds = outputs.argmax(dim=1)
+    else:
+        # binary classification
+        preds = (outputs > 0.5).long().squeeze()
+
+    correct = (preds == y).sum().item()
+    total = y.shape[0]
+
+    if in_train_mode:
+        # set model back to model.training == True if it was True beforehand, to make sure outer loop can function with minimal disruption
+        model.train()
+
+    return correct / total

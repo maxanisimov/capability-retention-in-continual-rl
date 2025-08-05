@@ -543,7 +543,6 @@ class SmoothTrainer(BaseTrainer):
         batch: DataLoader,
         metric: Callable,
         bound: float,
-        steps: int,
         iterations: int,
         delta: float,
     ) -> float:

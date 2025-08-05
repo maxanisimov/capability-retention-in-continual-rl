@@ -145,7 +145,6 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             if isinstance(min_acc_limits, list)
             else [min_acc_limits] * 5
         )  # TODO: *5 implies 5 tasks, so not dynamic
-        print(self.min_acc_limits)
         self.context_mask = context_mask
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn

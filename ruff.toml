@@ -36,10 +36,9 @@ indent-width = 4
 target-version = "py39"
 
 [lint]
-# Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`) codes by default.
-# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
-# McCabe complexity (`C901`) by default.
-select = ["E4", "E7", "E9", "F"]
+# Enable Pyflakes (`F`), a subset of the pycodestyle (`E`) codes,
+# and the import sorting rules (`I`).
+select = ["E4", "E7", "E9", "F", "I"] # <-- ADDED "I" HERE
 ignore = []
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
@@ -48,6 +47,12 @@ unfixable = []
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# This section is optional but highly recommended to configure import sorting behavior
+[lint.isort]
+# You can define first-party packages here to ensure they are grouped correctly.
+# Replace "your_package_name" with the actual name of your package.
+known-first-party = ["your_package_name"]
 
 [format]
 # Like Black, use double quotes for strings.

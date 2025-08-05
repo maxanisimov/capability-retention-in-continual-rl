@@ -1,15 +1,14 @@
 from src.trainer import BaseSmoothTrainer
-from abstract_gradient_training.bounded_models import IntervalBoundedModel
 
-from typing import Callable
 import torch
 import torch.nn as nn
+from typing import Callable
 from tqdm import trange
-from scipy.stats import norm
 from statsmodels.stats.proportion import proportion_confint
+from scipy.stats import norm
 
 
-class SmoothTrainer(BaseSmoothTrainer):
+class EWCSmoothTrainer(BaseSmoothTrainer):
     def __init__(
         self,
         model: nn.Module,
@@ -37,80 +36,81 @@ class SmoothTrainer(BaseSmoothTrainer):
         bound: float,
         iterations: int,
         delta: float,
-        bounded_model: IntervalBoundedModel = None,
-        **kwargs,
-    ):
-        """
-        Initializes self.mu and self.scale from interval bounds and certifies the smoothing radius.
-        """
+        **kwargs: dict,
+    ) -> float:
+        self.model.eval()
+        params = [p for p in self.model.parameters() if p.requires_grad]
 
-        assert bounded_model, (
-            "SmoothTrainer.init_density requires bounded_model to be set."
-        )
+        fisher_diag = [torch.zeros_like(p) for p in params]
+
         X, y = batch[0].to(self.device), batch[1].to(self.device)
         if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
             y = self.domain_map_fn(y)
-        
+
+        self.model.zero_grad()
+        output = self.model(X)
+        print(output.shape)
+        print(y.shape)
+        loss_fn = kwargs.get("loss_fn", nn.CrossEntropyLoss())
+        loss = loss_fn(output, y)
+        loss.backward()
+        for i, p in enumerate(params):
+            if p.grad is not None:
+                fisher_diag[i] += p.grad.detach() ** 2
+
+        epsilon = 1e-8
+        self.mu = [p.detach().clone() for p in params]
+
+        raw_scale = [1.0 / torch.sqrt(fd + epsilon) for fd in fisher_diag]
+
+        max_scale = max([s.max().item() for s in raw_scale])
+
+        self.sigma = [s / (max_scale * 100) for s in raw_scale]
+
+        self.alpha = 1e-8
+        model = self.model
+
+        acc = metric(X, y, model)
+
+        assert acc > bound, (
+            f"Nominal accuracy {acc:.4f} does not exceed threshold {bound:.4f}"
+        )
+
         max_rad = -1e6
 
-        self.mu = [
-            p.detach().clone().to(torch.float32).to(self.device)
-            for p in self.model.parameters()
-        ]
-        widths = [
-            (param_u - param_l).to(torch.float32).to(self.device)
-            for param_l, param_u in zip(bounded_model.param_l, bounded_model.param_u)
-        ]
-
         for inflate in self.inflates:
-
-            test_scale = [w * inflate for w in widths]
-
-            # Step 3: Assert nominal accuracy
-            acc = metric(X, y, self.model)
-            assert acc >= bound, (
-                f"Nominal accuracy {acc:.4f} does not exceed threshold {bound:.4f}"
-            )
-
-            # Step 4: Run smoothing simulations
             success_count = 0
             for _ in trange(iterations):
                 new_params = []
-                for loc, scale in zip(self.mu, test_scale):
-                    noise = torch.normal(mean=0.0, std=scale)
-                    new_params.append((loc + noise).reshape(loc.shape))
+                for mu, sigma in zip(self.mu, self.sigma):
+                    noise = torch.normal(mean=0.0, std=sigma * inflate)
+                    new_params.append((mu + noise).reshape(mu.shape))
 
                 with torch.no_grad():
-                    for p, new_p in zip(self.model.parameters(), new_params):
+                    for p, new_p in zip(model.parameters(), new_params):
                         p.copy_(new_p)
 
-                perturbed_acc = metric(X, y, self.model)
+                perturbed_acc = metric(X, y, model)
+
                 if perturbed_acc >= bound:
                     success_count += 1
 
-            # Step 5: Restore nominal parameters
             with torch.no_grad():
-                for p, loc in zip(self.model.parameters(), self.mu):
-                    p.copy_(loc)
+                for p, mu in zip(model.parameters(), self.mu):
+                    p.copy_(mu)
 
-            # Step 6: Compute Clopper-Pearson bound
             lower_bound, _ = proportion_confint(
                 success_count * self.smooth_cheat,
                 iterations * self.smooth_cheat,
                 alpha=delta,
                 method="beta",
             )
-            print(
-                "Estimated success: ",
-                success_count / iterations,
-                " Lower bound: ",
-                lower_bound,
-            )
             lower_bound = float(lower_bound)
             certified_radius = norm.ppf(lower_bound) * inflate
 
             print(f"Certified L2 radius: {certified_radius:.4f}")
 
+            print(certified_radius)
             if certified_radius > max_rad:
                 max_rad = certified_radius
                 max_inflate = inflate
@@ -119,6 +119,6 @@ class SmoothTrainer(BaseSmoothTrainer):
 
         print("Max rad: ", max_rad, " inflate: ", max_inflate)
         print("Last rad: ", certified_radius, " last inflate: ", inflate)
-        self.sigma = [max_inflate * w for w in widths]
+        self.sigma = [max_inflate * w for w in self.sigma]
         self.alpha = max_rad
         return certified_radius

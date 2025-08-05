@@ -13,6 +13,10 @@ from .LwFTrainer import LwFTrainer
 from .AGEMTrainer import AGEMTrainer
 from .IntervalAGEMTrainer import IntervalAGEMTrainer
 from .AGEMBufferTrainer import AGEMBufferTrainer
+from .BaseSmoothTrainer import BaseSmoothTrainer
+from .SmoothTrainer import SmoothTrainer
+from .EWCSmoothTrainer import EWCSmoothTrainer
+from .LoRASmoothTrainer import LoRASmoothTrainer
 
 # The __all__ variable defines the public API of the package.
 # It specifies which names will be imported when a client uses `from src.trainer import *`.
@@ -30,5 +34,9 @@ __all__ = [
     "LwFTrainer",
     "AGEMTrainer",
     "IntervalAGEMTrainer",
-    "AGEMBufferTrainer"
+    "AGEMBufferTrainer",
+    "BaseSmoothTrainer",
+    "SmoothTrainer",
+    "EWCSmoothTrainer",
+    "LoRASmoothTrainer"
 ]

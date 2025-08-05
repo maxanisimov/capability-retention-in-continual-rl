@@ -88,7 +88,7 @@ class SimpleTrainer(BaseTrainer):
                         "train_loss": f"{loss.item():.4f}",
                         "val_loss": val_loss,
                         "val_acc": val_acc,
-                        "progress": f"{i / len(train_loader):.2f}"
+                        "progress": f"{i / len(train_loader):.2f}",
                     }
                 )
 
@@ -105,7 +105,7 @@ class SimpleTrainer(BaseTrainer):
                             "val_loss": val_loss,
                             "val_acc": val_acc,
                             "train_loss": f"{loss.item():.4f}",
-                            "progress": f"{i / len(train_loader):.2f}"
+                            "progress": f"{i / len(train_loader):.2f}",
                         }
                     )
 
