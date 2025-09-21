@@ -185,3 +185,4 @@ llm_final_results.txt
 *.log*
 figures/
 *.txt
+*.json
