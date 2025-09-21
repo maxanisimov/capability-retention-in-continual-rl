@@ -325,6 +325,12 @@ def _create_hook(mask: torch.Tensor):
 
     return hook_fn
 
+def update_context_mask_with_bounded_model(task_labels: list[int], current_mask: torch.Tensor, bounded_model: IntervalBoundedModel) -> tuple[torch.Tensor, IntervalBoundedModel]:
+    new_mask = torch.zeros_like(current_mask)
+    for label in task_labels:
+        new_mask[label] = 1
+
+    return new_mask, bounded_model
 
 def compute_rashomon_set(
     model: torch.nn.Sequential,
@@ -403,32 +409,59 @@ def compute_rashomon_set(
             hooks.append(pl.register_hook(_create_hook(m)))
             hooks.append(pu.register_hook(_create_hook(m)))
 
-    if context_mask is not None:
-        bounded_model.param_l[-1].data -= (1 - context_mask) * MAX_PARAMETER_WIDTH
-        bounded_model.param_u[-1].data += (1 - context_mask) * MAX_PARAMETER_WIDTH
-        bounded_model.param_l[-2].data -= (
-            (1 - context_mask) * MAX_PARAMETER_WIDTH
-        ).unsqueeze(1)
-        bounded_model.param_u[-2].data += (
-            (1 - context_mask) * MAX_PARAMETER_WIDTH
-        ).unsqueeze(1)
-
     # Create the dataloader for the optimization, and get sample the batch we use for our final certificates
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        generator=torch.Generator().manual_seed(42),
+        generator=torch.Generator().manual_seed(42),  # TODO: don't always use 42 seed
     )
     # Get the batch of data we'll use to report our certificates w.r.t.
+    encountered_tasks = 1
+    encountered_labels = []
+    if task_labels and len(task_labels) > 1:
+        X, y = next(
+            iter(
+                torch.utils.data.DataLoader(
+                    dataset, batch_size=len(dataset), shuffle=False
+                )
+            )
+        )
+        cert_tasks = []
+        for task in task_labels:
+            mask = torch.isin(y, torch.tensor(task).to(y.device))
+            if not mask.any():
+                continue
+            inputs = X[mask][:certificate_samples]
+            targets = y[mask][:certificate_samples]
+            cert_tasks.append(torch.utils.data.TensorDataset(inputs, targets))
+            encountered_labels += task
+        dataset = torch.utils.data.ConcatDataset(cert_tasks)
+        encountered_tasks = len(cert_tasks)
+
+    if context_mask is not None:
+        mask = context_mask
+        if encountered_labels:
+            mask = torch.zeros_like(context_mask)
+            for label in encountered_labels:
+                mask[label] = 1
+        bounded_model.param_l[-1].data -= (1 - mask) * MAX_PARAMETER_WIDTH
+        bounded_model.param_u[-1].data += (1 - mask) * MAX_PARAMETER_WIDTH
+        bounded_model.param_l[-2].data -= (
+            (1 - mask) * MAX_PARAMETER_WIDTH
+        ).unsqueeze(1)
+        bounded_model.param_u[-2].data += (
+            (1 - mask) * MAX_PARAMETER_WIDTH
+        ).unsqueeze(1)
     dl_cert = torch.utils.data.DataLoader(
         dataset,
-        batch_size=certificate_samples,
+        batch_size=certificate_samples * encountered_tasks,
         shuffle=True,
         generator=torch.Generator().manual_seed(42),
     )
     X_cert, y_cert = next(iter(dl_cert))
     X_cert, y_cert = X_cert.to(device), y_cert.to(device)
+    og_y_cert = y_cert
     if domain_map_fn is not None:
         y_cert = domain_map_fn(y_cert)
 
@@ -569,6 +602,30 @@ def compute_rashomon_set(
     # compute the final checkpoint certificates over the entire dataset
     print(f"Computing final certificates over {certificate_samples} samples")
     checkpoint_certs = []
+    multi_task_certs = []
+    print("Num cert samples:", len(og_y_cert))
+    if task_labels:
+        for j, m in enumerate(checkpoint_models):
+            certs = []
+            for i, task in enumerate(task_labels):
+                if not j:
+                    print("Task labels:", task)
+                mask = torch.isin(og_y_cert, torch.tensor(task).to(og_y_cert.device))
+                if not mask.any():
+                    certs.append(None)
+                    continue
+                inputs = X_cert[mask]
+                targets = y_cert[mask]
+
+                if context_mask is not None:
+                    context_mask, bounded_model = update_context_mask_with_bounded_model(task, context_mask, bounded_model)
+
+                cert = _get_min_acc(
+                    m, inputs, targets, soft=False, context_mask=context_mask
+                ).item()
+                certs.append(cert)
+            multi_task_certs.append(certs)
+
     for m in checkpoint_models:
         checkpoint_certs.append(
             _get_min_acc(
@@ -583,9 +640,12 @@ def compute_rashomon_set(
         checkpoint_sizes = [_bounded_model_width(m) for m in checkpoint_models]
         print(f"Checkpoints sizes: {[f'{c:.2f}' for c in checkpoint_sizes]}")
         print(f"Checkpoint certificates: {[f'{c:.2f}' for c in checkpoint_certs]}")
+        print(
+            f"Multitask certificates: {[f'[{[round(c, 2) if c is not None else None for c in cs]}]' for cs in multi_task_certs]}"
+        )
 
     print(f"{' Finished Computing Rashomon set ':-^80}")
-    return checkpoint_models, checkpoint_certs
+    return checkpoint_models, multi_task_certs if task_labels else checkpoint_certs
 
 
 def create_violation_mask(model: nn.Module, bounded_model: BoundedModel):

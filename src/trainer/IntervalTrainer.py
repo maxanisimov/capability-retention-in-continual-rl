@@ -36,7 +36,7 @@ class IntervalTrainer(BaseTrainer):
         self.paradigm = paradigm
         self.rashomon_kwargs = rashomon_kwargs
         self.final_certificates = []
-        self.certificates = None
+        self.certificates = []
 
     def get_current_bbox(self) -> BoundedModel | None:
         """Get the current bounding box."""
@@ -307,8 +307,15 @@ class IntervalTrainer(BaseTrainer):
             if stopping:
                 break
         
-        if self._last_projection is not None and not hasattr(self, 'buffer'):
-            self.final_certificates.append(self.certificates[self._last_projection])
+        if self._last_projection is not None:
+            if isinstance(self.certificates[-1], list):
+                for i, cert in enumerate(self.certificates[self._last_projection]):
+                    if cert is not None and i < len(self.final_certificates):
+                        self.final_certificates[i] = cert
+                    elif cert is not None:
+                        self.final_certificates.append(cert)
+            else:
+                self.final_certificates.append(self.certificates[self._last_projection])
 
         return model
 

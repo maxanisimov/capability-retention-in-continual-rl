@@ -34,29 +34,29 @@ class FisherTrainer(IntervalTrainer):
         self.fisher_matrix = None
 
     def _get_mask(
-        self, fisher_diagonal: list[torch.Tensor], percentage: float = 0.3
+        self, fisher_diagonal: list[torch.Tensor], percentage: float = 0.3, preserve_top: bool = True
     ) -> list[torch.Tensor]:
         all_scores = torch.cat([scores.view(-1) for scores in fisher_diagonal])
 
         if all_scores.numel() == 0:
             return [torch.zeros_like(s, dtype=torch.bool) for s in fisher_diagonal]
 
-        print("Parameter importance sum:", (torch.sum(all_scores).item()))
-        print("Non zero params:", torch.count_nonzero(all_scores).item())
         prune_fraction = percentage
         threshold = torch.quantile(all_scores, prune_fraction)
 
         print(
-            f"To keep top {1 - percentage:.0%}, found global Fisher threshold: {threshold.item():.8f}"
+            f"Found global SI threshold: {threshold.item():.8f}"
         )
 
         pruning_masks = []
         for scores in fisher_diagonal:
-            # True -> mask out param, False -> do not mask out
-            mask = scores < threshold
+            # True -> freeze parameter, False -> do not freeze parameter
+            mask = scores > threshold if preserve_top else scores < threshold
             pruning_masks.append(mask)
 
-        print("Remaining number of parameters:", sum([torch.count_nonzero(mask) for mask in pruning_masks]))
+        count_true = sum([torch.sum(mask).item() for mask in pruning_masks])
+        count_total = sum([mask.numel() for mask in pruning_masks])
+        print(f"Freezing {'MOST' if preserve_top else 'LEAST'} important {count_true} out of {count_total} parameters.")
 
         return pruning_masks
 
@@ -108,10 +108,10 @@ class FisherTrainer(IntervalTrainer):
             generator=torch.Generator().manual_seed(self.seed),
         )
         self._compute_fisher_diagonal(
-            next(iter(loader)), epochs=kwargs.get("fisher_epochs", None)
+            next(iter(loader)), epochs=kwargs.get("fisher_epochs", 10)
         )
         mask = (
-            self._get_mask(self.fisher_matrix, prune_prop)
+            self._get_mask(self.fisher_matrix, prune_prop, kwargs.get("preserve_top", False))
             if self.fisher_matrix
             else None
         )

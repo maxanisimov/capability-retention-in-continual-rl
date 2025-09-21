@@ -47,7 +47,7 @@ def run_buffer(buffer_size: int, seed: int, config: wandb.config, paradigm="TIL"
     regulariser = MultiRegulariser([l2, unbias])
 
     if buffer_size == SMALL:
-        sizes = [400, 400, 200, 0, 0]
+        sizes = [400, 200, 200, 200, 0]
     elif buffer_size == MEDIUM:
         sizes = [1400, 1200, 800, 600, 0]
     elif buffer_size == LARGE:
@@ -85,7 +85,12 @@ def run_buffer(buffer_size: int, seed: int, config: wandb.config, paradigm="TIL"
         MAX_BUFFER_CALLS = 3
     if buffer_size == LARGE:
         MAX_BUFFER_CALLS = 7
-    target_acc = CONFIG["target_acc"]
+    target_acc_mapping = {
+        "TIL": 0.95,
+        "DIL": 0.85,
+        "CIL": 0.65
+    }
+    target_acc = target_acc_mapping[paradigm]
     lower_bounds = []
     buffer_calls = []
     accuracy_matrix = []
@@ -163,15 +168,14 @@ def run_buffer(buffer_size: int, seed: int, config: wandb.config, paradigm="TIL"
 
         buffer_trainer.min_acc_limit = lower_bounds
 
-        if buffer_trainer._last_projection is not None:
-            buffer_trainer.final_certificates.append(buffer_trainer.certificates[buffer_trainer._last_projection])
         if i < len(train_tasks) - 1:
             buffer_trainer.compute_rashomon_set(test, context_id=i if paradigm == "TIL" else None)
             if len(buffer):
                 buffer_trainer.add_to_buffer(buffer, task_id=i, k=CONFIG["buffer_k"])
         else:
             print("Buffer calls:", buffer_calls)
-            accuracy_matrix.append(lower_bounds)
+            accuracy_matrix.append(buffer_trainer.final_certificates + [0])
+            print("final_certificates:", buffer_trainer.final_certificates)
             columns = [f"Test Task {i}" for i in range(len(test_tasks))]
             rows = [f"Task {i}" for i in range(len(test_tasks))] + ["Certificates"]
             wandb.log(
@@ -187,9 +191,9 @@ if __name__ == "__main__":
     SMALL = 1000
     MEDIUM = 5000
     LARGE = 15000
-    for i in range(14, 9, -1):
-        for paradigm in ["CIL", "DIL"]:
-            for (buffer_label, buffer_size) in [("large", LARGE)]:
+    for i in range(15):
+        for paradigm in ["CIL", "TIL", "DIL"]:
+            for (buffer_label, buffer_size) in [('small', SMALL), ('medium', MEDIUM), ('large', LARGE)]:
                 with wandb.init(project='certified-continual-learning', config=CONFIG, reinit=True, tags=["final_mnist_buffer", f"buffer_{buffer_label}", f"buffer_{paradigm.lower()}"]):
                     wandb.log({'seed': i})
                     config = wandb.config

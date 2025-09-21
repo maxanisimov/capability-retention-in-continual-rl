@@ -33,7 +33,7 @@ class SITrainer(IntervalTrainer):
         )
 
     def _get_mask(
-        self, si_scores: list[torch.Tensor], percentage: float = 0.3
+        self, si_scores: list[torch.Tensor], percentage: float = 0.3, preserve_top: bool = True
     ) -> list[torch.Tensor]:
         all_scores = torch.cat([scores.view(-1) for scores in si_scores])
 
@@ -44,14 +44,18 @@ class SITrainer(IntervalTrainer):
         threshold = torch.quantile(all_scores, prune_fraction)
 
         print(
-            f"To keep top {1 - percentage:.0%}, found global SI threshold: {threshold.item():.4f}"
+            f"Found global SI threshold: {threshold.item():.8f}"
         )
 
         pruning_masks = []
         for scores in si_scores:
-            # True -> mask out param, False -> do not mask out
-            mask = scores < threshold
+            # True -> freeze parameter, False -> do not freeze parameter
+            mask = scores > threshold if preserve_top else scores < threshold
             pruning_masks.append(mask)
+
+        count_true = sum([torch.sum(mask).item() for mask in pruning_masks])
+        count_total = sum([mask.numel() for mask in pruning_masks])
+        print(f"Freezing {'MOST' if preserve_top else 'LEAST'} important {count_true} out of {count_total} parameters.")
 
         return pruning_masks
 
@@ -105,7 +109,7 @@ class SITrainer(IntervalTrainer):
                 )
                 si.update_importance()
 
-            mask = self._get_mask(si.importance_scores, prune_prop)
+            mask = self._get_mask(si.importance_scores, prune_prop, kwargs.get("preserve_top", False))
         return super().compute_rashomon_set(
             dataset, callback, use_outer_bbox, context_id, param_mask=mask
         )
