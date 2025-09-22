@@ -4,7 +4,7 @@ import torch
 
 from src.verification.zonotope_tensor import ZonotopeTensor
 from src.verification.interval_tensor import IntervalTensor
-from src.utils import split_generators, InContextHead
+from src.utils.general import split_generators, InContextHead
 import sklearn
 
 # pylint: disable=not-callable

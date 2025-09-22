@@ -2,12 +2,12 @@ from src.trainer.BaseTrainer import BaseTrainer
 from src.regulariser.BaseRegulariser import BaseRegulariser
 from abstract_gradient_training.bounded_models import BoundedModel
 import src.interval_utils as interval_utils
-from src import utils
+import src.utils.general as utils
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import Callable
+from typing import Callable, Iterable
 from tqdm import tqdm
 
 
@@ -19,11 +19,14 @@ class IntervalTrainer(BaseTrainer):
         n_certificate_samples=256,
         min_acc_increment=0.05,
         min_acc_limit=0.9,
-        seed: int = 42,
         paradigm: str = "TIL",
+        domain_map_fn: Callable = None,
+        seed: int = 42,
         **rashomon_kwargs: dict,
     ):
-        super().__init__(model=model, seed=seed)
+        super().__init__(
+            model=model, paradigm=paradigm, domain_map_fn=domain_map_fn, seed=seed
+        )
         self._last_projection = None
         self.projection_strategy = projection_strategy
         self.n_certificate_samples = n_certificate_samples
@@ -31,13 +34,9 @@ class IntervalTrainer(BaseTrainer):
         self.min_acc_limit = min_acc_limit
         self.bounds = []
         self.paradigm = paradigm
-        if paradigm == "DIL":
-            self.domain_map_fn = rashomon_kwargs.get("domain_map_fn", None)
-            assert (
-                self.domain_map_fn is not None
-            ), "A domain map function has to be provided in DIL settings."
-            del rashomon_kwargs["domain_map_fn"]
         self.rashomon_kwargs = rashomon_kwargs
+        self.final_certificates = []
+        self.certificates = []
 
     def get_current_bbox(self) -> BoundedModel | None:
         """Get the current bounding box."""
@@ -58,6 +57,9 @@ class IntervalTrainer(BaseTrainer):
         X: torch.Tensor | None = None,
         y: torch.Tensor | None = None,
     ) -> None:
+        if not bounds: # No need to project if bounds are yet to be computed
+            return
+        
         distances = []
         for i, bounded_model in enumerate(bounds):
             distance = 0
@@ -134,6 +136,8 @@ class IntervalTrainer(BaseTrainer):
         callback: Callable | None = None,
         use_outer_bbox: bool = True,
         context_id: int | None = None,
+        param_mask: Iterable | None = None,
+        **kwargs: dict,
     ) -> None:
         """
         Compute the Rashomon set on the given data.
@@ -147,20 +151,21 @@ class IntervalTrainer(BaseTrainer):
         if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
             y = self.domain_map_fn(y)
 
-        task_acc = (self.model(X).argmax(dim=1) == y).float().mean().item()
-
+        self._set_context(self.model, context_id)
+        task_acc = (self.model(X).argmax(dim=1) == y).float().mean()
         if isinstance(self.model[-1], utils.InContextHead):
-            self.model[-1].set_context(context_id)
             model = self.model[:-1]
             context_mask = self.model[-1].mask
         else:
             model = self.model
             context_mask = None
 
-        if self.min_acc_increment and self.min_acc_limit:
-            min_acc_limit = min(task_acc - self.min_acc_increment, self.min_acc_limit)
+        if isinstance(self.min_acc_limit, list):
+            min_acc_limit = self.min_acc_limit
+        elif self.min_acc_increment and self.min_acc_limit:
+            min_acc_limit = min(max(task_acc - self.min_acc_increment, task_acc / 2), self.min_acc_limit)
         elif self.min_acc_increment:
-            min_acc_limit = task_acc - self.min_acc_increment
+            min_acc_limit = max(task_acc - self.min_acc_increment, task_acc / 2)
         elif self.min_acc_limit:
             min_acc_limit = self.min_acc_limit
         else:
@@ -179,6 +184,7 @@ class IntervalTrainer(BaseTrainer):
             if hasattr(self, "domain_map_fn")
             else None,
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
+            param_mask=param_mask,
             **self.rashomon_kwargs,
         )
         self.bounds = bounded_models
@@ -195,6 +201,8 @@ class IntervalTrainer(BaseTrainer):
         optimizer: torch.optim.Optimizer,
         loss_fn: Callable,
         regulariser: BaseRegulariser = None,
+        project: bool = True,
+        context_id: int = None,
         **kwargs: dict,
     ) -> tuple[float, float]:
         model.train()
@@ -202,20 +210,21 @@ class IntervalTrainer(BaseTrainer):
 
         if hasattr(self, "domain_map_fn") and self.domain_map_fn:
             targets = self.domain_map_fn(targets)
+        self._set_context(model, context_id)
 
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = loss_fn(outputs, targets)
         if regulariser is not None:
-            loss += regulariser(model=model, inputs=inputs)
+            loss += regulariser(model=model, inputs=inputs, targets=targets)
         loss.backward()
         optimizer.step()
+        if project:
+            self._project_parameters(model, self.bounds, inputs, targets)
 
-        self._project_parameters(model, self.bounds, inputs, targets)
+        acc = (outputs.argmax(dim=1) == targets).sum() / len(targets)
 
-        acc = (outputs.argmax(dim=1) == targets).sum().item() / len(targets)
-
-        return loss.item(), acc
+        return loss, acc
 
     def _train(
         self,
@@ -229,70 +238,84 @@ class IntervalTrainer(BaseTrainer):
         regulariser: BaseRegulariser = None,
         **kwargs: dict,
     ) -> nn.Module:
-        assert self.bounds, "Bounds must have been computed prior to calling train."
-
-        self._project_parameters(model, self.bounds)
 
         best_val_loss = float("inf")
         epochs_no_improve = 0
         best_model_state = None
         val_acc = None
+        val_loss = 0
+        stopping = False
 
-        if (
-            self.paradigm == "TIL"
-            and (context := kwargs.get("context_id", None)) is not None
-            and isinstance(model[-1], utils.InContextHead)
-        ):
-            model[-1].set_context(context)
+        self._set_context(model, kwargs.get("context_id", None))
 
         for epoch in (pbar := tqdm(range(epochs), desc="Training Epochs")):
             model.train()
-            for inputs, targets in train_loader:
+            for i, (inputs, targets) in enumerate(train_loader):
                 loss, _ = self._train_step(
                     model, inputs, targets, optimizer, loss_fn, regulariser, **kwargs
                 )
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{loss:.4f}",
-                    "val_acc": f"{val_acc:.4f}" if val_acc is not None else None,
-                    "proj": self._last_projection,
-                }
-            )
-
-            val_loss, val_acc = self._validate_model(
-                model,
-                val_loader,
-                loss_fn,
-                regulariser,
-                domain_map_fn=self.domain_map_fn
-                if hasattr(self, "domain_map_fn")
-                else None,
-            )
-
-            pbar.set_postfix(
-                {
-                    "loss": f"{loss:.4f}",
-                    "val_acc": f"{val_acc:.4f}" if val_acc is not None else None,
-                    "proj": self._last_projection,
-                }
-            )
-
-            if early_stopping:
-                stopping, epochs_no_improve = self.check_early_stopping(
-                    curr_loss=val_loss,
-                    prev_loss=best_val_loss if best_val_loss != float("inf") else None,
-                    patience=kwargs.get("patience", 5),
-                    no_improvement=epochs_no_improve,
+                pbar.set_postfix(
+                    {
+                        "val_loss": f"{val_loss:.4f}",
+                        "val_acc": f"{val_acc:.4f}"
+                        if val_acc is not None
+                        else None,
+                        "proj": self._last_projection,
+                        "progress": f"{i / len(train_loader):.2f}"
+                    }
                 )
 
-                if stopping:
-                    print(f"Early stopping at epoch {epoch + 1}")
-                    if best_model_state is not None:
-                        model.load_state_dict(best_model_state)
-                    break
-                else:
-                    best_model_state = model.state_dict()
+                if max(1, i) % kwargs.get("val_freq", 100) == 0:
+                    val_loss, val_acc = self._validate_model(
+                        model,
+                        val_loader,
+                        loss_fn,
+                        kwargs.get("context_id", None),
+                    )
+
+                    pbar.set_postfix(
+                        {
+                            "val_loss": f"{val_loss:.4f}",
+                            "val_acc": f"{val_acc:.4f}"
+                            if val_acc is not None
+                            else None,
+                            "proj": self._last_projection,
+                            "progress": f"{i / len(train_loader):.2f}"
+                        }
+                    )
+
+                    if early_stopping:
+                        stopping, epochs_no_improve = self.check_early_stopping(
+                            curr_loss=val_loss,
+                            prev_loss=best_val_loss
+                            if best_val_loss != float("inf")
+                            else None,
+                            patience=kwargs.get("patience", 5),
+                            no_improvement=epochs_no_improve,
+                        )
+
+                        best_val_loss = min(val_loss, best_val_loss)
+
+                        if stopping:
+                            print(f"Early stopping at epoch {epoch + 1}")
+                            if best_model_state is not None:
+                                model.load_state_dict(best_model_state)
+                            break
+                        elif val_loss == best_val_loss:
+                            best_model_state = model.state_dict()
+            if stopping:
+                break
+        
+        if self._last_projection is not None:
+            if isinstance(self.certificates[-1], list):
+                for i, cert in enumerate(self.certificates[self._last_projection]):
+                    if cert is not None and i < len(self.final_certificates):
+                        self.final_certificates[i] = cert
+                    elif cert is not None:
+                        self.final_certificates.append(cert)
+            else:
+                self.final_certificates.append(self.certificates[self._last_projection])
 
         return model
 
@@ -304,17 +327,10 @@ class IntervalTrainer(BaseTrainer):
         total_loss = 0.0
         correct = 0
 
-        if (
-            self.paradigm == "TIL"
-            and kwargs.get("context_id", None) is not None
-            and isinstance(self.model[-1], utils.InContextHead)
-        ):
-            self.model[-1].set_context(kwargs["context_id"])
-
         for i, (inputs, targets) in enumerate(test_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
-            if hasattr(self, "domain_map_fn"):
+            if hasattr(self, "domain_map_fn") and self.domain_map_fn:
                 targets = self.domain_map_fn(targets)
 
             outputs = self.model(inputs)

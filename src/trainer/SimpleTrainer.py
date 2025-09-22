@@ -10,10 +10,46 @@ from tqdm import tqdm
 
 class SimpleTrainer(BaseTrainer):
     def __init__(
-        self, model: nn.Module, domain_map_fn: Callable = None, seed: int = 42
+        self,
+        model: nn.Module,
+        paradigm: str = None,
+        domain_map_fn: Callable = None,
+        seed: int = 42,
+        **kwargs: dict,
     ):
-        super().__init__(model=model, seed=seed)
-        self.domain_map_fn = domain_map_fn
+        super().__init__(
+            model=model, paradigm=paradigm, domain_map_fn=domain_map_fn, seed=seed
+        )
+
+    def _train_step(
+        self,
+        model: nn.Module,
+        X: torch.Tensor,
+        y: torch.Tensor,
+        optimizer: torch.optim.Optimizer,
+        loss_fn: Callable,
+        regulariser: BaseRegulariser = None,
+        context_id: int = None,
+        **kwargs: dict,
+    ) -> tuple[float, float]:
+        model.train()
+        inputs, targets = X.to(self.device), y.to(self.device)
+
+        if hasattr(self, "domain_map_fn") and self.domain_map_fn:
+            targets = self.domain_map_fn(targets)
+        self._set_context(model, context_id)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        if regulariser is not None:
+            loss += regulariser(model=model, inputs=inputs, targets=targets)
+        loss.backward()
+        optimizer.step()
+
+        acc = (outputs.argmax(dim=1) == targets).sum() / len(targets)
+
+        return loss, acc
 
     def _train(
         self,
@@ -30,61 +66,70 @@ class SimpleTrainer(BaseTrainer):
         best_val_loss = float("inf")
         epochs_no_improve = 0
         best_model_state = None
+        stopping = False
+        val_loss, val_acc = 0, 0
 
-        pbar = tqdm(range(epochs), desc="Training Epochs", postfix={"val_loss": "N\A"})
+        pbar = tqdm(range(epochs), desc="Training Epochs")
         for epoch in pbar:
             model.train()
-            for inputs, targets in train_loader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-
-                if self.domain_map_fn:
-                    targets = self.domain_map_fn(targets)
-
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = loss_fn(outputs, targets)
-                if regulariser is not None:
-                    loss += regulariser(model=model, inputs=inputs)
-                loss.backward()
-                optimizer.step()
-
-            # Validation phase
-            model.eval()
-            val_loss = 0.0
-            correct = 0
-            with torch.no_grad():
-                for inputs, targets in val_loader:
-                    inputs, targets = inputs.to(self.device), targets.to(self.device)
-
-                    if self.domain_map_fn:
-                        targets = self.domain_map_fn(targets)
-
-                    outputs = model(inputs)
-                    loss = loss_fn(outputs, targets)
-                    if regulariser is not None:
-                        loss += regulariser(model=model, inputs=inputs)
-                    val_loss += loss.item()
-                    correct += (outputs.argmax(dim=1) == targets).sum().item()
-            val_loss /= len(val_loader)
-            pbar.set_postfix(
-                {"val_loss": val_loss, "val_acc": correct / len(val_loader.dataset)}
-            )
-
-            if early_stopping:
-                stopping, epochs_no_improve = self.check_early_stopping(
-                    curr_loss=val_loss,
-                    prev_loss=best_val_loss if best_val_loss != float("inf") else None,
-                    patience=kwargs.get("patience", 5),
-                    no_improvement=epochs_no_improve,
+            for i, (inputs, targets) in enumerate(train_loader):
+                loss, _ = self._train_step(
+                    model,
+                    inputs,
+                    targets,
+                    optimizer,
+                    loss_fn,
+                    regulariser,
+                    context_id=kwargs.get("context_id", None),
                 )
 
-                if stopping:
-                    print(f"Early stopping at epoch {epoch + 1}")
-                    if best_model_state is not None:
-                        model.load_state_dict(best_model_state)
-                    break
-                else:
-                    best_model_state = model.state_dict()
+                pbar.set_postfix(
+                    {
+                        "train_loss": f"{loss.item():.4f}",
+                        "val_loss": val_loss,
+                        "val_acc": val_acc,
+                        "progress": f"{i / len(train_loader):.2f}",
+                    }
+                )
+
+                if max(1, i) % kwargs.get("val_freq", 100) == 0:
+                    val_loss, val_acc = self._validate_model(
+                        model,
+                        val_loader,
+                        loss_fn,
+                        context_id=kwargs.get("context_id", None),
+                    )
+
+                    pbar.set_postfix(
+                        {
+                            "val_loss": val_loss,
+                            "val_acc": val_acc,
+                            "train_loss": f"{loss.item():.4f}",
+                            "progress": f"{i / len(train_loader):.2f}",
+                        }
+                    )
+
+                    if early_stopping:
+                        stopping, epochs_no_improve = self.check_early_stopping(
+                            curr_loss=val_loss,
+                            prev_loss=best_val_loss
+                            if best_val_loss != float("inf")
+                            else None,
+                            patience=kwargs.get("patience", 5),
+                            no_improvement=epochs_no_improve,
+                        )
+
+                        best_val_loss = min(val_loss, best_val_loss)
+
+                        if stopping:
+                            print(f"Early stopping at epoch {epoch + 1}")
+                            if best_model_state is not None:
+                                model.load_state_dict(best_model_state)
+                            break
+                        elif val_loss == best_val_loss:
+                            best_model_state = model.state_dict()
+            if stopping:
+                break
 
         return model
 
@@ -99,7 +144,7 @@ class SimpleTrainer(BaseTrainer):
         for inputs, targets in test_loader:
             inputs, targets = inputs.to(self.device), targets.to(self.device)
 
-            if self.domain_map_fn:
+            if hasattr(self, "domain_map_fn") and self.domain_map_fn:
                 targets = self.domain_map_fn(targets)
 
             outputs = self.model(inputs)

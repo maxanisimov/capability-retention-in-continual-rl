@@ -6,7 +6,7 @@ from src.data_utils import TaskAugmentedDataset
 
 
 class SingleTaskBuffer(Buffer):
-    def __init__(self, dataset: Dataset, k: int, name=""):
+    def __init__(self, dataset: Dataset, k: int, task_id: int = 0):
         super().__init__()
         self._dataloader = DataLoader(dataset=dataset, batch_size=k, shuffle=True)
         self._data_it = iter(self._dataloader)
@@ -14,7 +14,7 @@ class SingleTaskBuffer(Buffer):
         self._consumed = 0
         self._elements = len(self._dataset)
         self._k = k
-        self._name = name
+        self._task_id = task_id
 
     def is_empty(self):
         return self._consumed + self._k > self._elements
@@ -24,7 +24,7 @@ class SingleTaskBuffer(Buffer):
             return (None, None), 0
         else:
             self._consumed += self._k
-            return (next(self._data_it),)
+            return next(self._data_it), None
 
     def drain_buffer(self):
         if self.is_empty():

@@ -174,3 +174,15 @@ cython_debug/
 .pypirc
 
 data/
+
+notebooks/wandb/
+notebooks/MNIST/
+MNIST/
+wandb/
+media/
+llm_final_results.txt
+*.out
+*.log*
+figures/
+*.txt
+*.json

@@ -63,13 +63,17 @@ class InContextHead(torch.nn.Module):
         for i in self.context_list[context]:
             self.mask[i] = 1
 
-
-def set_random_seed(random_seed=42):
-    random.seed(random_seed)
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
+def set_seed(seed: int = 42, device: str = "cuda") -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device == "mps":
+        torch.mps.manual_seed(seed)
+    elif device == "cuda":
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def check_inclusion(
@@ -101,3 +105,65 @@ def print_bold(text):
     bold_end = "\033[0m"
 
     print(bold_start + text + bold_end)
+
+
+def print_colored(text: str, color: str):
+    """
+    Prints text to the console in a specified color.
+
+    Args:
+        text (str): The text to print.
+        color (str): The desired color. Accepts 'green', 'red', or 'amber'.
+    """
+    # ANSI color codes
+    colors = {
+        "green": "\033[92m",  # 🟩
+        "amber": "\033[93m",  # 🟨
+        "red": "\033[91m",  # 🟥
+    }
+    reset_code = "\033[0m"
+
+    color_code = colors.get(color.lower())
+
+    if color_code:
+        print(f"{color_code}{text}{reset_code}")
+    else:
+        # If the color is not found, print the text without color
+        print(text)
+
+
+def seed_worker(worker_id):
+    """
+    Sets the random seed for a DataLoader worker.
+    Ensures that data loading is reproducible across runs.
+    """
+    # Get the initial seed set in the main process and add the worker ID
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed + worker_id)
+    random.seed(worker_seed + worker_id)
+
+
+def acc(X: torch.Tensor, y: torch.Tensor, model: torch.nn.Module) -> float:
+    in_train_mode = model.training
+    device = next(model.parameters()).device
+
+    model.eval()
+
+    X, y = X.to(device), y.to(device)
+    outputs = model(X)
+
+    if outputs.dim() > 1 and outputs.size(1) > 1:
+        # multi-class classification
+        preds = outputs.argmax(dim=1)
+    else:
+        # binary classification
+        preds = (outputs > 0.5).long().squeeze()
+
+    correct = (preds == y).sum().item()
+    total = y.shape[0]
+
+    if in_train_mode:
+        # set model back to model.training == True if it was True beforehand, to make sure outer loop can function with minimal disruption
+        model.train()
+
+    return correct / total
