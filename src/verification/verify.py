@@ -138,3 +138,86 @@ def bound_soft_accuracy(
         best_case_preds = torch.nn.functional.softmax(best_case_logits * T, dim=1)
         correct_probs = best_case_preds[torch.arange(best_case_preds.size(0)), targets]
     return correct_probs.mean()
+
+
+def bound_multi_label_accuracy(
+    logits: IntervalTensor, targets: torch.Tensor, *, lower: bool = True
+) -> torch.Tensor:
+    """
+    Compute a lower bound on the accuracy of a model for multi-label problems.
+    
+    Args:
+        logits: IntervalTensor containing logit bounds
+        targets: Tensor where each row contains valid class indices for that sample.
+                Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
+        lower: Whether to compute lower bound (True) or upper bound (False)
+    
+    Returns:
+        Accuracy bound tensor
+    """
+    logits_l, logits_u = logits
+    batch_size = targets.shape[0]
+    
+    if lower:
+        # For lower bound, we want the worst-case scenario
+        # Use lower bounds for all classes to get conservative predictions
+        worst_case_logits = logits_l
+        predictions = worst_case_logits.argmax(dim=1)
+    else:
+        # For upper bound, we want the best-case scenario  
+        # Use upper bounds for all classes to get optimistic predictions
+        best_case_logits = logits_u
+        predictions = best_case_logits.argmax(dim=1)
+    
+    # Check if predictions are in the set of valid targets for each sample
+    correct_predictions = torch.zeros(batch_size, dtype=torch.bool, device=targets.device)
+    
+    for i in range(batch_size):
+        # Get valid targets for this sample (exclude -1 padding)
+        valid_targets = targets[i][targets[i] != -1]
+        if len(valid_targets) > 0:
+            # Check if prediction is in the set of valid targets
+            correct_predictions[i] = predictions[i].item() in valid_targets
+    
+    return correct_predictions.float().mean()
+
+
+def bound_multi_label_soft_accuracy(
+    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True
+) -> torch.Tensor:
+    """
+    Compute a lower bound on the soft accuracy of a model for multi-label problems.
+    
+    Args:
+        logits: IntervalTensor containing logit bounds
+        targets: Tensor where each row contains valid class indices for that sample.
+                Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
+        T: Temperature parameter for softmax
+        lower: Whether to compute lower bound (True) or upper bound (False)
+    
+    Returns:
+        Soft accuracy bound tensor
+    """
+    logits_l, logits_u = logits
+    batch_size = targets.shape[0]
+    
+    if lower:
+        # For lower bound, use worst-case logits
+        worst_case_logits = logits_l
+        probabilities = torch.nn.functional.softmax(worst_case_logits * T, dim=1)
+    else:
+        # For upper bound, use best-case logits
+        best_case_logits = logits_u
+        probabilities = torch.nn.functional.softmax(best_case_logits * T, dim=1)
+    
+    # Compute probability mass assigned to valid targets for each sample
+    correct_probs = torch.zeros(batch_size, device=targets.device)
+    
+    for i in range(batch_size):
+        # Get valid targets for this sample (exclude -1 padding)
+        valid_targets = targets[i][targets[i] != -1]
+        if len(valid_targets) > 0:
+            # Sum probabilities for all valid target classes
+            correct_probs[i] = probabilities[i, valid_targets].sum()
+    
+    return correct_probs.mean()

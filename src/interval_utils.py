@@ -74,15 +74,38 @@ def _get_min_acc(
     soft: bool = False,
     lower: bool = True,
     context_mask: torch.Tensor | None = None,
+    multi_label: bool = False,
 ) -> torch.Tensor:
-    """Compute the minimum accuracy of the model on the given data using IBP."""
+    """
+    Compute the minimum accuracy of the model on the given data using IBP.
+    
+    Args:
+        bounded_model: The interval-bounded model
+        X: Input data tensor
+        y: Target labels. For multi-label case, should be a tensor where each row 
+           contains valid class indices (padded with -1 for variable length)
+        soft: Whether to use soft accuracy
+        lower: Whether to compute lower bound (True) or upper bound (False)
+        context_mask: Optional context mask
+        multi_label: If True, treats y as containing multiple valid labels per sample
+    
+    Returns:
+        Accuracy bound tensor
+    """
     logits = IntervalTensor(*bounded_model.bound_forward(X, X))
     if context_mask is not None:
         logits = logits * context_mask
-    if soft:
-        acc = verify.bound_soft_accuracy(logits, y, T=SOFT_ACC_TEMP, lower=lower)
+    
+    if multi_label:
+        if soft:
+            acc = verify.bound_multi_label_soft_accuracy(logits, y, T=SOFT_ACC_TEMP, lower=lower)
+        else:
+            acc = verify.bound_multi_label_accuracy(logits, y, lower=lower)
     else:
-        acc = verify.bound_accuracy(logits, y, lower=lower)
+        if soft:
+            acc = verify.bound_soft_accuracy(logits, y, T=SOFT_ACC_TEMP, lower=lower)
+        else:
+            acc = verify.bound_accuracy(logits, y, lower=lower)
     return acc
 
 
