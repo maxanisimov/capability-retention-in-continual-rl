@@ -195,7 +195,6 @@ class IntervalTrainer(BaseTrainer):
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
             param_mask=param_mask,
             multi_label=multi_label,
-            task_labels=[0],
             **self.rashomon_kwargs,
         )
         self.bounds = bounded_models
