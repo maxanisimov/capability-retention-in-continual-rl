@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader
 from typing import Callable, Iterable
 from tqdm import tqdm
 
+import numpy
+
 
 class IntervalTrainer(BaseTrainer):
     def __init__(
@@ -137,6 +139,7 @@ class IntervalTrainer(BaseTrainer):
         use_outer_bbox: bool = True,
         context_id: int | None = None,
         param_mask: Iterable | None = None,
+        multi_label: bool = False,
         **kwargs: dict,
     ) -> None:
         """
@@ -152,7 +155,13 @@ class IntervalTrainer(BaseTrainer):
             y = self.domain_map_fn(y)
 
         self._set_context(self.model, context_id)
-        task_acc = (self.model(X).argmax(dim=1) == y).float().mean()
+
+        model_class_preds = self.model(X).argmax(dim=1)
+        if not multi_label:
+            task_acc = (model_class_preds == y).float().mean()
+        else:
+            task_acc = float(numpy.mean([pred in y[i] for i, pred in enumerate(model_class_preds)]))
+        
         if isinstance(self.model[-1], utils.InContextHead):
             model = self.model[:-1]
             context_mask = self.model[-1].mask
@@ -185,6 +194,8 @@ class IntervalTrainer(BaseTrainer):
             else None,
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
             param_mask=param_mask,
+            multi_label=multi_label,
+            task_labels=[0],
             **self.rashomon_kwargs,
         )
         self.bounds = bounded_models

@@ -156,6 +156,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         context_mask: torch.Tensor | None = None,
         domain_map_fn: Callable | None = None,
         task_labels: list[tuple[int, int]] = None,
+        multi_label: bool = False,
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -171,6 +172,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.context_mask = context_mask
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn
+        self.multi_label = multi_label
         self.penalty_updater = (
             cooper.penalty_coefficients.MultiplicativePenaltyCoefficientUpdater(
                 growth_factor=1.01, violation_tolerance=0.05
@@ -217,8 +219,16 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         misc_info = {}
         observed_constraints = {}
         encountered_tasks = 0
+
+        # NOTE: Hard-coded for multi-label tasks
+        if self.multi_label:
+            self.task_labels = [0]
+
         for i, task in enumerate(self.task_labels):
-            mask = torch.isin(y, torch.tensor(task).to(y.device))
+            if not self.multi_label:
+                mask = torch.isin(y, torch.tensor(task).to(y.device))
+            else:
+                mask = torch.ones(y.shape[0], dtype=torch.bool, device=y.device) # NOTE: I need all data samples
             if not mask.any():
                 continue
             encountered_tasks += 1
@@ -247,6 +257,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 targets,
                 soft=True,
                 context_mask=self.context_mask,
+                multi_label=self.multi_label,
             )
             min_acc = _get_min_acc(
                 self.bounded_model,
@@ -254,6 +265,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 targets,
                 soft=False,
                 context_mask=self.context_mask,
+                multi_label=self.multi_label,
             )
 
             defect = self.min_acc_limits[i] - soft_min_acc
@@ -377,6 +389,7 @@ def compute_rashomon_set(
     domain_map_fn: Callable | None = None,
     param_mask: Iterable | None = None,
     task_labels: list[tuple[float]] = None,
+    multi_label: bool = False,
 ) -> tuple[list[IntervalBoundedModel], list[float]]:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -505,7 +518,8 @@ def compute_rashomon_set(
     # Check initial constraint satisfaction feasibility
     with torch.no_grad():
         initial_defect = min_acc_limit - _get_min_acc(
-            bounded_model, X_cert, y_cert, min_acc_limit, context_mask=context_mask
+            bounded_model, X_cert, y_cert, min_acc_limit, context_mask=context_mask,
+            multi_label=multi_label
         )
     if torch.isnan(initial_defect):
         raise ValueError("Initial bmodel results in NaN defect for the constraint.")
@@ -518,7 +532,8 @@ def compute_rashomon_set(
             f"Computing Rashomon set within outer box of size: {_bounded_model_width(outer_bbox).item():.2f}"
         )
         outer_min_acc = _get_min_acc(
-            outer_bbox, X_cert, y_cert, soft=False, context_mask=context_mask
+            outer_bbox, X_cert, y_cert, soft=False, context_mask=context_mask,
+            multi_label=multi_label
         )
         if outer_min_acc > min_acc_limit:
             print(
@@ -538,6 +553,7 @@ def compute_rashomon_set(
         context_mask=context_mask,
         domain_map_fn=domain_map_fn,
         task_labels=task_labels,
+        multi_label=multi_label,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -569,8 +585,8 @@ def compute_rashomon_set(
         "Initial bbox: ",
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
-        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask):.2f}",
+        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label):.2f}, ",
+        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label):.2f}",
     )
     primal_lr_scheduler, dual_lr_scheduler = get_lr_schedulers(
         primal_optimizer, dual_optimizer, cmp
@@ -614,8 +630,8 @@ def compute_rashomon_set(
         "Final bbox: ",
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
-        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask):.2f}",
+        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label):.2f}, ",
+        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label):.2f}",
     )
 
     # Remove the hooks created for masking
@@ -627,6 +643,10 @@ def compute_rashomon_set(
     checkpoint_certs = []
     multi_task_certs = []
     print("Num cert samples:", len(og_y_cert))
+
+    # NOTE: hard-coded for multi-label tasks
+    if multi_label:
+        task_labels = None
     if task_labels:
         for j, m in enumerate(checkpoint_models):
             certs = []
@@ -644,7 +664,7 @@ def compute_rashomon_set(
                     context_mask, bounded_model = update_context_mask_with_bounded_model(task, context_mask, bounded_model)
 
                 cert = _get_min_acc(
-                    m, inputs, targets, soft=False, context_mask=context_mask
+                    m, inputs, targets, soft=False, context_mask=context_mask, multi_label=multi_label
                 ).item()
                 certs.append(cert)
             multi_task_certs.append(certs)
@@ -652,7 +672,7 @@ def compute_rashomon_set(
     for m in checkpoint_models:
         checkpoint_certs.append(
             _get_min_acc(
-                m, X_cert, y_cert, soft=False, context_mask=context_mask
+                m, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label
             ).item()
         )
 
