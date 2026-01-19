@@ -1,102 +1,15 @@
 #%%
+####### Imports #################################
 import sys
 sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/experiments/poisoned_apple')
 sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/experiments')
 sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
 import torch
-from poisoned_apple_env import PoisonedAppleEnv, make_task1_env, make_task2_env
+from poisoned_apple_env import PoisonedAppleEnv #make_task1_env, make_task2_env
 from _ppo_utils import make_actor_critic, ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
-######################################################
-# Demo the environment
-# print("=== Task 1 Demo: No Poisoned Apples ===")
-# env =  make_task1_env(render_mode="human")
-# obs, info = env.reset(seed=42)
-# env.render()
-
-# print("\nTaking random actions...")
-# for _ in range(5):
-#     action = env.action_space.sample()
-#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#     obs, reward, terminated, truncated, info = env.step(action)
-#     print(f"Action: {action_names[action]}, Reward: {reward}")
-#     env.render()
-    
-#     if terminated or truncated:
-#         print("Episode finished!")
-#         break
-
-# env.close()
-
-# print("\n\n=== Task 2 Demo: One Poisoned Apple ===")
-# env = make_task2_env(render_mode="human")
-# obs, info = env.reset(seed=42)
-# env.render()
-
-# print("\nTaking random actions...")
-# for _ in range(5):
-#     action = env.action_space.sample()
-#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#     obs, reward, terminated, truncated, info = env.step(action)
-#     print(f"Action: {action_names[action]}, Reward: {reward}")
-#     env.render()
-    
-#     if terminated or truncated:
-#         print("Episode finished!")
-#         break
-
-# env.close()
-
-print("\n\n=== Flat Observation Demo ===")
-# Create environment with flat observations
-env = PoisonedAppleEnv(
-    grid_size=5,
-    num_apples=3,
-    num_poisoned=1,
-    agent_start_pos=(0, 0),
-    safe_apple_positions=[(1, 1), (2, 2)],
-    poisoned_apple_positions=[(3, 3)],
-    observation_type="flat",
-    render_mode="human"
-)
-obs, info = env.reset()
-print("Environment with flat observations:")
-print(f"Observation space: {env.observation_space}")
-print(f"Observation shape: {obs.shape}")
-print(f"Initial observation (first 15 values): {obs[:15]}")
-print(f"Format: Flattened 5x5 grid, values: 0=empty, 1=agent, 2=safe, 3=poisoned")
-env.render()
-
-print("\nCollecting first apple...")
-for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
-    action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(f"Action: {action_names[action]}, Reward: {reward}")
-    print(f"New observation (first 15 values): {obs[:15]}")
-    env.render()
-    if terminated or truncated:
-        break
-
-env.close()
-
-# # %%
-# ### Create actor-critic for flat observation space
-# obs_dim = env.observation_space.shape[0]
-# num_actions = env.action_space.n
-# actor, critic = make_actor_critic(obs_dim, num_actions)
-
-#%%
-### Train using ppo
-ppo_cfg = PPOConfig(
-    total_timesteps=1_000,
-)
-actor1, critic1 = ppo_train(
-    env=env,
-    cfg=ppo_cfg,
-)
-
-#%%
+############### Utils #################################
 ### Visualize trained agent's trajectory
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -114,8 +27,11 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
         num_episodes: Number of episodes to visualize
         max_steps: Maximum steps per episode (default: env.max_steps)
     """
-    if max_steps is None:
-        max_steps = env.max_steps
+    # if max_steps is None:
+    #     max_steps = env.max_steps
+    # if max_steps is None:
+    #     max_steps = np.inf
+    max_steps = np.inf
     
     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
     
@@ -140,7 +56,7 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
         step = 0
         total_reward = 0
         
-        while not done and step < max_steps:
+        while not done:
             # Get action from actor
             import torch
             with torch.no_grad():
@@ -164,6 +80,10 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
             
             print(f"Step {step + 1}: {action_names[action]}, Reward: {reward:.2f}, Total: {total_reward:.2f}")
             step += 1
+
+            if step >= max_steps:
+                print("Reached maximum steps for this episode.")
+                break
         
         print(f"\nEpisode finished! Total reward: {total_reward:.2f}")
         print(f"Apples remaining: {info['safe_apples_remaining']} safe, {info['poisoned_apples_remaining']} poisoned")
@@ -258,12 +178,102 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
     fig.suptitle(suptitle, fontsize=14, fontweight='bold')
     plt.tight_layout()
 
+#%%
+######################################################
+# Demo the environment
+# print("=== Task 1 Demo: No Poisoned Apples ===")
+# env =  make_task1_env(render_mode="human")
+# obs, info = env.reset(seed=42)
+# env.render()
+
+# print("\nTaking random actions...")
+# for _ in range(5):
+#     action = env.action_space.sample()
+#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#     obs, reward, terminated, truncated, info = env.step(action)
+#     print(f"Action: {action_names[action]}, Reward: {reward}")
+#     env.render()
+    
+#     if terminated or truncated:
+#         print("Episode finished!")
+#         break
+
+# env.close()
+
+# print("\n\n=== Task 2 Demo: One Poisoned Apple ===")
+# env = make_task2_env(render_mode="human")
+# obs, info = env.reset(seed=42)
+# env.render()
+
+# print("\nTaking random actions...")
+# for _ in range(5):
+#     action = env.action_space.sample()
+#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#     obs, reward, terminated, truncated, info = env.step(action)
+#     print(f"Action: {action_names[action]}, Reward: {reward}")
+#     env.render()
+    
+#     if terminated or truncated:
+#         print("Episode finished!")
+#         break
+
+# env.close()
+
+print("\n\n=== Flat Observation Demo ===")
+# Create environment with flat observations
+env = PoisonedAppleEnv(
+    grid_size=5,
+    num_apples=3,
+    num_poisoned=1,
+    agent_start_pos=(0, 0),
+    safe_apple_positions=[(1, 1), (2, 2)],
+    poisoned_apple_positions=[(3, 3)],
+    observation_type="flat",
+    render_mode="human"
+)
+# obs, info = env.reset()
+# print("Environment with flat observations:")
+# print(f"Observation space: {env.observation_space}")
+# print(f"Observation shape: {obs.shape}")
+# print(f"Initial observation (first 15 values): {obs[:15]}")
+# print(f"Format: Flattened 5x5 grid, values: 0=empty, 1=agent, 2=safe, 3=poisoned")
+# env.render()
+
+# print("\nCollecting first apple...")
+# for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
+#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#     obs, reward, terminated, truncated, info = env.step(action)
+#     print(f"Action: {action_names[action]}, Reward: {reward}")
+#     print(f"New observation (first 15 values): {obs[:15]}")
+#     env.render()
+#     if terminated or truncated:
+#         break
+
+# env.close()
+
+# # %%
+# ### Create actor-critic for flat observation space
+# obs_dim = env.observation_space.shape[0]
+# num_actions = env.action_space.n
+# actor, critic = make_actor_critic(obs_dim, num_actions)
+
+#%%
+### Train using ppo
+ppo_cfg = PPOConfig(
+    total_timesteps=1_000,
+)
+actor1, critic1 = ppo_train(
+    env=env,
+    cfg=ppo_cfg,
+)
+
+#%%
 # Visualize the trained agent in Env 1
 visualize_agent_trajectory(env, actor1, num_episodes=1, env_name='Env 1')
-max_steps = 10
 
 # %%
 ### In Env 2, one of the safe apples becomes poisoned :(
+max_steps = 10
 env2 = PoisonedAppleEnv(
     grid_size=5,
     num_apples=3,
@@ -273,7 +283,7 @@ env2 = PoisonedAppleEnv(
     poisoned_apple_positions=[(1, 1), (3, 3)],
     observation_type="flat",
     render_mode="human",
-    max_steps=10,
+    max_steps=max_steps,
     seed=42
 )
 
@@ -409,7 +419,7 @@ interval_trainer = IntervalTrainer(
 )
 interval_trainer.compute_rashomon_set(
     dataset=state_action_torch_dataset, # states and safe actions
-    multi_label=False # NOTE
+    multi_label=False # NOTE: when set to True, the policy deviates more from the original policy in Env1 (but is still safe)
 )
 # Extract parameter bounds from the bounded model
 assert len(interval_trainer.bounds) == 1, "Expected exactly one bounded model"

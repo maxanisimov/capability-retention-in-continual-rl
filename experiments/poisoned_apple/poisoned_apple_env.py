@@ -416,7 +416,8 @@ class PoisonedAppleEnv(gym.Env):
             "poisoned_apples_remaining": len(self.poisoned_apples),
             "total_apples_remaining": len(self.safe_apples) + len(self.poisoned_apples),
             "step": self.current_step,
-            "max_steps": self.max_steps
+            "max_steps": self.max_steps,
+            # "unsafe": tuple(self.agent_pos) in self.poisoned_apples
         }
     
     def render(self):
@@ -497,152 +498,152 @@ class PoisonedAppleEnv(gym.Env):
         pass
 
 
-# Helper functions to create specific task configurations
+# # Helper functions to create specific task configurations
 
-def make_task1_env(**kwargs) -> PoisonedAppleEnv:
-    """
-    Create Task 1 environment: No poisoned apples.
+# def make_task1_env(**kwargs) -> PoisonedAppleEnv:
+#     """
+#     Create Task 1 environment: No poisoned apples.
     
-    Args:
-        **kwargs: Additional arguments to pass to PoisonedAppleEnv
+#     Args:
+#         **kwargs: Additional arguments to pass to PoisonedAppleEnv
     
-    Returns:
-        PoisonedAppleEnv instance configured for Task 1
-    """
-    default_config = {
-        "grid_size": 5,
-        "num_apples": 3,
-        "num_poisoned": 0,
-    }
-    default_config.update(kwargs)
-    return PoisonedAppleEnv(**default_config)
-
-
-def make_task2_env(**kwargs) -> PoisonedAppleEnv:
-    """
-    Create Task 2 environment: One poisoned apple.
-    
-    Args:
-        **kwargs: Additional arguments to pass to PoisonedAppleEnv
-    
-    Returns:
-        PoisonedAppleEnv instance configured for Task 2
-    """
-    default_config = {
-        "grid_size": 5,
-        "num_apples": 3,
-        "num_poisoned": 1,
-    }
-    default_config.update(kwargs)
-    return PoisonedAppleEnv(**default_config)
+#     Returns:
+#         PoisonedAppleEnv instance configured for Task 1
+#     """
+#     default_config = {
+#         "grid_size": 5,
+#         "num_apples": 3,
+#         "num_poisoned": 0,
+#     }
+#     default_config.update(kwargs)
+#     return PoisonedAppleEnv(**default_config)
 
 
-if __name__ == "__main__":
-    # Demo the environment
-    print("=== Task 1 Demo: No Poisoned Apples ===")
-    env = make_task1_env(render_mode="human")
-    obs, info = env.reset(seed=42)
-    env.render()
+# def make_task2_env(**kwargs) -> PoisonedAppleEnv:
+#     """
+#     Create Task 2 environment: One poisoned apple.
     
-    print("\nTaking random actions...")
-    for _ in range(5):
-        action = env.action_space.sample()
-        action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-        obs, reward, terminated, truncated, info = env.step(action)
-        print(f"Action: {action_names[action]}, Reward: {reward}")
-        env.render()
+#     Args:
+#         **kwargs: Additional arguments to pass to PoisonedAppleEnv
+    
+#     Returns:
+#         PoisonedAppleEnv instance configured for Task 2
+#     """
+#     default_config = {
+#         "grid_size": 5,
+#         "num_apples": 3,
+#         "num_poisoned": 1,
+#     }
+#     default_config.update(kwargs)
+#     return PoisonedAppleEnv(**default_config)
+
+
+# if __name__ == "__main__":
+#     # Demo the environment
+#     print("=== Task 1 Demo: No Poisoned Apples ===")
+#     env = make_task1_env(render_mode="human")
+#     obs, info = env.reset(seed=42)
+#     env.render()
+    
+#     print("\nTaking random actions...")
+#     for _ in range(5):
+#         action = env.action_space.sample()
+#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#         obs, reward, terminated, truncated, info = env.step(action)
+#         print(f"Action: {action_names[action]}, Reward: {reward}")
+#         env.render()
         
-        if terminated or truncated:
-            print("Episode finished!")
-            break
+#         if terminated or truncated:
+#             print("Episode finished!")
+#             break
     
-    env.close()
+#     env.close()
     
-    print("\n\n=== Task 2 Demo: One Poisoned Apple ===")
-    env = make_task2_env(render_mode="human")
-    obs, info = env.reset(seed=42)
-    env.render()
+#     print("\n\n=== Task 2 Demo: One Poisoned Apple ===")
+#     env = make_task2_env(render_mode="human")
+#     obs, info = env.reset(seed=42)
+#     env.render()
     
-    print("\nTaking random actions...")
-    for _ in range(5):
-        action = env.action_space.sample()
-        action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-        obs, reward, terminated, truncated, info = env.step(action)
-        print(f"Action: {action_names[action]}, Reward: {reward}")
-        env.render()
+#     print("\nTaking random actions...")
+#     for _ in range(5):
+#         action = env.action_space.sample()
+#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#         obs, reward, terminated, truncated, info = env.step(action)
+#         print(f"Action: {action_names[action]}, Reward: {reward}")
+#         env.render()
         
-        if terminated or truncated:
-            print("Episode finished!")
-            break
+#         if terminated or truncated:
+#             print("Episode finished!")
+#             break
     
-    env.close()
+#     env.close()
     
-    print("\n\n=== Fixed Positions Demo ===")
-    # Create environment with fixed positions
-    env = PoisonedAppleEnv(
-        grid_size=5,
-        num_apples=3,
-        num_poisoned=1,
-        agent_start_pos=(0, 0),  # Agent starts at top-left
-        safe_apple_positions=[(1, 1), (2, 2)],  # Two safe apples
-        poisoned_apple_positions=[(3, 3)],  # One poisoned apple
-        render_mode="human"
-    )
-    obs, info = env.reset()
-    print("Environment with fixed positions:")
-    print(f"Agent: (0, 0), Safe apples: [(1, 1), (2, 2)], Poisoned: [(3, 3)]")
-    env.render()
+#     print("\n\n=== Fixed Positions Demo ===")
+#     # Create environment with fixed positions
+#     env = PoisonedAppleEnv(
+#         grid_size=5,
+#         num_apples=3,
+#         num_poisoned=1,
+#         agent_start_pos=(0, 0),  # Agent starts at top-left
+#         safe_apple_positions=[(1, 1), (2, 2)],  # Two safe apples
+#         poisoned_apple_positions=[(3, 3)],  # One poisoned apple
+#         render_mode="human"
+#     )
+#     obs, info = env.reset()
+#     print("Environment with fixed positions:")
+#     print(f"Agent: (0, 0), Safe apples: [(1, 1), (2, 2)], Poisoned: [(3, 3)]")
+#     env.render()
     
-    print("\nNavigating to collect apples...")
-    # Navigate DOWN and RIGHT to (1, 1)
-    for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
-        action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-        obs, reward, terminated, truncated, info = env.step(action)
-        print(f"Action: {action_names[action]}, Reward: {reward}")
-        env.render()
-        if terminated or truncated:
-            break
+#     print("\nNavigating to collect apples...")
+#     # Navigate DOWN and RIGHT to (1, 1)
+#     for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
+#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#         obs, reward, terminated, truncated, info = env.step(action)
+#         print(f"Action: {action_names[action]}, Reward: {reward}")
+#         env.render()
+#         if terminated or truncated:
+#             break
     
-    env.close()
+#     env.close()
     
-    print("\n\n=== Coordinate Observation Demo ===")
-    # Create environment with coordinate-based observations
-    env = PoisonedAppleEnv(
-        grid_size=5,
-        num_apples=3,
-        num_poisoned=1,
-        agent_start_pos=(0, 0),
-        safe_apple_positions=[(1, 1), (2, 2)],
-        poisoned_apple_positions=[(3, 3)],
-        observation_type="coordinates",
-        render_mode="human"
-    )
-    obs, info = env.reset()
-    print("Environment with coordinate observations:")
-    print(f"Observation space: {env.observation_space}")
-    print(f"Initial observation: {obs}")
-    print(f"Format: [agent_row, agent_col, apple1_row, apple1_col, apple1_is_poisoned, ...]")
-    env.render()
+#     print("\n\n=== Coordinate Observation Demo ===")
+#     # Create environment with coordinate-based observations
+#     env = PoisonedAppleEnv(
+#         grid_size=5,
+#         num_apples=3,
+#         num_poisoned=1,
+#         agent_start_pos=(0, 0),
+#         safe_apple_positions=[(1, 1), (2, 2)],
+#         poisoned_apple_positions=[(3, 3)],
+#         observation_type="coordinates",
+#         render_mode="human"
+#     )
+#     obs, info = env.reset()
+#     print("Environment with coordinate observations:")
+#     print(f"Observation space: {env.observation_space}")
+#     print(f"Initial observation: {obs}")
+#     print(f"Format: [agent_row, agent_col, apple1_row, apple1_col, apple1_is_poisoned, ...]")
+#     env.render()
     
-    print("\nCollecting first apple...")
-    # Navigate DOWN and RIGHT to (1, 1)
-    for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
-        action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-        obs, reward, terminated, truncated, info = env.step(action)
-        print(f"Action: {action_names[action]}, Reward: {reward}")
-        print(f"New observation: {obs}")
-        print(f"  Agent at: ({obs[0]}, {obs[1]})")
-        for i in range(env.num_apples):
-            idx = 2 + 3*i
-            apple_pos = (obs[idx], obs[idx+1])
-            is_poisoned = obs[idx+2]
-            status = "POISONED" if is_poisoned == 1.0 else "safe"
-            if apple_pos[0] == -1:
-                print(f"  Apple {i+1} ({status}): Collected")
-            else:
-                print(f"  Apple {i+1} ({status}): ({int(apple_pos[0])}, {int(apple_pos[1])})")
-        env.render()
-        if terminated or truncated:
-            break
+#     print("\nCollecting first apple...")
+#     # Navigate DOWN and RIGHT to (1, 1)
+#     for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
+#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+#         obs, reward, terminated, truncated, info = env.step(action)
+#         print(f"Action: {action_names[action]}, Reward: {reward}")
+#         print(f"New observation: {obs}")
+#         print(f"  Agent at: ({obs[0]}, {obs[1]})")
+#         for i in range(env.num_apples):
+#             idx = 2 + 3*i
+#             apple_pos = (obs[idx], obs[idx+1])
+#             is_poisoned = obs[idx+2]
+#             status = "POISONED" if is_poisoned == 1.0 else "safe"
+#             if apple_pos[0] == -1:
+#                 print(f"  Apple {i+1} ({status}): Collected")
+#             else:
+#                 print(f"  Apple {i+1} ({status}): ({int(apple_pos[0])}, {int(apple_pos[1])})")
+#         env.render()
+#         if terminated or truncated:
+#             break
     
-    env.close()
+#     env.close()
