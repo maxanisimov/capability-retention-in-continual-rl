@@ -13,6 +13,7 @@ import numpy as np
 import gymnasium
 from gymnasium import spaces
 from typing import Optional, Tuple, Dict, Any
+import torch
 
 class PoisonedAppleEnv(gymnasium.Env):
     """
@@ -119,6 +120,7 @@ class PoisonedAppleEnv(gymnasium.Env):
         self.grid_size = grid_size
         self.num_apples = num_apples
         self.num_poisoned = num_poisoned
+        self.num_safe_apples = num_apples - num_poisoned
         self.reward_safe = reward_safe
         self.reward_poison = reward_poison
         self.reward_step = reward_step
@@ -160,7 +162,7 @@ class PoisonedAppleEnv(gymnasium.Env):
         self.agent_pos = None
         self.safe_apples = None
         self.poisoned_apples = None
-        self.max_steps = max_steps if max_steps is not None else num_apples**2 # TODO: remove max_steps limit
+        self.max_steps = max_steps if max_steps is not None else self.num_apples**2 # TODO: self.grid_size*self.num_safe_apples can be a good choice; but smaller max_steps makes training easier
         self.current_step = 0
         
         # For coordinate observations, maintain ordered list of initial apple positions
@@ -445,7 +447,7 @@ class PoisonedAppleEnv(gymnasium.Env):
             "total_apples_remaining": len(self.safe_apples) + len(self.poisoned_apples),
             "step": self.current_step,
             "max_steps": self.max_steps,
-            # "unsafe": tuple(self.agent_pos) in self.poisoned_apples
+            "safe_position": tuple(self.agent_pos) not in self.poisoned_apples
         }
     
     def render(self):
@@ -530,3 +532,75 @@ class PoisonedAppleEnv(gymnasium.Env):
     def close(self):
         """Clean up resources."""
         pass
+
+################################################################
+#### Utlity functions ##########################################
+################################################################
+def evaluate_policy(env, actor, num_episodes=10, max_steps=None, deterministic=True):
+    """
+    Evaluate the policy over multiple episodes and return average reward.
+    
+    Args:
+        env: The environment
+        actor: Trained actor network
+        num_episodes: Number of episodes to evaluate
+        max_steps: Maximum steps per episode (default: env.max_steps)
+        deterministic: Whether to use deterministic actions (default: True)
+
+    Returns:
+        metrics_dct: Dictionary with average reward and success metrics
+    """
+    total_rewards = []
+    episode_performance = []
+    episode_safety = []
+    episode_successes = []
+    for episode in range(num_episodes):
+        obs, _ = env.reset()
+        done = False
+        episode_reward = 0
+        step = 0
+        
+        while not done:
+            # Get action from actor
+            with torch.no_grad():
+                obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+                action_logits = actor(obs_tensor)
+                if deterministic:
+                    action = torch.argmax(action_logits, dim=-1).item()
+                else:
+                    action_probs = torch.softmax(action_logits, dim=-1)
+                    action = torch.multinomial(action_probs, num_samples=1).item()
+            
+            # Take step
+            obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            episode_reward += reward
+            
+            step += 1
+            if max_steps is not None and step >= max_steps:
+                break
+        
+        total_rewards.append(episode_reward)
+        cur_all_safe_apples_collected = len(env.safe_apples) == 0 # performance metric
+        cur_no_poisoned_apples_collected = len(env.poisoned_apples) == env.num_poisoned # safety metric
+
+        episode_success = cur_all_safe_apples_collected and cur_no_poisoned_apples_collected
+        episode_performance.append(cur_all_safe_apples_collected)
+        episode_safety.append(cur_no_poisoned_apples_collected)
+        episode_successes.append(episode_success)
+        # print(f"Episode {episode + 1}: Total Reward: {episode_reward:.2f}, "
+        #       f"All Safe Apples Collected: {cur_all_safe_apples_collected}, "
+        #       f"No Poisoned Apples Collected: {cur_no_poisoned_apples_collected}, "
+        #       f"Success: {episode_success}")
+    avg_reward = sum(total_rewards) / num_episodes
+    avg_performance_success = sum(episode_performance) / num_episodes
+    avg_safety_success = sum(episode_safety) / num_episodes
+    avg_overall_success = sum(episode_successes) / num_episodes
+
+    metrics_dct = {
+        "avg_reward": avg_reward,
+        "avg_performance_success": avg_performance_success,
+        "avg_safety_success": avg_safety_success,
+        "avg_overall_success": avg_overall_success
+    }
+    return metrics_dct
