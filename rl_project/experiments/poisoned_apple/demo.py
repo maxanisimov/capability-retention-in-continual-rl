@@ -1,22 +1,19 @@
 #%%
 ####### Imports #################################
 import sys
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/experiments/poisoned_apple')
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/experiments')
+sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/poisoned_apple')
 sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
+sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project')
 import torch
-from poisoned_apple_env import PoisonedAppleEnv #make_task1_env, make_task2_env
-from _ppo_utils import make_actor_critic, ppo_train, PPOConfig
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import numpy as np
+from poisoned_apple_env import PoisonedAppleEnv
+from utils.ppo_utils import make_actor_critic, ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
 ############### Utils #################################
 ### Visualize trained agent's trajectory
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.animation import FuncAnimation
-from IPython.display import HTML
-import numpy as np
-
 def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_name=None):
     """
     Visualize the trained agent's trajectory in the environment.
@@ -180,82 +177,16 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
 
 #%%
 ######################################################
-# Demo the environment
-# print("=== Task 1 Demo: No Poisoned Apples ===")
-# env =  make_task1_env(render_mode="human")
-# obs, info = env.reset(seed=42)
-# env.render()
-
-# print("\nTaking random actions...")
-# for _ in range(5):
-#     action = env.action_space.sample()
-#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#     obs, reward, terminated, truncated, info = env.step(action)
-#     print(f"Action: {action_names[action]}, Reward: {reward}")
-#     env.render()
-    
-#     if terminated or truncated:
-#         print("Episode finished!")
-#         break
-
-# env.close()
-
-# print("\n\n=== Task 2 Demo: One Poisoned Apple ===")
-# env = make_task2_env(render_mode="human")
-# obs, info = env.reset(seed=42)
-# env.render()
-
-# print("\nTaking random actions...")
-# for _ in range(5):
-#     action = env.action_space.sample()
-#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#     obs, reward, terminated, truncated, info = env.step(action)
-#     print(f"Action: {action_names[action]}, Reward: {reward}")
-#     env.render()
-    
-#     if terminated or truncated:
-#         print("Episode finished!")
-#         break
-
-# env.close()
-
 print("\n\n=== Flat Observation Demo ===")
 # Create environment with flat observations
 env = PoisonedAppleEnv(
     grid_size=5,
-    num_apples=3,
-    num_poisoned=1,
     agent_start_pos=(0, 0),
     safe_apple_positions=[(1, 1), (2, 2)],
     poisoned_apple_positions=[(3, 3)],
     observation_type="flat",
     render_mode="human"
 )
-# obs, info = env.reset()
-# print("Environment with flat observations:")
-# print(f"Observation space: {env.observation_space}")
-# print(f"Observation shape: {obs.shape}")
-# print(f"Initial observation (first 15 values): {obs[:15]}")
-# print(f"Format: Flattened 5x5 grid, values: 0=empty, 1=agent, 2=safe, 3=poisoned")
-# env.render()
-
-# print("\nCollecting first apple...")
-# for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
-#     action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#     obs, reward, terminated, truncated, info = env.step(action)
-#     print(f"Action: {action_names[action]}, Reward: {reward}")
-#     print(f"New observation (first 15 values): {obs[:15]}")
-#     env.render()
-#     if terminated or truncated:
-#         break
-
-# env.close()
-
-# # %%
-# ### Create actor-critic for flat observation space
-# obs_dim = env.observation_space.shape[0]
-# num_actions = env.action_space.n
-# actor, critic = make_actor_critic(obs_dim, num_actions)
 
 #%%
 ### Train using ppo
@@ -268,7 +199,7 @@ actor1, critic1 = ppo_train(
 )
 
 #%%
-# Visualize the trained agent in Env 1
+### Visualize the trained agent in Env 1
 visualize_agent_trajectory(env, actor1, num_episodes=1, env_name='Env 1')
 
 # %%
@@ -276,8 +207,6 @@ visualize_agent_trajectory(env, actor1, num_episodes=1, env_name='Env 1')
 max_steps = 10
 env2 = PoisonedAppleEnv(
     grid_size=5,
-    num_apples=3,
-    num_poisoned=2,
     agent_start_pos=(0, 0),
     safe_apple_positions=[(2, 2)],
     poisoned_apple_positions=[(1, 1), (3, 3)],
@@ -293,7 +222,7 @@ visualize_agent_trajectory(env2, actor1, num_episodes=1, max_steps=max_steps, en
 #%%
 # ### OPTIONAL: train a new agent from scratch in Env 2
 # print("\n\n=== Training new agent in Env 2 (with poisoned apple) ===")
-# # NOTE: It is critical to:
+# # NOTE: For good performance, it is critical to:
 # # set total_timesteps = 10_000
 # # use actor and critic warm starts from Env 1
 # ppo_cfg2 = PPOConfig(
@@ -377,9 +306,10 @@ visualize_agent_trajectory(env2, actor1, num_episodes=1, max_steps=max_steps, en
 # states = torch.FloatTensor(states)
 # actions = torch.LongTensor(actions)
 
-### TODO: replicate the hardcoded experiment with a policy
 # NOTE: it is important that actor1's behaviour is safe in Env1 along its trajectory
 # NOTE: I do not think we require safety for all possible states in Env1, only those visited by actor1
+
+
 ### Generate dataset from actor1's behavior in Env1 (no hardcoding needed!)
 states = []
 actions = []
