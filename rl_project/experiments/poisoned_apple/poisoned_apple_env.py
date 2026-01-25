@@ -10,12 +10,11 @@ The environment features:
 """
 
 import numpy as np
-import gymnasium as gym
+import gymnasium
 from gymnasium import spaces
 from typing import Optional, Tuple, Dict, Any
 
-
-class PoisonedAppleEnv(gym.Env):
+class PoisonedAppleEnv(gymnasium.Env):
     """
     A grid world environment where an agent collects apples.
     
@@ -59,10 +58,11 @@ class PoisonedAppleEnv(gym.Env):
     def __init__(
         self,
         grid_size: int = 5,
-        num_apples: int = 3,
-        num_poisoned: int = 0,
+        num_apples: Optional[int] = 3,
+        num_poisoned: Optional[int] = 0,
         reward_safe: float = 1.0,
         reward_poison: float = -1.0,
+        reward_step: float = -0.01,
         render_mode: Optional[str] = None,
         seed: Optional[int] = None,
         agent_start_pos: Optional[Tuple[int, int]] = None,
@@ -89,6 +89,21 @@ class PoisonedAppleEnv(gym.Env):
             max_steps: Maximum number of steps per episode. If None, defaults to num_apples squared.
         """
         super().__init__()
+
+        if (poisoned_apple_positions is None):
+            assert num_poisoned is not None, "num_poisoned must be specified if positions are not fixed"
+        else:
+            # NOTE: the list takes precedence over num_poisoned (if both provided)
+            num_poisoned = len(poisoned_apple_positions)
+
+        if (safe_apple_positions is None):
+            assert num_apples is not None, "num_apples must be specified if positions are not fixed"
+        else:
+            # NOTE: the list takes precedence over num_apples (if both provided)
+            if (poisoned_apple_positions is None):
+                num_apples = len(safe_apple_positions) + num_poisoned
+            else:
+                num_apples = len(safe_apple_positions) + len(poisoned_apple_positions)
         
         assert num_poisoned <= num_apples, "Number of poisoned apples cannot exceed total apples"
         assert grid_size >= 3, "Grid size must be at least 3x3"
@@ -106,7 +121,7 @@ class PoisonedAppleEnv(gym.Env):
         self.num_poisoned = num_poisoned
         self.reward_safe = reward_safe
         self.reward_poison = reward_poison
-        self.reward_step = -0.01
+        self.reward_step = reward_step
         self.render_mode = render_mode
         self.observation_type = observation_type
         
@@ -153,10 +168,10 @@ class PoisonedAppleEnv(gym.Env):
         
     def seed(self, seed: Optional[int] = None):
         """Set the seed for random number generation."""
-        self._np_random = np.random.RandomState(seed)
+        self._np_random = np.random.RandomState(seed) # type: ignore
         return [seed]
     
-    def reset(
+    def reset( # type: ignore
         self, 
         seed: Optional[int] = None, 
         options: Optional[Dict[str, Any]] = None
@@ -178,7 +193,7 @@ class PoisonedAppleEnv(gym.Env):
             self.seed(seed)
         
         if self._np_random is None:
-            self._np_random = np.random.RandomState()
+            self._np_random = np.random.RandomState() # type: ignore
         
         # Reset step counter
         self.current_step = 0
@@ -192,7 +207,7 @@ class PoisonedAppleEnv(gym.Env):
             available_positions = [
                 (i, j) for i in range(self.grid_size) for j in range(self.grid_size)
             ]
-            agent_idx = self._np_random.choice(len(available_positions))
+            agent_idx = self._np_random.choice(len(available_positions)) # type: ignore
             self.agent_pos = np.array(available_positions[agent_idx])
         
         # Set apple positions
@@ -208,7 +223,7 @@ class PoisonedAppleEnv(gym.Env):
             ]
             
             # Randomly select positions for apples
-            selected_positions = self._np_random.choice(
+            selected_positions = self._np_random.choice(  # type: ignore
                 len(available_positions), 
                 size=self.num_apples,
                 replace=False
@@ -217,7 +232,7 @@ class PoisonedAppleEnv(gym.Env):
             apple_positions = [available_positions[i] for i in selected_positions]
             
             # Randomly assign which apples are poisoned
-            poisoned_indices = self._np_random.choice(
+            poisoned_indices = self._np_random.choice( # type: ignore
                 self.num_apples,
                 size=self.num_poisoned,
                 replace=False
@@ -263,6 +278,7 @@ class PoisonedAppleEnv(gym.Env):
         self.current_step += 1
         
         # Calculate new position based on action
+        assert self.agent_pos is not None, "Agent position not initialized"
         new_pos = self.agent_pos.copy()
         
         if action == self.UP:
@@ -281,6 +297,7 @@ class PoisonedAppleEnv(gym.Env):
         reward = self.reward_step  # Small step penalty to encourage efficiency
         agent_tuple = tuple(self.agent_pos)
         
+        assert self.safe_apples is not None and self.poisoned_apples is not None, "Apples not initialized"
         if agent_tuple in self.safe_apples:
             self.safe_apples.remove(agent_tuple)
             reward += self.reward_safe
@@ -327,13 +344,16 @@ class PoisonedAppleEnv(gym.Env):
         obs = np.zeros((self.grid_size, self.grid_size, 3), dtype=np.uint8)
         
         # Channel 0: Agent position
+        assert self.agent_pos is not None, "Agent position not initialized"
         obs[self.agent_pos[0], self.agent_pos[1], 0] = 255
         
         # Channel 1: Safe apples
+        assert self.safe_apples is not None, "Safe apples not initialized"
         for pos in self.safe_apples:
             obs[pos[0], pos[1], 1] = 255
         
         # Channel 2: Poisoned apples
+        assert self.poisoned_apples is not None, "Poisoned apples not initialized"
         for pos in self.poisoned_apples:
             obs[pos[0], pos[1], 2] = 255
         
@@ -351,10 +371,12 @@ class PoisonedAppleEnv(gym.Env):
         obs = np.zeros(2 + 3*self.num_apples, dtype=np.float32)
         
         # Agent position
+        assert self.agent_pos is not None, "Agent position not initialized"
         obs[0] = self.agent_pos[0]
         obs[1] = self.agent_pos[1]
         
         # Apple positions (in initial order)
+        assert self.initial_apple_positions is not None, "Initial apple positions not set"
         for i, (pos, is_poisoned) in enumerate(self.initial_apple_positions):
             idx = 2 + 3*i
             # Check if apple is still present
@@ -388,16 +410,19 @@ class PoisonedAppleEnv(gym.Env):
         obs = np.zeros(self.grid_size * self.grid_size, dtype=np.float32)
 
         # Place safe apples (value 2)
+        assert self.safe_apples is not None, "Safe apples not initialized"
         for pos in self.safe_apples:
             idx = pos[0] * self.grid_size + pos[1]
             obs[idx] = 2.0
         
         # Place poisoned apples (value 3)
+        assert self.poisoned_apples is not None, "Poisoned apples not initialized"
         for pos in self.poisoned_apples:
             idx = pos[0] * self.grid_size + pos[1]
             obs[idx] = 3.0
         
         # Place agent (value 1) - overwrites apple if on same position
+        assert self.agent_pos is not None, "Agent position not initialized"
         agent_idx = self.agent_pos[0] * self.grid_size + self.agent_pos[1]
         obs[agent_idx] = 1.0
         
@@ -410,6 +435,9 @@ class PoisonedAppleEnv(gym.Env):
         Returns:
             info: Dictionary with state information
         """
+        assert self.agent_pos is not None, "Agent position not initialized"
+        assert self.safe_apples is not None, "Safe apples not initialized"
+        assert self.poisoned_apples is not None, "Poisoned apples not initialized"
         return {
             "agent_position": tuple(self.agent_pos),
             "safe_apples_remaining": len(self.safe_apples),
@@ -438,13 +466,16 @@ class PoisonedAppleEnv(gym.Env):
         grid = [['.' for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
         # Place apples
+        assert self.safe_apples is not None, "Safe apples not initialized"
         for pos in self.safe_apples:
             grid[pos[0]][pos[1]] = 'A'
         
+        assert self.poisoned_apples is not None, "Poisoned apples not initialized"
         for pos in self.poisoned_apples:
             grid[pos[0]][pos[1]] = 'P'
         
         # Place agent (overrides apples if on same position)
+        assert self.agent_pos is not None, "Agent position not initialized"
         grid[self.agent_pos[0]][self.agent_pos[1]] = 'X'
         
         # Print grid
@@ -478,16 +509,19 @@ class PoisonedAppleEnv(gym.Env):
             img[:, i * cell_size] = 200
         
         # Draw safe apples (green)
+        assert self.safe_apples is not None, "Safe apples not initialized"
         for pos in self.safe_apples:
             y, x = pos[0] * cell_size, pos[1] * cell_size
             img[y+10:y+cell_size-10, x+10:x+cell_size-10] = [0, 255, 0]
         
         # Draw poisoned apples (red)
+        assert self.poisoned_apples is not None, "Poisoned apples not initialized"
         for pos in self.poisoned_apples:
             y, x = pos[0] * cell_size, pos[1] * cell_size
             img[y+10:y+cell_size-10, x+10:x+cell_size-10] = [255, 0, 0]
         
         # Draw agent (blue)
+        assert self.agent_pos is not None, "Agent position not initialized"
         y, x = self.agent_pos[0] * cell_size, self.agent_pos[1] * cell_size
         img[y+15:y+cell_size-15, x+15:x+cell_size-15] = [0, 0, 255]
         
@@ -496,154 +530,3 @@ class PoisonedAppleEnv(gym.Env):
     def close(self):
         """Clean up resources."""
         pass
-
-
-# # Helper functions to create specific task configurations
-
-# def make_task1_env(**kwargs) -> PoisonedAppleEnv:
-#     """
-#     Create Task 1 environment: No poisoned apples.
-    
-#     Args:
-#         **kwargs: Additional arguments to pass to PoisonedAppleEnv
-    
-#     Returns:
-#         PoisonedAppleEnv instance configured for Task 1
-#     """
-#     default_config = {
-#         "grid_size": 5,
-#         "num_apples": 3,
-#         "num_poisoned": 0,
-#     }
-#     default_config.update(kwargs)
-#     return PoisonedAppleEnv(**default_config)
-
-
-# def make_task2_env(**kwargs) -> PoisonedAppleEnv:
-#     """
-#     Create Task 2 environment: One poisoned apple.
-    
-#     Args:
-#         **kwargs: Additional arguments to pass to PoisonedAppleEnv
-    
-#     Returns:
-#         PoisonedAppleEnv instance configured for Task 2
-#     """
-#     default_config = {
-#         "grid_size": 5,
-#         "num_apples": 3,
-#         "num_poisoned": 1,
-#     }
-#     default_config.update(kwargs)
-#     return PoisonedAppleEnv(**default_config)
-
-
-# if __name__ == "__main__":
-#     # Demo the environment
-#     print("=== Task 1 Demo: No Poisoned Apples ===")
-#     env = make_task1_env(render_mode="human")
-#     obs, info = env.reset(seed=42)
-#     env.render()
-    
-#     print("\nTaking random actions...")
-#     for _ in range(5):
-#         action = env.action_space.sample()
-#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#         obs, reward, terminated, truncated, info = env.step(action)
-#         print(f"Action: {action_names[action]}, Reward: {reward}")
-#         env.render()
-        
-#         if terminated or truncated:
-#             print("Episode finished!")
-#             break
-    
-#     env.close()
-    
-#     print("\n\n=== Task 2 Demo: One Poisoned Apple ===")
-#     env = make_task2_env(render_mode="human")
-#     obs, info = env.reset(seed=42)
-#     env.render()
-    
-#     print("\nTaking random actions...")
-#     for _ in range(5):
-#         action = env.action_space.sample()
-#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#         obs, reward, terminated, truncated, info = env.step(action)
-#         print(f"Action: {action_names[action]}, Reward: {reward}")
-#         env.render()
-        
-#         if terminated or truncated:
-#             print("Episode finished!")
-#             break
-    
-#     env.close()
-    
-#     print("\n\n=== Fixed Positions Demo ===")
-#     # Create environment with fixed positions
-#     env = PoisonedAppleEnv(
-#         grid_size=5,
-#         num_apples=3,
-#         num_poisoned=1,
-#         agent_start_pos=(0, 0),  # Agent starts at top-left
-#         safe_apple_positions=[(1, 1), (2, 2)],  # Two safe apples
-#         poisoned_apple_positions=[(3, 3)],  # One poisoned apple
-#         render_mode="human"
-#     )
-#     obs, info = env.reset()
-#     print("Environment with fixed positions:")
-#     print(f"Agent: (0, 0), Safe apples: [(1, 1), (2, 2)], Poisoned: [(3, 3)]")
-#     env.render()
-    
-#     print("\nNavigating to collect apples...")
-#     # Navigate DOWN and RIGHT to (1, 1)
-#     for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
-#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#         obs, reward, terminated, truncated, info = env.step(action)
-#         print(f"Action: {action_names[action]}, Reward: {reward}")
-#         env.render()
-#         if terminated or truncated:
-#             break
-    
-#     env.close()
-    
-#     print("\n\n=== Coordinate Observation Demo ===")
-#     # Create environment with coordinate-based observations
-#     env = PoisonedAppleEnv(
-#         grid_size=5,
-#         num_apples=3,
-#         num_poisoned=1,
-#         agent_start_pos=(0, 0),
-#         safe_apple_positions=[(1, 1), (2, 2)],
-#         poisoned_apple_positions=[(3, 3)],
-#         observation_type="coordinates",
-#         render_mode="human"
-#     )
-#     obs, info = env.reset()
-#     print("Environment with coordinate observations:")
-#     print(f"Observation space: {env.observation_space}")
-#     print(f"Initial observation: {obs}")
-#     print(f"Format: [agent_row, agent_col, apple1_row, apple1_col, apple1_is_poisoned, ...]")
-#     env.render()
-    
-#     print("\nCollecting first apple...")
-#     # Navigate DOWN and RIGHT to (1, 1)
-#     for action in [PoisonedAppleEnv.DOWN, PoisonedAppleEnv.RIGHT]:
-#         action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-#         obs, reward, terminated, truncated, info = env.step(action)
-#         print(f"Action: {action_names[action]}, Reward: {reward}")
-#         print(f"New observation: {obs}")
-#         print(f"  Agent at: ({obs[0]}, {obs[1]})")
-#         for i in range(env.num_apples):
-#             idx = 2 + 3*i
-#             apple_pos = (obs[idx], obs[idx+1])
-#             is_poisoned = obs[idx+2]
-#             status = "POISONED" if is_poisoned == 1.0 else "safe"
-#             if apple_pos[0] == -1:
-#                 print(f"  Apple {i+1} ({status}): Collected")
-#             else:
-#                 print(f"  Apple {i+1} ({status}): ({int(apple_pos[0])}, {int(apple_pos[1])})")
-#         env.render()
-#         if terminated or truncated:
-#             break
-    
-#     env.close()
