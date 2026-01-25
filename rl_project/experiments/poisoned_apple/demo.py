@@ -8,8 +8,9 @@ import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
-from poisoned_apple_env import PoisonedAppleEnv
-from utils.ppo_utils import make_actor_critic, ppo_train, PPOConfig
+import pandas as pd
+from poisoned_apple_env import PoisonedAppleEnv, evaluate_policy
+from utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
 ############### Utils #################################
@@ -176,16 +177,27 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
     plt.tight_layout()
 
 #%%
+### CONFIGS (shared across all environments)
+max_steps = 9
+grid_size = 5
+observation_type = "flat"
+agent_start_pos = (0, 0)
+safe_env1_state_action_data_num_rollouts = 1  # NOTE: one episode is sufficient because Env1 and standard_actor are deterministic
+seed = 42
+
+#%%
 ######################################################
 print("\n\n=== Flat Observation Demo ===")
 # Create environment with flat observations
 env = PoisonedAppleEnv(
-    grid_size=5,
-    agent_start_pos=(0, 0),
+    grid_size=grid_size,
+    agent_start_pos=agent_start_pos,
     safe_apple_positions=[(1, 1), (2, 2)],
     poisoned_apple_positions=[(3, 3)],
-    observation_type="flat",
-    render_mode="human"
+    observation_type=observation_type,
+    render_mode="human",
+    max_steps=max_steps,
+    seed=seed
 )
 
 #%%
@@ -193,31 +205,30 @@ env = PoisonedAppleEnv(
 ppo_cfg = PPOConfig(
     total_timesteps=1_000,
 )
-actor1, critic1 = ppo_train(
+standard_actor, standard_critic = ppo_train(
     env=env,
     cfg=ppo_cfg,
 )
 
 #%%
 ### Visualize the trained agent in Env 1
-visualize_agent_trajectory(env, actor1, num_episodes=1, env_name='Env 1')
+visualize_agent_trajectory(env, standard_actor, num_episodes=1, env_name='Env 1')
 
 # %%
 ### In Env 2, one of the safe apples becomes poisoned :(
-max_steps = 10
 env2 = PoisonedAppleEnv(
-    grid_size=5,
-    agent_start_pos=(0, 0),
+    grid_size=grid_size,
+    agent_start_pos=agent_start_pos,
     safe_apple_positions=[(2, 2)],
     poisoned_apple_positions=[(1, 1), (3, 3)],
-    observation_type="flat",
+    observation_type=observation_type,
     render_mode="human",
     max_steps=max_steps,
-    seed=42
+    seed=seed
 )
 
 # Visualize the trained agent in Env 2
-visualize_agent_trajectory(env2, actor1, num_episodes=1, max_steps=max_steps, env_name='Env 2')
+visualize_agent_trajectory(env2, standard_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2')
 
 #%%
 # ### OPTIONAL: train a new agent from scratch in Env 2
@@ -233,18 +244,18 @@ visualize_agent_trajectory(env2, actor1, num_episodes=1, max_steps=max_steps, en
 # actor2, critic2 = ppo_train(
 #     env=env2,
 #     cfg=ppo_cfg2,
-#     actor_warm_start=actor1,
-#     critic_warm_start=critic1
+#     actor_warm_start=standard_actor,
+#     critic_warm_start=standard_critic
 # )
 # # Visualize the trained agent in Env 2
 # visualize_agent_trajectory(env2, actor2, num_episodes=1, max_steps=4)
 
-# ### How does the new actor1 perform in Env 1?
+# ### How does the new standard_actor perform in Env 1?
 # # visualize_agent_trajectory(env, actor2, num_episodes=1)
-# visualize_agent_trajectory(env2, actor1, num_episodes=1)
+# visualize_agent_trajectory(env2, standard_actor, num_episodes=1)
 
 #%%
-### Generate dataset that contains safe actions for each state visited by actor1 in Env1
+### Generate dataset that contains safe actions for each state visited by standard_actor in Env1
 ### SAFE RL POLICY UPDATE
 # The idea is to update the policy on Task 2 using a safe RL method
 # such that it retains safety on Task 1 while improving performance on Task 2.
@@ -287,10 +298,10 @@ visualize_agent_trajectory(env2, actor1, num_episodes=1, max_steps=max_steps, en
 # obs, info = env.reset()
 # done = False
 # while not done:
-#     # Get action from actor1
+#     # Get action from standard_actor
 #     with torch.no_grad():
 #         obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-#         action_logits = actor1(obs_tensor)
+#         action_logits = standard_actor(obs_tensor)
 #         action = torch.argmax(action_logits, dim=1).item()
     
 #     # Record state and safe action
@@ -306,27 +317,26 @@ visualize_agent_trajectory(env2, actor1, num_episodes=1, max_steps=max_steps, en
 # states = torch.FloatTensor(states)
 # actions = torch.LongTensor(actions)
 
-# NOTE: it is important that actor1's behaviour is safe in Env1 along its trajectory
-# NOTE: I do not think we require safety for all possible states in Env1, only those visited by actor1
+# NOTE: it is important that standard_actor's behaviour is safe in Env1 along its trajectory
+# NOTE: I do not think we require safety for all possible states in Env1, only those visited by standard_actor
 
 
-### Generate dataset from actor1's behavior in Env1 (no hardcoding needed!)
+### Generate dataset from standard_actor's behavior in Env1 (no hardcoding needed!)
 states = []
 actions = []
 
 # Collect multiple rollouts to get diverse state coverage
-num_rollouts = 10  # Collect from multiple episodes
-for episode in range(num_rollouts):
+for episode in range(safe_env1_state_action_data_num_rollouts):
     obs, info = env.reset()
     done = False
     while not done:
-        # Get action from actor1 (the trained safe policy)
+        # Get action from standard_actor (the trained safe policy)
         with torch.no_grad():
             obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-            action_logits = actor1(obs_tensor)
+            action_logits = standard_actor(obs_tensor)
             action = torch.argmax(action_logits, dim=1).item()
         
-        # Record state-action pair (actor1's behavior IS the safe behavior)
+        # Record state-action pair (standard_actor's behavior IS the safe behavior)
         states.append(obs)
         actions.append(action)
         
@@ -342,9 +352,9 @@ state_action_torch_dataset = torch.utils.data.TensorDataset(states, actions)
 # %%
 ### Rashomon Set
 interval_trainer = IntervalTrainer(
-    model=actor1, # policy which is an instance of nn.Sequential
+    model=standard_actor, # policy which is an instance of nn.Sequential
     min_acc_limit=0.99, # NOTE: should be not greater than accuracy of the model
-    seed=2025,
+    seed=seed
     # n_iters=10_000, # default 2000; running longer may not translate into higher OOS accuracy
 )
 interval_trainer.compute_rashomon_set(
@@ -361,21 +371,53 @@ param_bounds_u = [bound.detach().cpu() for bound in bounded_model.param_u]
 
 #%%
 ### Train a safe actor
-ppo_cfg3 = PPOConfig(
-    total_timesteps=10_000,
+ppo_cfg_rashomon = PPOConfig(
+    total_timesteps=5_000, # >4000 needed to be safe and performant in Env2
 )
-actor3, critic3 = ppo_train(
+rashomon_actor, _ = ppo_train(
     env=env2,
-    cfg=ppo_cfg3,
-    actor_warm_start=actor1,
-    critic_warm_start=critic1,
+    cfg=ppo_cfg_rashomon,
+    actor_warm_start=standard_actor,
+    critic_warm_start=standard_critic,
     actor_param_bounds_l=param_bounds_l,
     actor_param_bounds_u=param_bounds_u
 )
 
 # Visualize the trained safe actor in Env 1
-visualize_agent_trajectory(env, actor3, num_episodes=1, max_steps=10, env_name='Env 1')
+visualize_agent_trajectory(env, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 1')
 
 # Visualize the trained safe actor in Env 2
-visualize_agent_trajectory(env2, actor3, num_episodes=1, max_steps=10, env_name='Env 2')
+visualize_agent_trajectory(env2, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 2')
+
 # %%
+### Evaluate policies
+print("\n\n=== Policy Evaluations ===")
+# Evaluate standard_actor
+num_eval_episodes = 1 # it is ok because environments and actors are deterministic
+standard_actor_env1_metrics = evaluate_policy(env, standard_actor, num_episodes=num_eval_episodes)
+standard_actor_env2_metrics = evaluate_policy(env2, standard_actor, num_episodes=num_eval_episodes)
+
+# Evaluate rashomon_actor
+rashomon_actor_env1_metrics = evaluate_policy(env, rashomon_actor, num_episodes=num_eval_episodes)
+rashomon_actor_env2_metrics = evaluate_policy(env2, rashomon_actor, num_episodes=num_eval_episodes)
+
+#%%
+# Create dataframe to summarize results
+results_df = pd.DataFrame({
+    'Standard Actor / Env 1': standard_actor_env1_metrics,
+    'Standard Actor / Env 2': standard_actor_env2_metrics,
+    'Rashomon Actor / Env 1': rashomon_actor_env1_metrics,
+    'Rashomon Actor / Env 2': rashomon_actor_env2_metrics
+})
+print("\n=== Evaluation Results ===")
+print(results_df.round(2))
+# Make sure standard actor is unsafe in Env 2
+assert results_df.loc['avg_safety_success', 'Standard Actor / Env 2'] < 1.0, "Standard actor should be unsafe in Env 2"
+# Make sure Rashomon actor is safe in Env 1 # TODO: I probably should compare to the certificate value here
+assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 1'] == 1.0, "Rashomon actor should be safe in Env 1"
+# And in Env 2
+assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 2'] == 1.0, "Rashomon actor should be safe in Env 2"
+
+#%%
+# Ablation study TODO:
+# 1) Show that total_timesteps increase for Actor 1 training does not help Actor 1 to be safe and performant in Env 2
