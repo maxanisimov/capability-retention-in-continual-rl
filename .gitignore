@@ -186,3 +186,7 @@ llm_final_results.txt
 figures/
 *.txt
 *.json
+
+# Others
+archive/
+.DS_Store
