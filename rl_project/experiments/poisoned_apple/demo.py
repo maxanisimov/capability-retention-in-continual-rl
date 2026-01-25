@@ -236,23 +236,21 @@ visualize_agent_trajectory(env2, standard_actor, num_episodes=1, max_steps=max_s
 # # NOTE: For good performance, it is critical to:
 # # set total_timesteps = 10_000
 # # use actor and critic warm starts from Env 1
-# ppo_cfg2 = PPOConfig(
-#     total_timesteps=10_000,
+# ppo_cfg_amnesic = PPOConfig(
+#     total_timesteps=20_000,
 #     # ent_coef=1,
 #     # lr=0.01
 # )
-# actor2, critic2 = ppo_train(
+# amnesic_actor, _ = ppo_train(
 #     env=env2,
-#     cfg=ppo_cfg2,
+#     cfg=ppo_cfg_amnesic,
 #     actor_warm_start=standard_actor,
 #     critic_warm_start=standard_critic
 # )
-# # Visualize the trained agent in Env 2
-# visualize_agent_trajectory(env2, actor2, num_episodes=1, max_steps=4)
-
-# ### How does the new standard_actor perform in Env 1?
-# # visualize_agent_trajectory(env, actor2, num_episodes=1)
-# visualize_agent_trajectory(env2, standard_actor, num_episodes=1)
+# # How does the new amnesic_actor perform in Env 1?
+# visualize_agent_trajectory(env, amnesic_actor, num_episodes=1, max_steps=max_steps, env_name='Env 1 - Amnesic Actor')
+# # Visualize the amnesic_actor in Env 2
+# visualize_agent_trajectory(env2, amnesic_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2 - Amnesic Actor')
 
 #%%
 ### Generate dataset that contains safe actions for each state visited by standard_actor in Env1
