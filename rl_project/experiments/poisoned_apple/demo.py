@@ -224,8 +224,8 @@ def plot_trajectory(
 
 #%%
 ### CONFIGS
-cfg_name = 'simple_6x6'
-save_results = False
+cfg_name = 'simple_8x8'
+save_results = True
 
 ##############################################
 # Get configuration
