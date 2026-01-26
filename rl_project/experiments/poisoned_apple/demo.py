@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
+import yaml
 from poisoned_apple_env import PoisonedAppleEnv, evaluate_policy
 from utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
@@ -17,7 +18,10 @@ plots_dir = '/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_pro
 
 ############### Utils #################################
 ### Visualize trained agent's trajectory
-def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_name=None, save_dir=None):
+def visualize_agent_trajectory(
+        env, actor, num_episodes=3, max_steps=None, 
+        env_name=None, cfg_name=None, actor_name=None, save_dir=None
+    ):
     """
     Visualize the trained agent's trajectory in the environment.
     
@@ -27,6 +31,8 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
         num_episodes: Number of episodes to visualize
         max_steps: Maximum steps per episode (default: env.max_steps)
         env_name: Optional name for the environment (used in plot titles and filenames)
+        cfg_name: Optional configuration name (used in filenames)
+        actor_name: Optional actor name (used in filenames)
         save_dir: Optional directory to save plots. If None, plots are only displayed.
     """
     # if max_steps is None:
@@ -92,12 +98,18 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
         print(f"Apples remaining: {info['safe_apples_remaining']} safe, {info['poisoned_apples_remaining']} poisoned")
         
         # Plot trajectory
-        plot_trajectory(env, trajectory, rewards_list, actions_list, episode + 1, env_name=env_name, save_dir=save_dir)
+        plot_trajectory(
+            env, trajectory, rewards_list, actions_list, episode + 1, 
+            env_name=env_name, cfg_name=cfg_name, actor_name=actor_name, save_dir=save_dir
+        )
     
     if save_dir is None:
         plt.show()
 
-def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, env_name=None, save_dir=None):
+def plot_trajectory(
+        env, trajectory, rewards_list, actions_list, episode_num, 
+        env_name=None, cfg_name=None, actor_name=None, save_dir=None
+    ):
     """
     Plot a single trajectory as a static image.
     
@@ -108,6 +120,8 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
         actions_list: List of actions
         episode_num: Episode number for title
         env_name: Optional environment name for title
+        cfg_name: Optional configuration name for filename
+        actor_name: Optional actor name for filename
         save_dir: Optional directory to save the plot. If None, plot is only displayed.
     """
     grid_size = env.grid_size
@@ -137,6 +151,7 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
         ax.grid(True, linewidth=0.5, alpha=0.3)
         ax.set_xticks(range(grid_size))
         ax.set_yticks(range(grid_size))
+        ax.tick_params(labelsize=12)
         ax.invert_yaxis()
         
         # Draw safe apples (green circles)
@@ -144,14 +159,14 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
             circle = patches.Circle((pos[1], pos[0]), 0.3, color='green', alpha=0.6)
             ax.add_patch(circle)
             ax.text(pos[1], pos[0], 'A', ha='center', va='center', 
-                   fontsize=10, fontweight='bold', color='white')
+                   fontsize=14, fontweight='bold', color='white')
         
         # Draw poisoned apples (red circles)
         for pos in state['poisoned_apples']:
             circle = patches.Circle((pos[1], pos[0]), 0.3, color='red', alpha=0.6)
             ax.add_patch(circle)
             ax.text(pos[1], pos[0], 'P', ha='center', va='center',
-                   fontsize=10, fontweight='bold', color='white')
+                   fontsize=14, fontweight='bold', color='white')
         
         # Draw agent (blue square)
         agent_pos = state['agent_pos']
@@ -159,17 +174,17 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
                                 0.7, 0.7, color='blue', alpha=0.8)
         ax.add_patch(rect)
         ax.text(agent_pos[1], agent_pos[0], '●', ha='center', va='center',
-               fontsize=16, fontweight='bold', color='white')
+               fontsize=20, fontweight='bold', color='white')
         
         # Title for each step
         if step_idx == 0:
-            ax.set_title(f'Start', fontsize=10, fontweight='bold')
+            ax.set_title(f'Start', fontsize=13, fontweight='bold')
         else:
             action = action_names[actions_list[step_idx - 1]]
             reward = rewards_list[step_idx - 1]
             reward_color = 'green' if reward > 0 else ('red' if reward < 0 else 'gray')
             ax.set_title(f'Step {step_idx}: {action} (r={reward:.2f})', 
-                        fontsize=10, fontweight='bold', color=reward_color)
+                        fontsize=13, fontweight='bold', color=reward_color)
     
     # Hide empty subplots
     for step_idx in range(num_steps, rows * cols):
@@ -180,31 +195,62 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
     suptitle = f'Episode {episode_num} - Agent Trajectory'
     if env_name is not None:
         suptitle = env_name + ' - ' + suptitle
-    fig.suptitle(suptitle, fontsize=14, fontweight='bold')
+    fig.suptitle(suptitle, fontsize=16, fontweight='bold')
     plt.tight_layout()
     
     # Save the figure if save_dir is provided
     if save_dir is not None:
         import os
         os.makedirs(save_dir, exist_ok=True)
-        filename = f"trajectory_episode_{episode_num}"
-        if env_name is not None:
-            # Clean env_name for filename (replace spaces and special chars)
-            clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            filename = f"{clean_env_name}_{filename}"
-        filepath = os.path.join(save_dir, f"{filename}.png")
-        plt.savefig(filepath, dpi=150, bbox_inches='tight')
-        print(f"Saved plot to: {filepath}")
-        plt.close(fig)
+    
+    filename_parts = []
+    assert not (cfg_name is None and actor_name is None and env_name is None), "At least one of cfg_name, actor_name, or env_name must be provided for filename."
+    if cfg_name is not None:
+        filename_parts.append(cfg_name)
+    if env_name is not None:
+        clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        filename_parts.append(clean_env_name)
+    if actor_name is not None:
+        clean_actor_name = actor_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        filename_parts.append(clean_actor_name)
+    filename_parts.append(f"episode_{episode_num}")
+
+    filename = "_".join(filename_parts) + ".png"
+    filepath = os.path.join(save_dir, filename) # type: ignore
+    plt.savefig(filepath, dpi=150, bbox_inches='tight')
+    print(f"Saved plot to: {filepath}")
+    plt.close(fig)
 
 #%%
-### CONFIGS (shared across all environments)
-max_steps = 9
-grid_size = 5
-observation_type = "flat"
-agent_start_pos = (0, 0)
-safe_env1_state_action_data_num_rollouts = 1  # NOTE: one episode is sufficient because Env1 and standard_actor are deterministic
-seed = 42
+### CONFIGS
+cfg_name = 'simple_5x5'
+
+# Get configuration
+with open('demo_configs.yaml', 'r') as f:
+    DEMO_CONFIGS = yaml.safe_load(f)
+cfg = DEMO_CONFIGS[cfg_name]
+
+# General configs
+grid_size = cfg['grid_size']
+agent_start_pos = tuple(cfg['agent_start_pos'])
+observation_type = cfg['observation_type']
+max_steps = cfg['max_steps']
+safe_env1_state_action_data_num_rollouts = cfg['safe_env1_state_action_data_num_rollouts']
+seed = cfg['seed']
+
+# Env 1 configs
+env1_safe_apple_positions = [tuple(pos) for pos in cfg['env1_safe_apples']]
+env1_poisoned_apple_positions = [tuple(pos) for pos in cfg['env1_poisoned_apples']]
+
+# Env2 configs
+env2_safe_apple_positions = [tuple(pos) for pos in cfg['env2_safe_apples']]
+env2_poisoned_apple_positions = [tuple(pos) for pos in cfg['env2_poisoned_apples']]
+
+# Uadaptable actor training timesteps
+unadaptable_actor_timesteps = cfg['unadaptable_actor_timesteps']
+
+# Rashomon actor training timesteps
+rashomon_timesteps = cfg['rashomon_timesteps']
 
 #%%
 ######################################################
@@ -213,8 +259,8 @@ print("\n\n=== Flat Observation Demo ===")
 env = PoisonedAppleEnv(
     grid_size=grid_size,
     agent_start_pos=agent_start_pos,
-    safe_apple_positions=[(1, 1), (2, 2)],
-    poisoned_apple_positions=[(3, 3)],
+    safe_apple_positions=env1_safe_apple_positions,
+    poisoned_apple_positions=env1_poisoned_apple_positions,
     observation_type=observation_type,
     render_mode="human",
     max_steps=max_steps,
@@ -224,7 +270,7 @@ env = PoisonedAppleEnv(
 #%%
 ### Train using ppo
 ppo_cfg = PPOConfig(
-    total_timesteps=1_000,
+    total_timesteps=unadaptable_actor_timesteps,
 )
 standard_actor, standard_critic = ppo_train(
     env=env,
@@ -234,16 +280,16 @@ standard_actor, standard_critic = ppo_train(
 #%%
 ### Visualize the trained agent in Env 1
 visualize_agent_trajectory(
-    env, standard_actor, num_episodes=1, env_name='Env 1',
-    # save_dir=plots_dir
+    env, standard_actor, num_episodes=1, max_steps=max_steps, 
+    env_name='Env 1', cfg_name=cfg_name, actor_name='Standard Actor', save_dir=plots_dir
 )
 # %%
 ### In Env 2, one of the safe apples becomes poisoned :(
 env2 = PoisonedAppleEnv(
     grid_size=grid_size,
     agent_start_pos=agent_start_pos,
-    safe_apple_positions=[(2, 2)],
-    poisoned_apple_positions=[(1, 1), (3, 3)],
+    safe_apple_positions=env2_safe_apple_positions,
+    poisoned_apple_positions=env2_poisoned_apple_positions,
     observation_type=observation_type,
     render_mode="human",
     max_steps=max_steps,
@@ -252,8 +298,8 @@ env2 = PoisonedAppleEnv(
 
 # Visualize the trained agent in Env 2
 visualize_agent_trajectory(
-    env2, standard_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2',
-    # save_dir=plots_dir
+    env2, standard_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2', cfg_name=cfg_name, actor_name='Standard Actor',
+    save_dir=plots_dir
 )
 
 #%%
@@ -396,7 +442,7 @@ param_bounds_u = [bound.detach().cpu() for bound in bounded_model.param_u]
 #%%
 ### Train a safe actor
 ppo_cfg_rashomon = PPOConfig(
-    total_timesteps=5_000, # >4000 needed to be safe and performant in Env2
+    total_timesteps=rashomon_timesteps,
 )
 rashomon_actor, _ = ppo_train(
     env=env2,
@@ -409,14 +455,14 @@ rashomon_actor, _ = ppo_train(
 
 # Visualize the trained safe actor in Env 1
 visualize_agent_trajectory(
-    env, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 1',
-    # save_dir=plots_dir
+    env, rashomon_actor, num_episodes=1, max_steps=max_steps, 
+    env_name='Env 1', cfg_name=cfg_name, actor_name='Rashomon Actor', save_dir=plots_dir
 )
 
 # Visualize the trained safe actor in Env 2
 visualize_agent_trajectory(
-    env2, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 2',
-    # save_dir=plots_dir
+    env2, rashomon_actor, num_episodes=1, max_steps=max_steps, 
+    env_name='Env 2', cfg_name=cfg_name, actor_name='Rashomon Actor', save_dir=plots_dir
 )
 
 # %%
