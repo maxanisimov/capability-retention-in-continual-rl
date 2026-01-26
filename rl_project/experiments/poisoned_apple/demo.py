@@ -13,9 +13,11 @@ from poisoned_apple_env import PoisonedAppleEnv, evaluate_policy
 from utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
+plots_dir = '/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/plots'
+
 ############### Utils #################################
 ### Visualize trained agent's trajectory
-def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_name=None):
+def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_name=None, save_dir=None):
     """
     Visualize the trained agent's trajectory in the environment.
     
@@ -24,6 +26,8 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
         actor: Trained actor network
         num_episodes: Number of episodes to visualize
         max_steps: Maximum steps per episode (default: env.max_steps)
+        env_name: Optional name for the environment (used in plot titles and filenames)
+        save_dir: Optional directory to save plots. If None, plots are only displayed.
     """
     # if max_steps is None:
     #     max_steps = env.max_steps
@@ -63,7 +67,7 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
                 action = torch.argmax(action_logits, dim=1).item()
             
             # Take step
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action) # type: ignore
             done = terminated or truncated
             total_reward += reward
             
@@ -76,7 +80,8 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
             rewards_list.append(reward)
             actions_list.append(action)
             
-            print(f"Step {step + 1}: {action_names[action]}, Reward: {reward:.2f}, Total: {total_reward:.2f}")
+            action_name = action_names[action] # type: ignore
+            print(f"Step {step + 1}: {action_name}, Reward: {reward:.2f}, Total: {total_reward:.2f}")
             step += 1
 
             if step >= max_steps:
@@ -87,11 +92,12 @@ def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=None, env_n
         print(f"Apples remaining: {info['safe_apples_remaining']} safe, {info['poisoned_apples_remaining']} poisoned")
         
         # Plot trajectory
-        plot_trajectory(env, trajectory, rewards_list, actions_list, episode + 1, env_name=env_name)
+        plot_trajectory(env, trajectory, rewards_list, actions_list, episode + 1, env_name=env_name, save_dir=save_dir)
     
-    plt.show()
+    if save_dir is None:
+        plt.show()
 
-def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, env_name=None):
+def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, env_name=None, save_dir=None):
     """
     Plot a single trajectory as a static image.
     
@@ -102,6 +108,7 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
         actions_list: List of actions
         episode_num: Episode number for title
         env_name: Optional environment name for title
+        save_dir: Optional directory to save the plot. If None, plot is only displayed.
     """
     grid_size = env.grid_size
     num_steps = len(trajectory)
@@ -175,6 +182,20 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list, episode_num, en
         suptitle = env_name + ' - ' + suptitle
     fig.suptitle(suptitle, fontsize=14, fontweight='bold')
     plt.tight_layout()
+    
+    # Save the figure if save_dir is provided
+    if save_dir is not None:
+        import os
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"trajectory_episode_{episode_num}"
+        if env_name is not None:
+            # Clean env_name for filename (replace spaces and special chars)
+            clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            filename = f"{clean_env_name}_{filename}"
+        filepath = os.path.join(save_dir, f"{filename}.png")
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"Saved plot to: {filepath}")
+        plt.close(fig)
 
 #%%
 ### CONFIGS (shared across all environments)
@@ -212,8 +233,10 @@ standard_actor, standard_critic = ppo_train(
 
 #%%
 ### Visualize the trained agent in Env 1
-visualize_agent_trajectory(env, standard_actor, num_episodes=1, env_name='Env 1')
-
+visualize_agent_trajectory(
+    env, standard_actor, num_episodes=1, env_name='Env 1',
+    # save_dir=plots_dir
+)
 # %%
 ### In Env 2, one of the safe apples becomes poisoned :(
 env2 = PoisonedAppleEnv(
@@ -228,7 +251,10 @@ env2 = PoisonedAppleEnv(
 )
 
 # Visualize the trained agent in Env 2
-visualize_agent_trajectory(env2, standard_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2')
+visualize_agent_trajectory(
+    env2, standard_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2',
+    # save_dir=plots_dir
+)
 
 #%%
 # ### OPTIONAL: train a new agent from scratch in Env 2
@@ -339,7 +365,7 @@ for episode in range(safe_env1_state_action_data_num_rollouts):
         actions.append(action)
         
         # Take step
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action) # type: ignore
         done = terminated or truncated
 
 states = torch.FloatTensor(states)
@@ -382,10 +408,16 @@ rashomon_actor, _ = ppo_train(
 )
 
 # Visualize the trained safe actor in Env 1
-visualize_agent_trajectory(env, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 1')
+visualize_agent_trajectory(
+    env, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 1',
+    # save_dir=plots_dir
+)
 
 # Visualize the trained safe actor in Env 2
-visualize_agent_trajectory(env2, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 2')
+visualize_agent_trajectory(
+    env2, rashomon_actor, num_episodes=1, max_steps=10, env_name='Env 2',
+    # save_dir=plots_dir
+)
 
 # %%
 ### Evaluate policies
@@ -410,7 +442,7 @@ results_df = pd.DataFrame({
 print("\n=== Evaluation Results ===")
 print(results_df.round(2))
 # Make sure standard actor is unsafe in Env 2
-assert results_df.loc['avg_safety_success', 'Standard Actor / Env 2'] < 1.0, "Standard actor should be unsafe in Env 2"
+assert results_df.loc['avg_safety_success', 'Standard Actor / Env 2'] < 1.0, "Standard actor should be unsafe in Env 2" # type: ignore
 # Make sure Rashomon actor is safe in Env 1 # TODO: I probably should compare to the certificate value here
 assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 1'] == 1.0, "Rashomon actor should be safe in Env 1"
 # And in Env 2
