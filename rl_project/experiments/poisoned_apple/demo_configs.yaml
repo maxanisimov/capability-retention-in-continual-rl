@@ -13,7 +13,7 @@ simple_5x5:
   seed: 42
   notes: "Works well, standard actor fails on Env2"
 
-challenging_6x6:
+simple_6x6:
   grid_size: 6
   max_steps: 9
   observation_type: flat

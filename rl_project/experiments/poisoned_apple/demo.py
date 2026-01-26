@@ -15,6 +15,7 @@ from utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
 plots_dir = '/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/plots'
+tables_dir = '/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/tables'
 
 ############### Utils #################################
 ### Visualize trained agent's trajectory
@@ -223,8 +224,10 @@ def plot_trajectory(
 
 #%%
 ### CONFIGS
-cfg_name = 'simple_5x5'
+cfg_name = 'simple_6x6'
+save_results = False
 
+##############################################
 # Get configuration
 with open('demo_configs.yaml', 'r') as f:
     DEMO_CONFIGS = yaml.safe_load(f)
@@ -251,6 +254,9 @@ unadaptable_actor_timesteps = cfg['unadaptable_actor_timesteps']
 
 # Rashomon actor training timesteps
 rashomon_timesteps = cfg['rashomon_timesteps']
+
+### Saving params
+save_dir = plots_dir if save_results else None
 
 #%%
 ######################################################
@@ -493,6 +499,10 @@ assert results_df.loc['avg_safety_success', 'Standard Actor / Env 2'] < 1.0, "St
 assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 1'] == 1.0, "Rashomon actor should be safe in Env 1"
 # And in Env 2
 assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 2'] == 1.0, "Rashomon actor should be safe in Env 2"
+
+if save_results:
+    # Store results_df to a CSV file for later analysis
+    results_df.to_csv(f'{tables_dir}/poisoned_apple_demo_results_{cfg_name}.csv')
 
 #%%
 # Ablation study TODO:
