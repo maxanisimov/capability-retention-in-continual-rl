@@ -447,7 +447,7 @@ class PoisonedAppleEnv(gymnasium.Env):
             "total_apples_remaining": len(self.safe_apples) + len(self.poisoned_apples),
             "step": self.current_step,
             "max_steps": self.max_steps,
-            "safe_position": tuple(self.agent_pos) not in self.poisoned_apples
+            "safe": tuple(self.agent_pos) not in self.poisoned_apples # whether agent is currently on a poisoned apple
         }
     
     def render(self):
