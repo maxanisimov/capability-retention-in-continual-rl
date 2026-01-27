@@ -1,3 +1,26 @@
+"""
+Poisoned Apple Environment Demo: Deterministic Trajectory Safety (DTS)
+
+This demonstration implements a continual learning scenario where safety is guaranteed
+through trajectory-level demonstrations under deterministic conditions:
+
+1. Initial state is deterministic (fixed agent_start_pos)
+2. Environment dynamics are deterministic (gridworld transitions)
+3. Reference policy is deterministic (argmax over action logits)
+
+Under these conditions, the agent follows a fixed trajectory in Env1. By collecting
+safe state-action pairs along this trajectory and computing the Rashomon set to
+certify safe behavior on these demonstrations, we constrain the policy to remain
+safe without requiring:
+- Exhaustive state-space coverage through exploration
+- A separate learned safety critic
+
+The safety guarantee is trajectory-local rather than global, but remains valid as
+long as policy parameters stay within certified bounds during training and deployment.
+
+For stochastic environments or policies, additional exploration-based data collection
+and safety critics would be required.
+"""
 #%%
 ####### Imports #################################
 import sys
@@ -204,28 +227,29 @@ def plot_trajectory(
         import os
         os.makedirs(save_dir, exist_ok=True)
     
-    filename_parts = []
-    assert not (cfg_name is None and actor_name is None and env_name is None), "At least one of cfg_name, actor_name, or env_name must be provided for filename."
-    if cfg_name is not None:
-        filename_parts.append(cfg_name)
-    if env_name is not None:
-        clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-        filename_parts.append(clean_env_name)
-    if actor_name is not None:
-        clean_actor_name = actor_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-        filename_parts.append(clean_actor_name)
-    filename_parts.append(f"episode_{episode_num}")
+    if save_dir is not None:
+        filename_parts = []
+        assert not (cfg_name is None and actor_name is None and env_name is None), "At least one of cfg_name, actor_name, or env_name must be provided for filename."
+        if cfg_name is not None:
+            filename_parts.append(cfg_name)
+        if env_name is not None:
+            clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            filename_parts.append(clean_env_name)
+        if actor_name is not None:
+            clean_actor_name = actor_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            filename_parts.append(clean_actor_name)
+        filename_parts.append(f"episode_{episode_num}")
 
-    filename = "_".join(filename_parts) + ".png"
-    filepath = os.path.join(save_dir, filename) # type: ignore
-    plt.savefig(filepath, dpi=150, bbox_inches='tight')
-    print(f"Saved plot to: {filepath}")
-    plt.close(fig)
+        filename = "_".join(filename_parts) + ".png"
+        filepath = os.path.join(save_dir, filename) # type: ignore
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"Saved plot to: {filepath}")
+        plt.close(fig)
 
 #%%
 ### CONFIGS
-cfg_name = 'simple_8x8'
-save_results = True
+cfg_name = 'simple_5x5'
+save_results = False
 
 ##############################################
 # Get configuration
@@ -256,7 +280,9 @@ unadaptable_actor_timesteps = cfg['unadaptable_actor_timesteps']
 rashomon_timesteps = cfg['rashomon_timesteps']
 
 ### Saving params
-save_dir = plots_dir if save_results else None
+if not save_results:
+    plots_dir = None
+    tables_dir = None
 
 #%%
 ######################################################
@@ -393,10 +419,49 @@ visualize_agent_trajectory(
 # states = torch.FloatTensor(states)
 # actions = torch.LongTensor(actions)
 
+# ### Safe action dataset with exploration
+# # Motivation: provide safe actions for a wider range of states (not just those visited by standard_actor)
+# # This helps in computing a more robust Rashomon set.
+# # Here, we add some random exploration to the standard_actor's actions.
+# # Note: This is optional and can be commented out if not needed.
+# exploration_prob = 0.5  # Probability of taking a random safe action
+# state_action_dict = {} # Use a dict to track unique states and their actions
+# for episode in range(safe_env1_state_action_data_num_rollouts):
+#     obs, info = env.reset()
+#     done = False
+#     while not done:
+#         if np.random.rand() < exploration_prob:
+#             action = env.action_space.sample()
+#         else:
+#             with torch.no_grad():
+#                 obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+#                 action_logits = standard_actor(obs_tensor)
+#                 action = torch.argmax(action_logits, dim=1).item()
+        
+#         obs, reward, terminated, truncated, info = env.step(action) # type: ignore
+#         done = terminated or truncated
+        
+#         if info['safe_position']:
+#             obs_key = tuple(obs)  # Convert to hashable tuple
+#             if obs_key in state_action_dict:
+#                 # State exists, add alternative action
+#                 state_action_dict[obs_key].add(action)
+#             else:
+#                 # New state
+#                 state_action_dict[obs_key] = {action}
+
+# # Convert to lists for dataset
+# states = []
+# actions = []
+# for obs_tuple, action_set in state_action_dict.items():
+#     for action in action_set:
+#         states.append(list(obs_tuple))  # Convert back to list/array
+#         actions.append(action)
+
+### Deterministic Trajectory Safety (DTS)
+# Safe action dataset from standard_actor's behavior
 # NOTE: it is important that standard_actor's behaviour is safe in Env1 along its trajectory
-# NOTE: I do not think we require safety for all possible states in Env1, only those visited by standard_actor
-
-
+# NOTE: The code below guarantees safety only under the actor1's state-action distribution in Env1!
 ### Generate dataset from standard_actor's behavior in Env1 (no hardcoding needed!)
 states = []
 actions = []
@@ -422,8 +487,13 @@ for episode in range(safe_env1_state_action_data_num_rollouts):
 
 states = torch.FloatTensor(states)
 actions = torch.LongTensor(actions)
-
 state_action_torch_dataset = torch.utils.data.TensorDataset(states, actions)
+
+#%%
+### Visualise the state_action_torch_dataset using matplotlib
+print(f"\nGenerated safe state-action dataset with {len(state_action_torch_dataset)} samples.")
+# TODO
+
 
 # %%
 ### Rashomon Set
@@ -468,7 +538,8 @@ visualize_agent_trajectory(
 # Visualize the trained safe actor in Env 2
 visualize_agent_trajectory(
     env2, rashomon_actor, num_episodes=1, max_steps=max_steps, 
-    env_name='Env 2', cfg_name=cfg_name, actor_name='Rashomon Actor', save_dir=plots_dir
+    env_name='Env 2', cfg_name=cfg_name, actor_name='Rashomon Actor', 
+    save_dir=plots_dir
 )
 
 # %%
