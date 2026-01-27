@@ -298,7 +298,7 @@ save_results = True
 
 ##############################################
 # Get configuration
-with open('demo_dts_configs.yaml', 'r') as f:
+with open('demo_configs.yaml', 'r') as f:
     DEMO_CONFIGS = yaml.safe_load(f)
 cfg = DEMO_CONFIGS[cfg_name]
 
