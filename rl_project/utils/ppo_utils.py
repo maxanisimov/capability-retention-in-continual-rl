@@ -209,7 +209,7 @@ def ppo_train(
         training_data = {
             'states': [],
             'actions': [],
-            'rewards': []
+            # 'rewards': []
         }
 
     while global_step < cfg.total_timesteps:
@@ -239,7 +239,7 @@ def ppo_train(
             if return_training_data:
                 training_data['states'].append(obs.copy()) # type: ignore
                 training_data['actions'].append(act) # type: ignore
-                training_data['rewards'].append(float(reward)) # type: ignore
+                # training_data['rewards'].append(float(reward)) # type: ignore
             
             act_buf[t] = act
             logp_buf[t] = float(logp.item())
