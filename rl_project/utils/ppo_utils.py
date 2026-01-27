@@ -119,12 +119,12 @@ def evaluate(
                 action = torch.argmax(logits, dim=-1).item()
             obs, reward, terminated, truncated, info = env.step(action)
             if render_mode == 'rgb_array':
-                plt.imshow(env.render())
+                plt.imshow(env.render()) # type: ignore
                 plt.axis('off')
                 plt.show()
             if info.get('failure', False):
                 failures += 1
-            episodic_reward += reward
+            episodic_reward += reward # type: ignore
             done = terminated or truncated
         scores.append(episodic_reward)
     actor.train()
@@ -138,22 +138,40 @@ def ppo_train(
     actor_warm_start: nn.Sequential | None = None,
     critic_warm_start: nn.Sequential | None = None,
     actor_param_bounds_l: list[torch.Tensor] | None = None,
-    actor_param_bounds_u: list[torch.Tensor] | None = None
+    actor_param_bounds_u: list[torch.Tensor] | None = None,
+    return_training_data: bool = False
 ):
     """
     Train a PPO agent. If actor_param_bounds_l and actor_param_bounds_u are provided,
     uses projected gradient descent to keep actor parameters within bounds.
+    
+    Args:
+        env: Gymnasium environment
+        cfg: PPO configuration
+        actor_warm_start: Optional pre-trained actor network
+        critic_warm_start: Optional pre-trained critic network
+        actor_param_bounds_l: Optional lower bounds for actor parameters (for PGD)
+        actor_param_bounds_u: Optional upper bounds for actor parameters (for PGD)
+        return_training_data: If True, returns state-action pairs collected during training
+        
+    Returns:
+        If return_training_data is False: (actor, critic)
+        If return_training_data is True: (actor, critic, training_data)
+            where training_data is a dict containing:
+                - 'states': numpy array of shape (N, obs_dim) containing all states visited
+                - 'actions': numpy array of shape (N,) containing all actions taken
+                - 'rewards': numpy array of shape (N,) containing all rewards received
     """
     # env_kwargs = cfg.env_kwargs if cfg.env_kwargs is not None else {}
     # env = gym.make(cfg.env_id, **env_kwargs)
     set_seed(env, cfg.seed)
 
-    obs_dim = env.observation_space.shape[0] if isinstance(env.observation_space, gym.spaces.Box) else env.observation_space.n
-    n_actions = env.action_space.n if isinstance(env.action_space, gym.spaces.Discrete) else env.action_space.shape[0]
+    obs_dim = env.observation_space.shape[0] if isinstance(env.observation_space, gym.spaces.Box) else env.observation_space.n # type: ignore
+    n_actions = env.action_space.n if isinstance(env.action_space, gym.spaces.Discrete) else env.action_space.shape[0] # type: ignore
 
     actor, critic = make_actor_critic(
         obs_dim=obs_dim,
-        n_actions=n_actions, 
+        n_actions=n_actions, # type: ignore
         actor_warm_start=actor_warm_start,
         critic_warm_start=critic_warm_start
     )
@@ -167,8 +185,8 @@ def ppo_train(
     bounds_l = None
     bounds_u = None
     if use_pgd:
-        bounds_l = [bound.to(device) for bound in actor_param_bounds_l]
-        bounds_u = [bound.to(device) for bound in actor_param_bounds_u]
+        bounds_l = [bound.to(device) for bound in actor_param_bounds_l] # type: ignore
+        bounds_u = [bound.to(device) for bound in actor_param_bounds_u] # type: ignore
         print(f"Using projected gradient descent with parameter bounds")
         
         # Ensure initial parameters are within bounds
@@ -185,6 +203,14 @@ def ppo_train(
     global_step = 0
     start_time = time.time()
     pgd_projections = 0  # Count total parameter projections for logging
+    
+    # Training data tracking
+    if return_training_data:
+        training_data = {
+            'states': [],
+            'actions': [],
+            'rewards': []
+        }
 
     while global_step < cfg.total_timesteps:
         # Storage for rollout
@@ -208,6 +234,12 @@ def ppo_train(
             act = int(action.item())
             next_obs, reward, terminated, truncated, _ = env.step(act)
             done = terminated or truncated
+            
+            # Collect state-action pairs if recording training data
+            if return_training_data:
+                training_data['states'].append(obs.copy()) # type: ignore
+                training_data['actions'].append(act) # type: ignore
+                training_data['rewards'].append(float(reward)) # type: ignore
             
             act_buf[t] = act
             logp_buf[t] = float(logp.item())
@@ -292,7 +324,7 @@ def ppo_train(
                 # Projected gradient descent: clamp actor parameters to bounds
                 if use_pgd:
                     with torch.no_grad():
-                        for param, lb, ub in zip(actor.parameters(), bounds_l, bounds_u):
+                        for param, lb, ub in zip(actor.parameters(), bounds_l, bounds_u): # type: ignore
                             # Count parameters that need projection
                             violations = ((param.data < lb) | (param.data > ub)).sum().item()
                             if violations > 0:
@@ -300,7 +332,7 @@ def ppo_train(
                             param.data.clamp_(lb, ub)
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
-            mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=10)
+            mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=10) # type: ignore
             # Reset the environment after evaluation since the last episode ended
             obs, _ = env.reset()
             elapsed = time.time() - start_time
@@ -314,11 +346,19 @@ def ppo_train(
 
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
         # Final checks and evaluation
-        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes)
+        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes) # type: ignore
         final_msg = f"Final evaluation over {cfg.eval_episodes} episodes: mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         final_msg += f" | failure_rate={failure_rate:.2f}"
         if use_pgd:
             final_msg += f" | Total PGD projections during training: {pgd_projections}"
         print(final_msg)
 
-    return actor, critic
+    # Return results
+    if return_training_data:
+        # Convert lists to numpy arrays
+        training_data['states'] = np.array(training_data['states']) # type: ignore
+        training_data['actions'] = np.array(training_data['actions']) # type: ignore
+        # training_data['rewards'] = np.array(training_data['rewards']) # type: ignore
+        return actor, critic, training_data # type: ignore
+    else:
+        return actor, critic
