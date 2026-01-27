@@ -122,7 +122,7 @@ def evaluate(
                 plt.imshow(env.render()) # type: ignore
                 plt.axis('off')
                 plt.show()
-            if info.get('failure', False):
+            if not info.get('safe', True):
                 failures += 1
             episodic_reward += reward # type: ignore
             done = terminated or truncated
@@ -160,7 +160,9 @@ def ppo_train(
             where training_data is a dict containing:
                 - 'states': numpy array of shape (N, obs_dim) containing all states visited
                 - 'actions': numpy array of shape (N,) containing all actions taken
-                - 'rewards': numpy array of shape (N,) containing all rewards received
+                - 'terminated': numpy array of shape (N,) containing all termination flags for state-action pairs (1 if terminated, 0 otherwise)
+                - 'truncated': numpy array of shape (N,) containing all truncation flags for state-action pairs (1 if truncated, 0 otherwise)
+                - 'safe': numpy array of shape (N,) containing all safety flags for state-action pairs (1 if safe, 0 if unsafe)
     """
     # env_kwargs = cfg.env_kwargs if cfg.env_kwargs is not None else {}
     # env = gym.make(cfg.env_id, **env_kwargs)
@@ -209,6 +211,9 @@ def ppo_train(
         training_data = {
             'states': [],
             'actions': [],
+            'terminated': [],
+            'truncated': [],
+            'safe': [],
             # 'rewards': []
         }
 
@@ -232,13 +237,17 @@ def ppo_train(
                 action = dist.sample()
                 logp = dist.log_prob(action)
             act = int(action.item())
-            next_obs, reward, terminated, truncated, _ = env.step(act)
+            next_obs, reward, terminated, truncated, info = env.step(act)
             done = terminated or truncated
             
             # Collect state-action pairs if recording training data
             if return_training_data:
                 training_data['states'].append(obs.copy()) # type: ignore
                 training_data['actions'].append(act) # type: ignore
+                training_data['terminated'].append(float(terminated)) # type: ignore
+                training_data['truncated'].append(float(truncated)) # type: ignore
+                is_safe = info.get('safe', None)
+                training_data['safe'].append(float(is_safe)) # type: ignore
                 # training_data['rewards'].append(float(reward)) # type: ignore
             
             act_buf[t] = act
@@ -358,6 +367,9 @@ def ppo_train(
         # Convert lists to numpy arrays
         training_data['states'] = np.array(training_data['states']) # type: ignore
         training_data['actions'] = np.array(training_data['actions']) # type: ignore
+        training_data['terminated'] = np.array(training_data['terminated']) # type: ignore
+        training_data['truncated'] = np.array(training_data['truncated']) # type: ignore
+        training_data['safe'] =  np.array(training_data['safe']) # type: ignore
         # training_data['rewards'] = np.array(training_data['rewards']) # type: ignore
         return actor, critic, training_data # type: ignore
     else:
