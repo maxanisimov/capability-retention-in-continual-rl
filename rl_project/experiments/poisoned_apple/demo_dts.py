@@ -1,28 +1,71 @@
 """
-Poisoned Apple Environment Demo: Deterministic Trajectory Safety (DTS)
+Poisoned Apple Environment Demo: Safe Continual Learning with Rashomon Sets
 
-This demonstration implements a continual learning scenario where safety is guaranteed
-through trajectory-level demonstrations under deterministic conditions:
+This demonstration compares two approaches for safe continual learning in a gridworld
+where an agent must avoid poisoned apples while collecting safe ones. Both approaches
+use Rashomon sets to certify safety guarantees, but differ in their data collection
+strategies and the resulting trade-offs between safety and performance.
 
+Scenario:
+- Environment 1 (Env1): Agent learns optimal safe policy to collect apples
+- Environment 2 (Env2): One previously safe apple becomes poisoned (distribution shift)
+- Challenge: Adapt to Env2 while maintaining safety in Env1 (avoid catastrophic forgetting)
+
+Approach 1: Safe Optimal Policy Demonstrations
+----------------------------------------------
+Collects state-action pairs from a deterministic policy that is both safe AND optimal
+(i.e., reaches the goal via the shortest safe path in Env1).
+
+Key characteristics:
+- Data collection: Deterministic rollouts using argmax policy
+- Dataset structure: Single action per state (deterministic trajectory)
+- Rashomon constraint: Uses multi_label=False for strict enforcement
+- Guarantees: Maintains both SAFETY and NEAR-OPTIMAL PERFORMANCE on Env1
+
+Requirements for this approach:
 1. Initial state is deterministic (fixed agent_start_pos)
 2. Environment dynamics are deterministic (gridworld transitions)
 3. Reference policy is deterministic (argmax over action logits)
 
-Under these conditions, the agent follows a fixed trajectory in Env1. By collecting
-safe state-action pairs along this trajectory and computing the Rashomon set to
-certify safe behavior on these demonstrations, we constrain the policy to remain
-safe without requiring:
-- Exhaustive state-space coverage through exploration
-- A separate learned safety critic
+Under these conditions, the agent follows a fixed optimal trajectory in Env1. By
+certifying safe behavior on this trajectory, we constrain policy parameters to remain
+safe without requiring exhaustive state-space coverage or a separate safety critic.
 
-The safety guarantee is trajectory-local rather than global, but remains valid as
-long as policy parameters stay within certified bounds during training and deployment.
+Approach 2: Safe Training Data Filtering
+-----------------------------------------
+Extracts safe state-action pairs from stochastic training rollouts by filtering for
+states where the environment's safety flag is True.
 
-For stochastic environments or policies, additional exploration-based data collection
-and safety critics would be required.
+Key characteristics:
+- Data collection: Stochastic exploration during PPO training
+- Dataset structure: Multiple actions per state (exploration diversity)
+- Rashomon constraint: Uses multi_label=True for flexible enforcement
+- Guarantees: Maintains SAFETY but may sacrifice OPTIMALITY
+
+This approach is more general and doesn't require deterministic conditions, but the
+resulting policy may deviate from optimal performance due to the more relaxed
+constraints from soft accuracy and multi-label formulation.
+
+Trade-offs:
+-----------
+Safe Optimal Policy (Approach 1):
+  + Maintains near-optimal performance on Env1 (reward ~1.96)
+  + Strict safety guarantees along demonstrated trajectory
+  - Requires deterministic environment and policy
+  - Trajectory-local rather than global safety coverage
+
+Safe Training Data (Approach 2):
+  + Works in stochastic settings
+  + Broader state coverage from exploration
+  - Suboptimal performance on Env1 (reward ~0.91)
+  - More flexible constraints may allow larger policy deviations
+
+Both approaches successfully prevent catastrophic forgetting and maintain safety
+across both environments, as validated by the results.
 """
 #%%
 ####### Imports #################################
+import os
 import sys
 sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/poisoned_apple')
 sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
@@ -37,8 +80,9 @@ from poisoned_apple_env import PoisonedAppleEnv, evaluate_policy
 from utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
-plots_dir = '/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/plots'
-tables_dir = '/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/tables'
+current_script_dir = os.path.dirname(os.path.abspath(__file__))
+plots_dir = os.path.join(current_script_dir, 'plots')
+tables_dir = os.path.join(current_script_dir, 'tables')
 
 ############### Utils #################################
 ### Visualize trained agent's trajectory
@@ -249,11 +293,12 @@ def plot_trajectory(
 #%%
 ### CONFIGS
 cfg_name = 'simple_5x5'
-save_results = False
+safe_state_action_data_name = 'Safe Training Data' #  'Safe Training Data'  or 'Safe Optimal Policy Data'
+save_results = True
 
 ##############################################
 # Get configuration
-with open('demo_configs.yaml', 'r') as f:
+with open('demo_dts_configs.yaml', 'r') as f:
     DEMO_CONFIGS = yaml.safe_load(f)
 cfg = DEMO_CONFIGS[cfg_name]
 
@@ -304,9 +349,10 @@ env = PoisonedAppleEnv(
 ppo_cfg = PPOConfig(
     total_timesteps=unadaptable_actor_timesteps,
 )
-standard_actor, standard_critic = ppo_train(
+standard_actor, standard_critic, standard_training_data = ppo_train(
     env=env,
     cfg=ppo_cfg,
+    return_training_data=True
 )
 
 #%%
@@ -357,6 +403,15 @@ visualize_agent_trajectory(
 # visualize_agent_trajectory(env2, amnesic_actor, num_episodes=1, max_steps=max_steps, env_name='Env 2 - Amnesic Actor')
 
 #%%
+"""
+Ways to create safe state-action dataset for Env 1:
+1) Hardcoded safe actions for all states (if known; not scalable, but simple)
+2) Safe action dataset collection with exploration (more scalable, but requires careful design of exploration strategy)
+3) Deterministic Trajectory Safety (DTS) - safe actions along the trajectory of
+   a known safe policy (standard_actor) in Env 1
+4) Filter training data collected during standard_actor training to only safe state-action pairs
+"""
+
 ### Generate dataset that contains safe actions for each state visited by standard_actor in Env1
 ### SAFE RL POLICY UPDATE
 # The idea is to update the policy on Task 2 using a safe RL method
@@ -487,25 +542,50 @@ for episode in range(safe_env1_state_action_data_num_rollouts):
 
 states = torch.FloatTensor(states)
 actions = torch.LongTensor(actions)
-state_action_torch_dataset = torch.utils.data.TensorDataset(states, actions)
+safe_optimal_policy_data_torch_dataset = torch.utils.data.TensorDataset(states, actions)
 
-#%%
-### Visualise the state_action_torch_dataset using matplotlib
-print(f"\nGenerated safe state-action dataset with {len(state_action_torch_dataset)} samples.")
-# TODO
+### Safe state-action pairs from training data
+### NOTE: we can just use training data collected during standard_actor training and filter it only
+# to safe state-action pairs
+# NOTE: this can provide SEVERAL safe actions per state due to non-determinism in training rollouts
+states = torch.FloatTensor(standard_training_data['states'])
+actions = torch.LongTensor(standard_training_data['actions'])
+safes = standard_training_data['safe']  # 1.0 for safe, 0.0 for unsafe
+# Filter only safe state-action pairs
+safe_indices = np.where(safes == 1.0)[0]
+states = states[safe_indices]
+actions = actions[safe_indices]
 
+# Remove duplicate safe state-action pairs
+safe_states_df = pd.DataFrame(states.detach().numpy())
+safe_states_df.columns = [f'state_feature_{i}' for i in range(safe_states_df.shape[1])]
+actions_df = pd.DataFrame(actions.detach().numpy(), columns=['action'])
+safe_state_action_pairs_df = pd.concat([safe_states_df, actions_df], axis=1)
+safe_state_action_pairs_df = safe_state_action_pairs_df.drop_duplicates(keep='first').reset_index(drop=True)
+# Convert back to torch dataset
+states = torch.FloatTensor(safe_state_action_pairs_df.drop(columns=['action']).values)
+actions = torch.LongTensor(safe_state_action_pairs_df['action'].values)
+safe_training_data_torch_dataset = torch.utils.data.TensorDataset(states, actions)
+
+safe_state_action_torch_datasets = {
+    'Safe Optimal Policy Data': safe_optimal_policy_data_torch_dataset,
+    'Safe Training Data': safe_training_data_torch_dataset
+}
 
 # %%
 ### Rashomon Set
+# safe_state_action_data_name = 'Safe Optimal Policy Data' #  'Safe Training Data'  or 'Safe Optimal Policy Data'
+state_action_torch_dataset = safe_state_action_torch_datasets[safe_state_action_data_name]
 interval_trainer = IntervalTrainer(
     model=standard_actor, # policy which is an instance of nn.Sequential
     min_acc_limit=0.99, # NOTE: should be not greater than accuracy of the model
     seed=seed
     # n_iters=10_000, # default 2000; running longer may not translate into higher OOS accuracy
 )
+multi_label = True if safe_state_action_data_name == 'Safe Training Data' else False
 interval_trainer.compute_rashomon_set(
     dataset=state_action_torch_dataset, # states and safe actions
-    multi_label=False # NOTE: when set to True, the policy deviates more from the original policy in Env1 (but is still safe)
+    multi_label=multi_label # NOTE: when set to True, the policy deviates more from the original policy in Env1 (but is still safe)
 )
 # Extract parameter bounds from the bounded model
 assert len(interval_trainer.bounds) == 1, "Expected exactly one bounded model"
@@ -532,13 +612,13 @@ rashomon_actor, _ = ppo_train(
 # Visualize the trained safe actor in Env 1
 visualize_agent_trajectory(
     env, rashomon_actor, num_episodes=1, max_steps=max_steps, 
-    env_name='Env 1', cfg_name=cfg_name, actor_name='Rashomon Actor', save_dir=plots_dir
+    env_name='Env 1', cfg_name=cfg_name, actor_name=f'Rashomon Actor ({safe_state_action_data_name})', save_dir=plots_dir
 )
 
 # Visualize the trained safe actor in Env 2
 visualize_agent_trajectory(
     env2, rashomon_actor, num_episodes=1, max_steps=max_steps, 
-    env_name='Env 2', cfg_name=cfg_name, actor_name='Rashomon Actor', 
+    env_name='Env 2', cfg_name=cfg_name, actor_name=f'Rashomon Actor ({safe_state_action_data_name})', 
     save_dir=plots_dir
 )
 
@@ -573,7 +653,7 @@ assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 2'] == 1.0, "R
 
 if save_results:
     # Store results_df to a CSV file for later analysis
-    results_df.to_csv(f'{tables_dir}/poisoned_apple_demo_results_{cfg_name}.csv')
+    results_df.to_csv(f'{tables_dir}/poisoned_apple_demo_results_{cfg_name}_{safe_state_action_data_name}.csv')
 
 #%%
 # Ablation study TODO:
