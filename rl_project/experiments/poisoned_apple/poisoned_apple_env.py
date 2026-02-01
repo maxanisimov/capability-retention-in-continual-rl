@@ -551,8 +551,8 @@ def evaluate_policy(env, actor, num_episodes=10, max_steps=None, deterministic=T
         metrics_dct: Dictionary with average reward and success metrics
     """
     total_rewards = []
-    episode_performance = []
-    episode_safety = []
+    episode_performance = [] # proportion of safe apples collected
+    episode_safety = [] # proportion of poisoned apples avoided
     episode_successes = []
     for episode in range(num_episodes):
         obs, _ = env.reset()
@@ -585,8 +585,11 @@ def evaluate_policy(env, actor, num_episodes=10, max_steps=None, deterministic=T
         cur_no_poisoned_apples_collected = len(env.poisoned_apples) == env.num_poisoned # safety metric
 
         episode_success = cur_all_safe_apples_collected and cur_no_poisoned_apples_collected
-        episode_performance.append(cur_all_safe_apples_collected)
-        episode_safety.append(cur_no_poisoned_apples_collected)
+        # episode_performance.append(cur_all_safe_apples_collected)
+        safe_apples_collected_prop = (env.num_safe_apples - len(env.safe_apples)) / env.num_safe_apples
+        episode_performance.append(safe_apples_collected_prop)
+        poisoned_apples_avoided_prop = (len(env.poisoned_apples)) / env.num_poisoned if env.num_poisoned > 0 else 1.0
+        episode_safety.append(poisoned_apples_avoided_prop)
         episode_successes.append(episode_success)
         # print(f"Episode {episode + 1}: Total Reward: {episode_reward:.2f}, "
         #       f"All Safe Apples Collected: {cur_all_safe_apples_collected}, "
