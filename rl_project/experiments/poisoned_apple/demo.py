@@ -167,7 +167,8 @@ def visualize_agent_trajectory(
         
         # Plot trajectory
         plot_trajectory(
-            env, trajectory, rewards_list, actions_list, episode + 1, 
+            env, trajectory, rewards_list, actions_list, 
+            episode_num=episode + 1 if num_episodes > 1 else None, 
             env_name=env_name, cfg_name=cfg_name, actor_name=actor_name, save_dir=save_dir
         )
     
@@ -175,8 +176,8 @@ def visualize_agent_trajectory(
         plt.show()
 
 def plot_trajectory(
-        env, trajectory, rewards_list, actions_list, episode_num, 
-        env_name=None, cfg_name=None, actor_name=None, save_dir=None
+        env, trajectory, rewards_list, actions_list, 
+        episode_num=None, env_name=None, cfg_name=None, actor_name=None, save_dir=None
     ):
     """
     Plot a single trajectory as a static image.
@@ -253,6 +254,11 @@ def plot_trajectory(
             reward_color = 'green' if reward > 0 else ('red' if reward < 0 else 'gray')
             ax.set_title(f'Step {step_idx}: {action} (r={reward:.2f})', 
                         fontsize=13, fontweight='bold', color=reward_color)
+            
+        # Turn off axis ticks and labels
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.tick_params(left=False, bottom=False)
     
     # Hide empty subplots
     for step_idx in range(num_steps, rows * cols):
@@ -260,9 +266,15 @@ def plot_trajectory(
         col = step_idx % cols
         axes[row, col].axis('off')
     
-    suptitle = f'Episode {episode_num} - Agent Trajectory'
+    suptitle = ''
+    if cfg_name is not None:
+        suptitle = suptitle + cfg_name
     if env_name is not None:
-        suptitle = env_name + ' - ' + suptitle
+        suptitle = suptitle + ' - ' + env_name
+    if actor_name is not None:
+        suptitle = suptitle + ' - ' + actor_name
+    if episode_num is not None:
+        suptitle = suptitle + ' - ' + f'Episode {episode_num}'
     fig.suptitle(suptitle, fontsize=16, fontweight='bold')
     plt.tight_layout()
     
@@ -282,7 +294,8 @@ def plot_trajectory(
         if actor_name is not None:
             clean_actor_name = actor_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
             filename_parts.append(clean_actor_name)
-        filename_parts.append(f"episode_{episode_num}")
+        if episode_num is not None:
+            filename_parts.append(f"episode_{episode_num}")
 
         filename = "_".join(filename_parts) + ".png"
         filepath = os.path.join(save_dir, filename) # type: ignore
@@ -292,8 +305,8 @@ def plot_trajectory(
 
 #%%
 ### CONFIGS
-cfg_name = 'simple_5x5'
-safe_state_action_data_name = 'Safe Training Data' #  'Safe Training Data'  or 'Safe Optimal Policy Data'
+cfg_name ='simple_5x5'
+safe_state_action_data_name = 'Safe Optimal Policy Data' #  'Safe Training Data'  or 'Safe Optimal Policy Data'
 save_results = True
 
 ##############################################
