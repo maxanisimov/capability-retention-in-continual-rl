@@ -122,7 +122,13 @@ def evaluate(
                 plt.imshow(env.render()) # type: ignore
                 plt.axis('off')
                 plt.show()
-            if not info.get('safe', True):
+            # Safety tracking: check 'safe' flag (custom envs) or 'cost' (Safety Gymnasium)
+            is_safe = info.get('safe', None)
+            if is_safe is None:
+                # For Safety Gymnasium: cost > 0 means unsafe
+                cost = info.get('cost', 0)
+                is_safe = (cost == 0)
+            if not is_safe:
                 failures += 1
             episodic_reward += reward # type: ignore
             done = terminated or truncated
@@ -246,7 +252,12 @@ def ppo_train(
                 training_data['actions'].append(act) # type: ignore
                 training_data['terminated'].append(float(terminated)) # type: ignore
                 training_data['truncated'].append(float(truncated)) # type: ignore
+                # Safety tracking: check 'safe' flag (custom envs) or 'cost' (Safety Gymnasium)
                 is_safe = info.get('safe', None)
+                if is_safe is None:
+                    # For Safety Gymnasium: cost == 0 means safe, cost > 0 means unsafe
+                    cost = info.get('cost', 0)
+                    is_safe = 1.0 if cost == 0 else 0.0
                 training_data['safe'].append(float(is_safe)) # type: ignore
                 # training_data['rewards'].append(float(reward)) # type: ignore
             
