@@ -33,11 +33,23 @@ def make_actor_critic(
     obs_dim: int, n_actions: int, 
     actor_warm_start: nn.Sequential | None = None,
     critic_warm_start: nn.Sequential | None = None,
+    continuous_actions: bool = False,
     ):
     """
     Create simple feedforward actor and critic networks.
-    Actor is a policy network outputting logits for discrete actions.
-    Critic is a value network outputting a single value.
+    
+    For discrete actions:
+        Actor outputs logits for each action.
+    For continuous actions:
+        Actor outputs mean values for each action dimension.
+        Log std is a separate learnable parameter.
+    
+    Args:
+        obs_dim: Observation space dimension
+        n_actions: Number of discrete actions OR dimension of continuous action space
+        actor_warm_start: Optional pre-trained actor network
+        critic_warm_start: Optional pre-trained critic network
+        continuous_actions: Whether the action space is continuous
     """
     if actor_warm_start is not None:
         actor = copy.deepcopy(actor_warm_start)
@@ -62,6 +74,7 @@ def make_actor_critic(
             torch.nn.ReLU(),
             torch.nn.Linear(256, n_actions),
         )
+    
     if critic_warm_start is not None:
         critic = copy.deepcopy(critic_warm_start)
         assert isinstance(critic, torch.nn.Sequential), "Warm-start critic must be nn.Sequential"
@@ -83,7 +96,13 @@ def make_actor_critic(
             torch.nn.Tanh(),
             torch.nn.Linear(256, 1),
         )
-    return actor, critic
+    
+    # For continuous actions, add log_std parameter
+    log_std = None
+    if continuous_actions:
+        log_std = torch.nn.Parameter(torch.zeros(n_actions))
+    
+    return actor, critic, log_std
 
 def set_seed(env, seed: int):
     """
@@ -99,15 +118,29 @@ def set_seed(env, seed: int):
 
 def evaluate(
         env: gym.Env, actor: nn.Sequential, episodes=10, seed: int = 2025,
-        device: str = 'cpu', render_mode: str | None = None
+        device: str = 'cpu', render_mode: str | None = None,
+        log_std: torch.nn.Parameter | None = None
     ):
     """
     Evaluate the actor policy over a number of episodes and return mean and std of rewards.
+    
+    Args:
+        env: Gymnasium environment
+        actor: Actor network
+        episodes: Number of episodes to evaluate
+        seed: Random seed
+        device: Device to run on
+        render_mode: Rendering mode (None or 'rgb_array')
+        log_std: Log std parameter for continuous action spaces (None for discrete)
     """
     assert render_mode in (None, 'rgb_array')
     actor.eval()
     scores = []
     failures = 0
+    
+    # Determine if actions are continuous
+    continuous_actions = isinstance(env.action_space, gym.spaces.Box)
+    
     for episode_num in range(episodes):
         obs, _ = env.reset(seed=seed*episode_num)
         episodic_reward = 0.0
@@ -115,8 +148,16 @@ def evaluate(
         while not done:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             with torch.no_grad():
-                logits = actor(obs_t)
-                action = torch.argmax(logits, dim=-1).item()
+                if continuous_actions:
+                    # Continuous actions: use mean from actor
+                    action = actor(obs_t).cpu().numpy()[0]
+                    # Clip to action space bounds
+                    action = np.clip(action, env.action_space.low, env.action_space.high)
+                else:
+                    # Discrete actions: use argmax
+                    logits = actor(obs_t)
+                    action = torch.argmax(logits, dim=-1).item()
+            
             obs, reward, terminated, truncated, info = env.step(action)
             if render_mode == 'rgb_array':
                 plt.imshow(env.render()) # type: ignore
@@ -174,18 +215,23 @@ def ppo_train(
     # env = gym.make(cfg.env_id, **env_kwargs)
     set_seed(env, cfg.seed)
 
+    # Determine action space type
+    continuous_actions = isinstance(env.action_space, gym.spaces.Box)
     obs_dim = env.observation_space.shape[0] if isinstance(env.observation_space, gym.spaces.Box) else env.observation_space.n # type: ignore
-    n_actions = env.action_space.n if isinstance(env.action_space, gym.spaces.Discrete) else env.action_space.shape[0] # type: ignore
+    n_actions = env.action_space.shape[0] if continuous_actions else env.action_space.n # type: ignore
 
-    actor, critic = make_actor_critic(
+    actor, critic, log_std = make_actor_critic(
         obs_dim=obs_dim,
         n_actions=n_actions, # type: ignore
         actor_warm_start=actor_warm_start,
-        critic_warm_start=critic_warm_start
+        critic_warm_start=critic_warm_start,
+        continuous_actions=continuous_actions
     )
     device = torch.device(cfg.device)
     actor.to(device)
     critic.to(device)
+    if log_std is not None:
+        log_std = log_std.to(device)
 
     # Check if we have parameter bounds for projected gradient descent
     use_pgd = (actor_param_bounds_l is not None and actor_param_bounds_u is not None)
@@ -202,10 +248,14 @@ def ppo_train(
             for param, lb, ub in zip(actor.parameters(), bounds_l, bounds_u):
                 param.data.clamp_(lb, ub)
 
-    optimizer = torch.optim.Adam([
+    # Create optimizer with actor, critic, and optionally log_std parameters
+    optimizer_params = [
         {"params": actor.parameters(), "lr": cfg.lr},
         {"params": critic.parameters(), "lr": cfg.lr},
-    ])
+    ]
+    if log_std is not None:
+        optimizer_params.append({"params": [log_std], "lr": cfg.lr})
+    optimizer = torch.optim.Adam(optimizer_params)
 
     obs, _ = env.reset(seed=cfg.seed)
     global_step = 0
@@ -226,7 +276,10 @@ def ppo_train(
     while global_step < cfg.total_timesteps:
         # Storage for rollout
         obs_buf = np.zeros((cfg.rollout_steps, obs_dim), dtype=np.float32)
-        act_buf = np.zeros((cfg.rollout_steps,), dtype=np.int64)
+        if continuous_actions:
+            act_buf = np.zeros((cfg.rollout_steps, n_actions), dtype=np.float32) # type: ignore
+        else:
+            act_buf = np.zeros((cfg.rollout_steps,), dtype=np.int64)
         logp_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
         rew_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
         done_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
@@ -237,12 +290,26 @@ def ppo_train(
             obs_buf[t] = obs
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             with torch.no_grad():
-                logits = actor(obs_t)
-                dist = torch.distributions.Categorical(logits=logits)
                 value = critic(obs_t).squeeze(-1)
-                action = dist.sample()
-                logp = dist.log_prob(action)
-            act = int(action.item())
+                if continuous_actions:
+                    # Continuous actions: use Normal distribution
+                    mean = actor(obs_t)
+                    std = torch.exp(log_std) # type: ignore
+                    dist = torch.distributions.Normal(mean, std)
+                    action = dist.sample()
+                    logp = dist.log_prob(action).sum(dim=-1)  # Sum log probs across action dims
+                    # Clip action to valid range
+                    action_np = action.cpu().numpy()[0]
+                    action_np = np.clip(action_np, env.action_space.low, env.action_space.high) # type: ignore
+                    act = action_np
+                else:
+                    # Discrete actions: use Categorical distribution
+                    logits = actor(obs_t)
+                    dist = torch.distributions.Categorical(logits=logits)
+                    action = dist.sample()
+                    logp = dist.log_prob(action)
+                    act = int(action.item())
+            
             next_obs, reward, terminated, truncated, info = env.step(act)
             done = terminated or truncated
             
@@ -303,7 +370,10 @@ def ppo_train(
         adv_t = (adv_t - adv_t.mean()) / (adv_t.std(unbiased=False) + 1e-8)
 
         obs_t = torch.tensor(obs_buf, dtype=torch.float32, device=device)
-        act_t = torch.tensor(act_buf, dtype=torch.int64, device=device)
+        if continuous_actions:
+            act_t = torch.tensor(act_buf, dtype=torch.float32, device=device)
+        else:
+            act_t = torch.tensor(act_buf, dtype=torch.int64, device=device)
         old_logp_t = torch.tensor(logp_buf, dtype=torch.float32, device=device)
         ret_t = torch.tensor(ret_buf, dtype=torch.float32, device=device)
 
@@ -321,10 +391,19 @@ def ppo_train(
                 mb_adv = adv_t[mb_idx]
                 mb_ret = ret_t[mb_idx]
 
-                logits = actor(mb_obs)
-                dist = torch.distributions.Categorical(logits=logits)
-                new_logp = dist.log_prob(mb_act)
-                entropy = dist.entropy().mean()
+                if continuous_actions:
+                    # Continuous actions
+                    mean = actor(mb_obs)
+                    std = torch.exp(log_std) # type: ignore
+                    dist = torch.distributions.Normal(mean, std)
+                    new_logp = dist.log_prob(mb_act).sum(dim=-1)
+                    entropy = dist.entropy().sum(dim=-1).mean()
+                else:
+                    # Discrete actions
+                    logits = actor(mb_obs)
+                    dist = torch.distributions.Categorical(logits=logits)
+                    new_logp = dist.log_prob(mb_act)
+                    entropy = dist.entropy().mean()
 
                 ratio = torch.exp(new_logp - mb_old_logp)
                 pg_loss1 = -mb_adv * ratio
@@ -352,7 +431,7 @@ def ppo_train(
                             param.data.clamp_(lb, ub)
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
-            mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=10) # type: ignore
+            mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=10, log_std=log_std) # type: ignore
             # Reset the environment after evaluation since the last episode ended
             obs, _ = env.reset()
             elapsed = time.time() - start_time
@@ -366,7 +445,7 @@ def ppo_train(
 
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
         # Final checks and evaluation
-        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes) # type: ignore
+        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes, log_std=log_std) # type: ignore
         final_msg = f"Final evaluation over {cfg.eval_episodes} episodes: mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         final_msg += f" | failure_rate={failure_rate:.2f}"
         if use_pgd:
@@ -382,6 +461,12 @@ def ppo_train(
         training_data['truncated'] = np.array(training_data['truncated']) # type: ignore
         training_data['safe'] =  np.array(training_data['safe']) # type: ignore
         # training_data['rewards'] = np.array(training_data['rewards']) # type: ignore
-        return actor, critic, training_data # type: ignore
+        if continuous_actions:
+            return actor, critic, log_std, training_data # type: ignore
+        else:
+            return actor, critic, training_data # type: ignore
     else:
-        return actor, critic
+        if continuous_actions:
+            return actor, critic, log_std
+        else:
+            return actor, critic
