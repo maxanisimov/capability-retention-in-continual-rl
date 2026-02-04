@@ -1,3 +1,4 @@
+import safety_gymnasium
 import torch
 from dataclasses import dataclass
 import random
@@ -119,6 +120,7 @@ def set_seed(env, seed: int):
 def evaluate(
         env: gym.Env, actor: nn.Sequential, episodes=10, seed: int = 2025,
         device: str = 'cpu', render_mode: str | None = None,
+        deterministic: bool = True,
         log_std: torch.nn.Parameter | None = None
     ):
     """
@@ -131,6 +133,7 @@ def evaluate(
         seed: Random seed
         device: Device to run on
         render_mode: Rendering mode (None or 'rgb_array')
+        deterministic: Whether to use deterministic actions
         log_std: Log std parameter for continuous action spaces (None for discrete)
     """
     assert render_mode in (None, 'rgb_array')
@@ -150,13 +153,23 @@ def evaluate(
             with torch.no_grad():
                 if continuous_actions:
                     # Continuous actions: use mean from actor
-                    action = actor(obs_t).cpu().numpy()[0]
-                    # Clip to action space bounds
-                    action = np.clip(action, env.action_space.low, env.action_space.high)
+                    if deterministic:
+                        action = actor(obs_t).cpu().numpy()[0]
+                    else:
+                        mean = actor(obs_t)
+                        std = torch.exp(log_std) # type: ignore
+                        dist = torch.distributions.Normal(mean, std)
+                        action = dist.sample().cpu().numpy()[0]
+                    action = np.clip(action, env.action_space.low, env.action_space.high) # type: ignore
                 else:
-                    # Discrete actions: use argmax
+                    # Discrete actions
                     logits = actor(obs_t)
-                    action = torch.argmax(logits, dim=-1).item()
+                    if deterministic:
+                        action = torch.argmax(logits, dim=-1).item()
+                    else:
+                        probs = torch.softmax(logits, dim=-1)
+                        dist = torch.distributions.Categorical(probs=probs)
+                        action = dist.sample().item()
             
             obs, reward, terminated, truncated, info = env.step(action)
             if render_mode == 'rgb_array':
