@@ -1,8 +1,6 @@
-import safety_gymnasium
 import torch
 from dataclasses import dataclass
 import random
-import numpy
 import numpy as np
 import gymnasium as gym
 import time
