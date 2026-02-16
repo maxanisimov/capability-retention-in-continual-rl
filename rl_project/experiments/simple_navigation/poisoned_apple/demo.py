@@ -66,10 +66,6 @@ across both environments, as validated by the results.
 #%%
 ####### Imports #################################
 import os
-import sys
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project/poisoned_apple')
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project')
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -77,7 +73,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from poisoned_apple_env import PoisonedAppleEnv, evaluate_policy
-from utils.ppo_utils import ppo_train, PPOConfig
+from rl_project.utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -307,7 +303,7 @@ def plot_trajectory(
 ### CONFIGS
 cfg_name ='simple_5x5'
 safe_state_action_data_name = 'Safe Optimal Policy Data' #  'Safe Training Data'  or 'Safe Optimal Policy Data'
-save_results = True
+save_results = False
 
 ##############################################
 # Get configuration
@@ -361,6 +357,7 @@ env = PoisonedAppleEnv(
 ### Train using ppo
 ppo_cfg = PPOConfig(
     total_timesteps=unadaptable_actor_timesteps,
+    device='cpu'
 )
 standard_actor, standard_critic, standard_training_data = ppo_train(
     env=env,
@@ -401,6 +398,7 @@ visualize_agent_trajectory(
 # # use actor and critic warm starts from Env 1
 # ppo_cfg_amnesic = PPOConfig(
 #     total_timesteps=20_000,
+#     device='cpu'
 #     # ent_coef=1,
 #     # lr=0.01
 # )
@@ -589,8 +587,10 @@ safe_state_action_torch_datasets = {
 ### Rashomon Set
 # safe_state_action_data_name = 'Safe Optimal Policy Data' #  'Safe Training Data'  or 'Safe Optimal Policy Data'
 state_action_torch_dataset = safe_state_action_torch_datasets[safe_state_action_data_name]
+# Ensure model is on CPU before passing to IntervalTrainer
+standard_actor_cpu = standard_actor.cpu()
 interval_trainer = IntervalTrainer(
-    model=standard_actor, # policy which is an instance of nn.Sequential
+    model=standard_actor_cpu, # policy which is an instance of nn.Sequential
     min_acc_limit=0.99, # NOTE: should be not greater than accuracy of the model
     seed=seed
     # n_iters=10_000, # default 2000; running longer may not translate into higher OOS accuracy
@@ -612,6 +612,7 @@ param_bounds_u = [bound.detach().cpu() for bound in bounded_model.param_u]
 ### Train a safe actor
 ppo_cfg_rashomon = PPOConfig(
     total_timesteps=rashomon_timesteps,
+    device='cpu'
 )
 rashomon_actor, _ = ppo_train(
     env=env2,
@@ -656,7 +657,8 @@ results_df = pd.DataFrame({
     'Rashomon Actor / Env 2': rashomon_actor_env2_metrics
 })
 print("\n=== Evaluation Results ===")
-print(results_df.round(2))
+print(results_df[['Standard Actor / Env 1', 'Standard Actor / Env 2']].round(2))
+print(results_df[['Rashomon Actor / Env 1', 'Rashomon Actor / Env 2']].round(2))
 # Make sure standard actor is unsafe in Env 2
 assert results_df.loc['avg_safety_success', 'Standard Actor / Env 2'] < 1.0, "Standard actor should be unsafe in Env 2" # type: ignore
 # Make sure Rashomon actor is safe in Env 1 # TODO: I probably should compare to the certificate value here
