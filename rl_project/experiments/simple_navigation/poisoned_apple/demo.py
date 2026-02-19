@@ -102,15 +102,16 @@ os.makedirs(tables_dir, exist_ok=True)
 # UTILITY FUNCTIONS
 # =============================================================================
 
-def create_safe_optimal_policy_dataset(env, actor, num_rollouts):
+def create_safe_optimal_policy_dataset(env, actor, num_rollouts, deterministic: bool = True, seed: int = 42):
     """
-    Create a safety dataset from deterministic rollouts of an optimal policy.
-    Collects state-action pairs by running the actor deterministically in the environment.
+    Create a safety dataset from rollouts of an optimal policy.
+    Collects state-action pairs by running the actor in the environment.
     
     Args:
         env: The environment to collect data from
         actor: The policy network to generate actions
         num_rollouts: Number of episodes to collect
+        deterministic: Whether to use deterministic actions (argmax) or sample from the policy distribution
         
     Returns:
         A torch TensorDataset containing (states, actions) pairs from deterministic rollouts
@@ -120,13 +121,16 @@ def create_safe_optimal_policy_dataset(env, actor, num_rollouts):
     actions = []
     
     for episode in range(num_rollouts):
-        obs, info = env.reset()
+        obs, info = env.reset(seed=seed + episode)
         done = False
         while not done:
             with torch.no_grad():
                 obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
                 action_logits = actor(obs_tensor)
-                action = torch.argmax(action_logits, dim=1).item()
+                if deterministic:
+                    action = torch.argmax(action_logits, dim=1).item()
+                else:
+                    action = torch.distributions.Categorical(logits=action_logits).sample().item()
             
             states.append(obs)
             actions.append(action)
@@ -183,14 +187,15 @@ def generate_sufficient_safe_state_action_dataset(
     This dataset can be used to compute a Rashomon set that enforces safety constraints without requiring an optimal policy demonstration.
     
     Args:
-        unsafe_state_action_pairs: list of (state, action) tuples that are unsafe in Env 1. These can be collected by running random rollouts in Env 1 and recording state-action pairs where the safety flag is False.
+        unsafe_state_action_pairs: list of (state, action) tuples that are unsafe in Env 1. 
+        These can be collected by running random rollouts in Env 1 and recording state-action pairs where the safety flag is False.
         env: The environment, needed to determine the action space for computing the complement set of safe actions.
     Returns:
         A torch dataset containing states and their corresponding sets of safe actions (padded for variable length)
     """
     
     # Given unsafe state-action pairs, we can generate the complement set of actions for each state
-    all_actions = set(range(env.action_space.n)) # NOTE: works for discrete action spaces
+    all_actions = set(range(env.action_space.n)) # type: ignore NOTE: works for discrete action spaces
     # Group unsafe actions by state
     unsafe_actions_by_state = {}
     for state, action in unsafe_state_action_pairs:
@@ -205,8 +210,8 @@ def generate_sufficient_safe_state_action_dataset(
     }
     sufficient_safe_states = torch.FloatTensor(list(safe_actions_by_state.keys()))
 
-    # TODO: each action row contains valid class indices (padded with -1 for variable length)
-    max_actions = env.action_space.n
+    # Each action row contains valid class indices (padded with -1 for variable length)
+    max_actions = env.action_space.n # type: ignore
     padded_safe_actions = []
     for state_key, safe_actions in safe_actions_by_state.items():
         padded_actions = list(safe_actions) + [-1] * (max_actions - len(safe_actions))
