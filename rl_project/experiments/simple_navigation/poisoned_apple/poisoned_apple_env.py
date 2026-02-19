@@ -607,3 +607,246 @@ def evaluate_policy(env, actor, num_episodes=10, max_steps=None, deterministic=T
         "avg_overall_success": avg_overall_success
     }
     return metrics_dct
+
+###### SAFETY UTILS ######
+################################ 
+#### HELPER FUNCTIONS ##########
+################################
+
+def get_observation(
+    agent_position: Tuple[int, int],
+    safe_apple_positions: set,
+    poisoned_apple_positions: set,
+    grid_size: int,
+    observation_type: str = "flat"
+) -> np.ndarray:
+    """
+    Generate an observation for a given state without modifying the environment.
+    
+    Args:
+        agent_position: Tuple of (row, col) for agent position
+        safe_apple_positions: Set of tuples (row, col) for safe apples
+        poisoned_apple_positions: Set of tuples (row, col) for poisoned apples
+        grid_size: Size of the grid
+        observation_type: Type of observation ("flat", "image", or "coordinates")
+    
+    Returns:
+        Observation as numpy array
+    
+    Raises:
+        NotImplementedError: If observation_type is not "flat"
+    """
+    if observation_type == "flat":
+        obs = np.zeros(grid_size * grid_size, dtype=np.float32)
+        
+        # Place safe apples (value 2)
+        for pos in safe_apple_positions:
+            idx = pos[0] * grid_size + pos[1]
+            obs[idx] = 2.0
+        
+        # Place poisoned apples (value 3)
+        for pos in poisoned_apple_positions:
+            idx = pos[0] * grid_size + pos[1]
+            obs[idx] = 3.0
+        
+        # Place agent (value 1) - overwrites apple if on same position
+        agent_idx = agent_position[0] * grid_size + agent_position[1]
+        obs[agent_idx] = 1.0
+        
+        return obs
+    elif observation_type == "image":
+        raise NotImplementedError("Image observation type not yet implemented for get_observation")
+    elif observation_type == "coordinates":
+        raise NotImplementedError("Coordinates observation type not yet implemented for get_observation")
+    else:
+        raise ValueError(f"Unknown observation type: {observation_type}")
+
+
+def get_all_unsafe_state_action_pairs(env: PoisonedAppleEnv) -> list:
+    """
+    Generate all unsafe state-action pairs for the given environment configuration.
+    
+    An unsafe state-action pair (s, a) is one where taking action a in state s
+    results in the agent moving to a location containing a poisoned apple.
+    
+    Args:
+        env: A PoisonedAppleEnv instance (should be initialized/reset to establish apple positions)
+    
+    Returns:
+        List of tuples: [(state, action), ...] where:
+            - state is a numpy array in the format specified by env.observation_type
+            - action is an integer (0=UP, 1=RIGHT, 2=DOWN, 3=LEFT)
+    
+    Note:
+        Currently only supports "flat" observation type. Raises NotImplementedError for other types.
+    
+    Example:
+        env = PoisonedAppleEnv(grid_size=5, num_apples=3, num_poisoned=1, observation_type="flat")
+        env.reset()
+        unsafe_pairs = get_all_unsafe_state_action_pairs(env)
+        # Returns [(state_array, action), ...] for all unsafe transitions
+    """
+    if env.poisoned_apples is None or env.safe_apples is None:
+        raise ValueError("Environment must be reset before generating unsafe pairs")
+    
+    unsafe_state_action_pairs = []
+    poisoned_positions = set(env.poisoned_apples)
+    safe_positions = set(env.safe_apples)
+    
+    # For each possible agent position on the grid
+    for row in range(env.grid_size):
+        for col in range(env.grid_size):
+            # For each possible action
+            for action in range(4):  # 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT
+                # Calculate where the agent would move
+                new_row, new_col = row, col
+                
+                if action == PoisonedAppleEnv.UP:
+                    new_row = max(0, row - 1)
+                elif action == PoisonedAppleEnv.RIGHT:
+                    new_col = min(env.grid_size - 1, col + 1)
+                elif action == PoisonedAppleEnv.DOWN:
+                    new_row = min(env.grid_size - 1, row + 1)
+                elif action == PoisonedAppleEnv.LEFT:
+                    new_col = max(0, col - 1)
+                
+                # Check if new position is a poisoned apple
+                if (new_row, new_col) in poisoned_positions:
+                    # Generate observation for this state using helper function
+                    state = get_observation(
+                        agent_position=(row, col),
+                        safe_apple_positions=safe_positions,
+                        poisoned_apple_positions=poisoned_positions,
+                        grid_size=env.grid_size,
+                        observation_type=env.observation_type
+                    )
+                    unsafe_state_action_pairs.append((state, action))
+    
+    return unsafe_state_action_pairs
+
+def generate_all_observations_env(env, observation_type='flat'):
+    """
+    Generate all possible observations for env1.
+    Since apple positions are fixed, we only need to iterate over agent positions.
+    
+    Args:
+        env: The environment
+        observation_type: Type of observation ('flat', 'image', or 'coordinates')
+    
+    Returns:
+        all_observations: numpy array of shape (grid_size^2, obs_dim)
+        agent_positions: list of (row, col) tuples for each observation
+    """
+    
+    env.poisoned_apple_positions
+    
+    all_observations = []
+    agent_positions = []
+    
+    # Iterate over all possible agent positions
+    for row in range(env.grid_size):
+        for col in range(env.grid_size):
+            agent_pos = (row, col)
+            
+            # Generate observation based on type
+            if observation_type == 'flat':
+                obs = np.zeros(env.grid_size * env.grid_size, dtype=np.float32)
+                
+                # Place safe apples (value 2)
+                for pos in env.safe_apple_positions:
+                    idx = pos[0] * env.grid_size + pos[1]
+                    obs[idx] = 2.0
+                
+                # Place poisoned apples (value 3)
+                for pos in env.poisoned_apple_positions:
+                    idx = pos[0] * env.grid_size + pos[1]
+                    obs[idx] = 3.0
+                
+                # Place agent (value 1)
+                agent_idx = agent_pos[0] * env.grid_size + agent_pos[1]
+                obs[agent_idx] = 1.0
+                
+            elif observation_type == 'image':
+                obs = np.zeros((env.grid_size, env.grid_size, 3), dtype=np.uint8)
+                
+                # Channel 0: Agent position
+                obs[agent_pos[0], agent_pos[1], 0] = 255
+                
+                # Channel 1: Safe apples
+                for pos in env.safe_apple_positions:
+                    obs[pos[0], pos[1], 1] = 255
+                
+                # Channel 2: Poisoned apples
+                for pos in env.poisoned_apple_positions:
+                    obs[pos[0], pos[1], 2] = 255
+                
+                obs = obs.flatten()  # Flatten for storage
+                
+            elif observation_type == 'coordinates':
+                num_apples = len(env.safe_apple_positions) + len(env.poisoned_apple_positions)
+                obs = np.zeros(2 + 3*num_apples, dtype=np.float32)
+                
+                # Agent position
+                obs[0] = agent_pos[0]
+                obs[1] = agent_pos[1]
+                
+                # Combine and sort apples (safe first, then poisoned)
+                all_apples = [(pos, False) for pos in env.safe_apple_positions] + \
+                             [(pos, True) for pos in env.poisoned_apple_positions]
+                
+                for i, (pos, is_poisoned) in enumerate(all_apples):
+                    idx = 2 + 3*i
+                    obs[idx] = pos[0]
+                    obs[idx + 1] = pos[1]
+                    obs[idx + 2] = 1.0 if is_poisoned else 0.0
+            else:
+                raise ValueError(f"Unknown observation type: {observation_type}")
+            
+            all_observations.append(obs)
+            agent_positions.append(agent_pos)
+    
+    return np.array(all_observations), agent_positions
+
+def generate_safe_actions_for_all_states(env, agent_positions, poisoned_apple_positions):
+    """
+    For each agent position, generate the list of safe actions (actions that don't lead to poisoned apples).
+    
+    Args:
+        env: The environment
+        agent_positions: List of (row, col) tuples for agent positions
+        poisoned_apple_positions: List of (row, col) tuples for poisoned apples
+    
+    Returns:
+        safe_actions_list: List of lists, where safe_actions_list[i] contains safe actions for agent_positions[i]
+    """
+    # Action definitions
+    UP, RIGHT, DOWN, LEFT = 0, 1, 2, 3
+    all_actions = [UP, RIGHT, DOWN, LEFT]
+    action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
+    
+    poisoned_set = set(poisoned_apple_positions)
+    safe_actions_list = []
+    
+    for agent_pos in agent_positions:
+        safe_actions = []
+        
+        for action in all_actions:
+            # Calculate new position based on action
+            new_pos = list(agent_pos)
+            
+            if action == UP:
+                new_pos[0] = max(0, new_pos[0] - 1)
+            elif action == RIGHT:
+                new_pos[1] = min(env.grid_size - 1, new_pos[1] + 1)
+            elif action == DOWN:
+                new_pos[0] = min(env.grid_size - 1, new_pos[0] + 1)
+            elif action == LEFT:
+                new_pos[1] = max(0, new_pos[1] - 1)
+            
+            # Check if new position is safe (not a poisoned apple)
+            if tuple(new_pos) not in poisoned_set:
+                safe_actions.append(action)
+        
+        safe_actions_list.append(safe_actions)
+    
+    return safe_actions_list
