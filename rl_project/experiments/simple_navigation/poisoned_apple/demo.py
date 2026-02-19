@@ -72,6 +72,7 @@ REQUIREMENTS:
 # =============================================================================
 import os
 import random
+import gymnasium
 import numpy as np
 import pandas as pd
 import torch
@@ -81,9 +82,8 @@ import matplotlib.patches as patches
 
 from poisoned_apple_env import (
     PoisonedAppleEnv, 
-    evaluate_policy, 
-    generate_all_observations_env, 
-    generate_safe_actions_for_all_states
+    evaluate_policy,
+    get_all_unsafe_state_action_pairs
 )
 from rl_project.utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
@@ -101,6 +101,120 @@ os.makedirs(tables_dir, exist_ok=True)
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
+
+def create_safe_optimal_policy_dataset(env, actor, num_rollouts):
+    """
+    Create a safety dataset from deterministic rollouts of an optimal policy.
+    Collects state-action pairs by running the actor deterministically in the environment.
+    
+    Args:
+        env: The environment to collect data from
+        actor: The policy network to generate actions
+        num_rollouts: Number of episodes to collect
+        
+    Returns:
+        A torch TensorDataset containing (states, actions) pairs from deterministic rollouts
+    """
+    print("\nCreating 'Safe Optimal Policy Data' dataset...")
+    states = []
+    actions = []
+    
+    for episode in range(num_rollouts):
+        obs, info = env.reset()
+        done = False
+        while not done:
+            with torch.no_grad():
+                obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+                action_logits = actor(obs_tensor)
+                action = torch.argmax(action_logits, dim=1).item()
+            
+            states.append(obs)
+            actions.append(action)
+            obs, reward, terminated, truncated, info = env.step(action)  # type: ignore
+            done = terminated or truncated
+    
+    states = torch.FloatTensor(states)
+    actions = torch.LongTensor(actions)
+    dataset = torch.utils.data.TensorDataset(states, actions)
+    print(f"  Collected {len(states)} state-action pairs from {num_rollouts} rollouts")
+    
+    return dataset
+
+def create_safe_training_dataset(training_data):
+    """
+    Create a safety dataset by filtering safe state-action pairs from training trajectories.
+    Removes duplicates to create a unique set of safe demonstrations.
+    
+    Args:
+        training_data: Dictionary containing 'states', 'actions', and 'safe' flags from PPO training
+        
+    Returns:
+        A torch TensorDataset containing unique safe (states, actions) pairs
+    """
+    print("\nCreating 'Safe Training Data' dataset...")
+    states = torch.FloatTensor(training_data['states'])
+    actions = torch.LongTensor(training_data['actions'])
+    safes = training_data['safe']
+    
+    # Filter only safe state-action pairs
+    safe_indices = np.where(safes == 1.0)[0]
+    states_safe = states[safe_indices]
+    actions_safe = actions[safe_indices]
+    
+    # Remove duplicate state-action pairs
+    safe_states_df = pd.DataFrame(states_safe.detach().numpy())
+    safe_states_df.columns = [f'state_feature_{i}' for i in range(safe_states_df.shape[1])]
+    actions_df = pd.DataFrame(actions_safe.detach().numpy(), columns=['action'])
+    safe_state_action_pairs_df = pd.concat([safe_states_df, actions_df], axis=1)
+    safe_state_action_pairs_df = safe_state_action_pairs_df.drop_duplicates(keep='first').reset_index(drop=True)
+    
+    states_safe = torch.FloatTensor(safe_state_action_pairs_df.drop(columns=['action']).values)
+    actions_safe = torch.LongTensor(safe_state_action_pairs_df['action'].values)
+    dataset = torch.utils.data.TensorDataset(states_safe, actions_safe)
+    print(f"  Filtered {len(states_safe)} unique safe state-action pairs from training data")
+    
+    return dataset
+
+def generate_sufficient_safe_state_action_dataset(
+    unsafe_state_action_pairs: list[tuple], env: gymnasium.Env
+):
+    """
+    Generate a dataset of sufficient safe state-action pairs by computing the complement of unsafe actions for each state.
+    This dataset can be used to compute a Rashomon set that enforces safety constraints without requiring an optimal policy demonstration.
+    
+    Args:
+        unsafe_state_action_pairs: list of (state, action) tuples that are unsafe in Env 1. These can be collected by running random rollouts in Env 1 and recording state-action pairs where the safety flag is False.
+        env: The environment, needed to determine the action space for computing the complement set of safe actions.
+    Returns:
+        A torch dataset containing states and their corresponding sets of safe actions (padded for variable length)
+    """
+    
+    # Given unsafe state-action pairs, we can generate the complement set of actions for each state
+    all_actions = set(range(env.action_space.n)) # NOTE: works for discrete action spaces
+    # Group unsafe actions by state
+    unsafe_actions_by_state = {}
+    for state, action in unsafe_state_action_pairs:
+        state_key = tuple(state)
+        if state_key not in unsafe_actions_by_state:
+            unsafe_actions_by_state[state_key] = set()
+        unsafe_actions_by_state[state_key].add(action)
+    # Compute complement (safe actions) for each state
+    safe_actions_by_state = {
+        state_key: all_actions - unsafe_actions
+        for state_key, unsafe_actions in unsafe_actions_by_state.items()
+    }
+    sufficient_safe_states = torch.FloatTensor(list(safe_actions_by_state.keys()))
+
+    # TODO: each action row contains valid class indices (padded with -1 for variable length)
+    max_actions = env.action_space.n
+    padded_safe_actions = []
+    for state_key, safe_actions in safe_actions_by_state.items():
+        padded_actions = list(safe_actions) + [-1] * (max_actions - len(safe_actions))
+        padded_safe_actions.append(padded_actions)
+    sufficient_safe_actions = torch.LongTensor([list(actions) for actions in padded_safe_actions])
+    sufficient_safe_state_action_torch_dataset = torch.utils.data.TensorDataset(sufficient_safe_states, sufficient_safe_actions)
+    
+    return sufficient_safe_state_action_torch_dataset
 
 def set_all_seeds(seed):
     """
@@ -344,7 +458,7 @@ def plot_trajectory(
 # User-defined parameters
 # -------------------------
 cfg_name = 'simple_5x5'
-safe_state_action_data_name = 'Tabular Safety Critic Data'  # Options: 'Safe Optimal Policy Data', 'Safe Training Data', 'Tabular Safety Critic Data'
+safe_state_action_data_name = 'Sufficient Safety Data' # Options: 'Sufficient Safety Data', 'Safe Optimal Policy Data', 'Safe Training Data', 'Tabular Safety Critic Data'
 save_results = False  # Set to True to save plots and tables
 train_unsafe_adapt = False  # Set to True to train UnsafeAdapt baseline (takes additional time)
 
@@ -400,7 +514,7 @@ assert cfg_name in DEMO_CONFIGS, f"Configuration '{cfg_name}' not found in demo_
 assert safe_state_action_data_name in [
     'Safe Optimal Policy Data', 
     'Safe Training Data', 
-    'Tabular Safety Critic Data'
+    'Sufficient Safety Data'
 ], f"Invalid safety dataset name: {safe_state_action_data_name}"
 assert seed is not None, "Random seed must be set for reproducibility"
 print("Configuration validated successfully.\n")
@@ -551,85 +665,28 @@ print("\n" + "="*80)
 print("Creating safety datasets for SafeAdapt constraint generation")
 print("="*80)
 
-# -----------------------------------------------------------------------------
-# Dataset 1: Safe Optimal Policy Data
-# Collect state-action pairs from deterministic rollouts of NoAdapt policy
-# -----------------------------------------------------------------------------
-print("\nCreating 'Safe Optimal Policy Data' dataset...")
-states = []
-actions = []
+# Create three types of safety datasets using helper functions
+safe_optimal_policy_data = create_safe_optimal_policy_dataset(
+    env=env,
+    actor=standard_actor,
+    num_rollouts=safe_env1_state_action_data_num_rollouts
+)
 
-for episode in range(safe_env1_state_action_data_num_rollouts):
-    obs, info = env.reset()
-    done = False
-    while not done:
-        with torch.no_grad():
-            obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-            action_logits = standard_actor(obs_tensor)
-            action = torch.argmax(action_logits, dim=1).item()
-        
-        states.append(obs)
-        actions.append(action)
-        obs, reward, terminated, truncated, info = env.step(action)  # type: ignore
-        done = terminated or truncated
+safe_training_data = create_safe_training_dataset(
+    training_data=standard_training_data
+)
 
-states = torch.FloatTensor(states)
-actions = torch.LongTensor(actions)
-safe_optimal_policy_data = torch.utils.data.TensorDataset(states, actions)
-print(f"  Collected {len(states)} state-action pairs from {safe_env1_state_action_data_num_rollouts} rollouts")
-
-# -----------------------------------------------------------------------------
-# Dataset 2: Safe Training Data
-# Filter safe state-action pairs from PPO training trajectories
-# -----------------------------------------------------------------------------
-print("\nCreating 'Safe Training Data' dataset...")
-states = torch.FloatTensor(standard_training_data['states'])
-actions = torch.LongTensor(standard_training_data['actions'])
-safes = standard_training_data['safe']
-
-# Filter only safe state-action pairs
-safe_indices = np.where(safes == 1.0)[0]
-states_safe = states[safe_indices]
-actions_safe = actions[safe_indices]
-
-# Remove duplicate state-action pairs
-safe_states_df = pd.DataFrame(states_safe.detach().numpy())
-safe_states_df.columns = [f'state_feature_{i}' for i in range(safe_states_df.shape[1])]
-actions_df = pd.DataFrame(actions_safe.detach().numpy(), columns=['action'])
-safe_state_action_pairs_df = pd.concat([safe_states_df, actions_df], axis=1)
-safe_state_action_pairs_df = safe_state_action_pairs_df.drop_duplicates(keep='first').reset_index(drop=True)
-
-states_safe = torch.FloatTensor(safe_state_action_pairs_df.drop(columns=['action']).values)
-actions_safe = torch.LongTensor(safe_state_action_pairs_df['action'].values)
-safe_training_data = torch.utils.data.TensorDataset(states_safe, actions_safe)
-print(f"  Filtered {len(states_safe)} unique safe state-action pairs from training data")
-
-# -----------------------------------------------------------------------------
-# Dataset 3: Tabular Safety Critic Data
-# Generate exhaustive safe actions for all possible states
-# -----------------------------------------------------------------------------
-print("\nCreating 'Tabular Safety Critic Data' dataset...")
-all_observations, all_positions = generate_all_observations_env(env, observation_type)
-safe_actions_list = generate_safe_actions_for_all_states(env, all_positions, env1_poisoned_apple_positions)
-
-# Create dataset with all safe state-action pairs
-tabular_states = []
-tabular_actions = []
-for obs, safe_actions in zip(all_observations, safe_actions_list):
-    for action in safe_actions:
-        tabular_states.append(obs)
-        tabular_actions.append(action)
-
-tabular_states = torch.FloatTensor(np.array(tabular_states))
-tabular_actions = torch.LongTensor(np.array(tabular_actions))
-tabular_safety_data = torch.utils.data.TensorDataset(tabular_states, tabular_actions)
-print(f"  Generated {len(tabular_states)} safe state-action pairs from {len(all_observations)} states")
+unsafe_state_action_pairs = get_all_unsafe_state_action_pairs(env=env)
+sufficient_safe_state_action_torch_dataset = generate_sufficient_safe_state_action_dataset(
+    unsafe_state_action_pairs=unsafe_state_action_pairs,
+    env=env
+)
 
 # Collect all datasets
 safe_datasets = {
     'Safe Optimal Policy Data': safe_optimal_policy_data,
     'Safe Training Data': safe_training_data,
-    'Tabular Safety Critic Data': tabular_safety_data
+    'Sufficient Safety Data': sufficient_safe_state_action_torch_dataset
 }
 
 print(f"\nUsing dataset: {safe_state_action_data_name}")
@@ -650,10 +707,12 @@ state_action_dataset = safe_datasets[safe_state_action_data_name]
 standard_actor_cpu = standard_actor.cpu()
 
 # Initialize IntervalTrainer for computing parameter bounds
+min_acc_limit = 1.0  # Require 100% accuracy on the safety dataset for certification
 interval_trainer = IntervalTrainer(
     model=standard_actor_cpu,
-    min_acc_limit=0.99,  # Require 99% accuracy on safety dataset
-    seed=seed
+    min_acc_limit=min_acc_limit,  # Require min_acc_limit accuracy on the safety dataset for certification
+    seed=seed,
+    n_iters=2_000, # Number of iterations for interval bound optimization (can be adjusted for faster computation during demos
 )
 
 # Determine whether to use multi-label formulation
@@ -718,6 +777,26 @@ visualize_agent_trajectory(
     actor_name=f'SafeAdapt ({safe_state_action_data_name})', 
     save_dir=plots_dir
 )
+
+#%%
+### Verify accuracy of the Rashomon actor on the safe state-action dataset
+rashomon_actor_actions = safeadapt_actor(state_action_dataset.tensors[0]).argmax(axis=1) # type: ignore
+if multi_label:
+    # For multi-label datasets, we need to check if the predicted action is in the set of valid actions for each state
+    valid_actions = state_action_dataset.tensors[1]  # shape: (num_samples, max_actions)
+    rashomon_actor_actions_expanded = rashomon_actor_actions.unsqueeze(1).expand_as(valid_actions)  # shape: (num_samples, max_actions)
+    matches = (rashomon_actor_actions_expanded == valid_actions)  # shape: (num_samples, max_actions), bool tensor
+    valid_action_mask = (valid_actions != -1)  # shape: (num_samples, max_actions), bool tensor
+    correct_predictions = (matches & valid_action_mask).any(dim=1).sum().item()  # count samples where at least one valid action matches
+    accuracy = correct_predictions / len(rashomon_actor_actions)
+else:
+    accuracy = (rashomon_actor_actions == state_action_dataset.tensors[1]).sum().item() / len(rashomon_actor_actions)
+
+accuracy_validated = accuracy >= min_acc_limit
+if accuracy_validated:
+    print(f"Certified accuracy validated: {accuracy:.2f} >= {min_acc_limit:.2f}")
+else:
+    raise ValueError(f"Certified accuracy validation failed: {accuracy:.2f} < {min_acc_limit:.2f}")
 
 # %%
 # =============================================================================
