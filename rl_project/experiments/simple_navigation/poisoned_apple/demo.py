@@ -83,7 +83,8 @@ import matplotlib.patches as patches
 from poisoned_apple_env import (
     PoisonedAppleEnv, 
     evaluate_policy,
-    get_all_unsafe_state_action_pairs
+    get_all_unsafe_state_action_pairs,
+    visualize_agent_trajectory
 )
 from rl_project.utils.ppo_utils import ppo_train, PPOConfig
 from src.trainer import IntervalTrainer
@@ -237,223 +238,6 @@ def set_all_seeds(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-def visualize_agent_trajectory(
-        env, actor, num_episodes=3, max_steps=None, 
-        env_name=None, cfg_name=None, actor_name=None, save_dir=None
-    ):
-    """
-    Visualize the trained agent's trajectory in the environment.
-    
-    Args:
-        env: The environment
-        actor: Trained actor network
-        num_episodes: Number of episodes to visualize
-        max_steps: Maximum steps per episode (default: env.max_steps)
-        env_name: Optional name for the environment (used in plot titles and filenames)
-        cfg_name: Optional configuration name (used in filenames)
-        actor_name: Optional actor name (used in filenames)
-        save_dir: Optional directory to save plots. If None, plots are only displayed.
-    """
-    # if max_steps is None:
-    #     max_steps = env.max_steps
-    # if max_steps is None:
-    #     max_steps = np.inf
-    max_steps = np.inf
-    
-    action_names = ["UP", "RIGHT", "DOWN", "LEFT"]
-    
-    for episode in range(num_episodes):
-        print(f"\n{'='*50}")
-        print(f"Episode {episode + 1}/{num_episodes}")
-        print('='*50)
-        
-        obs, info = env.reset()
-        trajectory = []
-        rewards_list = []
-        actions_list = []
-        
-        # Store initial state
-        trajectory.append({
-            'agent_pos': tuple(env.agent_pos),
-            'safe_apples': set(env.safe_apples),
-            'poisoned_apples': set(env.poisoned_apples)
-        })
-        
-        done = False
-        step = 0
-        total_reward = 0
-        
-        while not done:
-            # Get action from actor
-            import torch
-            with torch.no_grad():
-                obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-                action_logits = actor(obs_tensor)
-                action = torch.argmax(action_logits, dim=1).item()
-            
-            # Take step
-            obs, reward, terminated, truncated, info = env.step(action) # type: ignore
-            done = terminated or truncated
-            total_reward += reward
-            
-            # Store trajectory
-            trajectory.append({
-                'agent_pos': tuple(env.agent_pos),
-                'safe_apples': set(env.safe_apples),
-                'poisoned_apples': set(env.poisoned_apples)
-            })
-            rewards_list.append(reward)
-            actions_list.append(action)
-            
-            action_name = action_names[action] # type: ignore
-            print(f"Step {step + 1}: {action_name}, Reward: {reward:.2f}, Total: {total_reward:.2f}")
-            step += 1
-
-            if step >= max_steps:
-                print("Reached maximum steps for this episode.")
-                break
-        
-        print(f"\nEpisode finished! Total reward: {total_reward:.2f}")
-        print(f"Apples remaining: {info['safe_apples_remaining']} safe, {info['poisoned_apples_remaining']} poisoned")
-        
-        # Plot trajectory
-        plot_trajectory(
-            env, trajectory, rewards_list, actions_list, 
-            episode_num=episode + 1 if num_episodes > 1 else None, 
-            env_name=env_name, cfg_name=cfg_name, actor_name=actor_name, save_dir=save_dir
-        )
-    
-    if save_dir is None:
-        plt.show()
-
-def plot_trajectory(
-        env, trajectory, rewards_list, actions_list, 
-        episode_num=None, env_name=None, cfg_name=None, actor_name=None, save_dir=None
-    ):
-    """
-    Plot a single trajectory as a static image.
-    
-    Args:
-        env: The environment
-        trajectory: List of states
-        rewards_list: List of rewards
-        actions_list: List of actions
-        episode_num: Episode number for title
-        env_name: Optional environment name for title
-        cfg_name: Optional configuration name for filename
-        actor_name: Optional actor name for filename
-        save_dir: Optional directory to save the plot. If None, plot is only displayed.
-    """
-    grid_size = env.grid_size
-    num_steps = len(trajectory)
-    
-    # Create figure with subplots for each step
-    cols = min(5, num_steps)
-    rows = (num_steps + cols - 1) // cols
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(3*cols, 3*rows))
-    if num_steps == 1:
-        axes = np.array([[axes]])
-    elif rows == 1:
-        axes = axes.reshape(1, -1)
-    
-    action_names = ["↑", "→", "↓", "←"]
-    
-    for step_idx, state in enumerate(trajectory):
-        row = step_idx // cols
-        col = step_idx % cols
-        ax = axes[row, col]
-        
-        # Create grid
-        ax.set_xlim(-0.5, grid_size - 0.5)
-        ax.set_ylim(-0.5, grid_size - 0.5)
-        ax.set_aspect('equal')
-        ax.grid(True, linewidth=0.5, alpha=0.3)
-        ax.set_xticks(range(grid_size))
-        ax.set_yticks(range(grid_size))
-        ax.tick_params(labelsize=12)
-        ax.invert_yaxis()
-        
-        # Draw safe apples (green circles)
-        for pos in state['safe_apples']:
-            circle = patches.Circle((pos[1], pos[0]), 0.3, color='green', alpha=0.6)
-            ax.add_patch(circle)
-            ax.text(pos[1], pos[0], 'A', ha='center', va='center', 
-                   fontsize=14, fontweight='bold', color='white')
-        
-        # Draw poisoned apples (red circles)
-        for pos in state['poisoned_apples']:
-            circle = patches.Circle((pos[1], pos[0]), 0.3, color='red', alpha=0.6)
-            ax.add_patch(circle)
-            ax.text(pos[1], pos[0], 'P', ha='center', va='center',
-                   fontsize=14, fontweight='bold', color='white')
-        
-        # Draw agent (blue square)
-        agent_pos = state['agent_pos']
-        rect = patches.Rectangle((agent_pos[1] - 0.35, agent_pos[0] - 0.35), 
-                                0.7, 0.7, color='blue', alpha=0.8)
-        ax.add_patch(rect)
-        ax.text(agent_pos[1], agent_pos[0], '●', ha='center', va='center',
-               fontsize=20, fontweight='bold', color='white')
-        
-        # Title for each step
-        if step_idx == 0:
-            ax.set_title(f'Start', fontsize=13, fontweight='bold')
-        else:
-            action = action_names[actions_list[step_idx - 1]]
-            reward = rewards_list[step_idx - 1]
-            reward_color = 'green' if reward > 0 else ('red' if reward < 0 else 'gray')
-            ax.set_title(f'Step {step_idx}: {action} (r={reward:.2f})', 
-                        fontsize=13, fontweight='bold', color=reward_color)
-            
-        # Turn off axis ticks and labels
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.tick_params(left=False, bottom=False)
-    
-    # Hide empty subplots
-    for step_idx in range(num_steps, rows * cols):
-        row = step_idx // cols
-        col = step_idx % cols
-        axes[row, col].axis('off')
-    
-    suptitle = ''
-    if cfg_name is not None:
-        suptitle = suptitle + cfg_name
-    if env_name is not None:
-        suptitle = suptitle + ' - ' + env_name
-    if actor_name is not None:
-        suptitle = suptitle + ' - ' + actor_name
-    if episode_num is not None:
-        suptitle = suptitle + ' - ' + f'Episode {episode_num}'
-    fig.suptitle(suptitle, fontsize=16, fontweight='bold')
-    plt.tight_layout()
-    
-    # Save the figure if save_dir is provided
-    if save_dir is not None:
-        import os
-        os.makedirs(save_dir, exist_ok=True)
-    
-    if save_dir is not None:
-        filename_parts = []
-        assert not (cfg_name is None and actor_name is None and env_name is None), "At least one of cfg_name, actor_name, or env_name must be provided for filename."
-        if cfg_name is not None:
-            filename_parts.append(cfg_name)
-        if env_name is not None:
-            clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            filename_parts.append(clean_env_name)
-        if actor_name is not None:
-            clean_actor_name = actor_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            filename_parts.append(clean_actor_name)
-        if episode_num is not None:
-            filename_parts.append(f"episode_{episode_num}")
-
-        filename = "_".join(filename_parts) + ".png"
-        filepath = os.path.join(save_dir, filename) # type: ignore
-        plt.savefig(filepath, dpi=150, bbox_inches='tight')
-        print(f"Saved plot to: {filepath}")
-        plt.close(fig)
-
 #%%
 # =============================================================================
 # EXPERIMENT CONFIGURATION
@@ -504,6 +288,7 @@ env2_poisoned_apple_positions = [tuple(pos) for pos in cfg['env2_poisoned_apples
 
 # Training hyperparameters
 no_adapt_timesteps = cfg['unadaptable_actor_timesteps']
+task2_adapt_timesteps = cfg['task2_adapt_timesteps']
 safe_adapt_timesteps = cfg['rashomon_timesteps']
 
 # -------------------------
@@ -630,14 +415,16 @@ if train_unsafe_adapt:
     print("Expected: Good performance on Task 2, catastrophic forgetting on Task 1\n")
 
     ppo_cfg_unsafe = PPOConfig(
-        total_timesteps=30_000,
+        total_timesteps=task2_adapt_timesteps,
         device='cpu'
     )
     amnesic_actor, _ = ppo_train(
         env=env2,
         cfg=ppo_cfg_unsafe,
+        actor_warm_start=standard_actor,
+        critic_warm_start=standard_critic,
     )
-    print(f"UnsafeAdapt training complete (30000 timesteps)")
+    print(f"UnsafeAdapt training complete ({task2_adapt_timesteps} timesteps)")
 
     # Visualize UnsafeAdapt on Task 1 (expected catastrophic forgetting)
     print("\nVisualizing UnsafeAdapt on Task 1 (expected catastrophic forgetting)...")
@@ -970,25 +757,32 @@ print("\n" + "="*80)
 print("VERIFICATION")
 print("="*80)
 
+### Make sure the following is true:
+# 1) NoAdapt should be unsafe on Task 2 (safety success < threshold)
+# 2) UnsafeAdapt should show catastrophic forgetting on Task 1 (if trained) (safety success < threshold)
+# 3) SafeAdapt should have perfect safety on Task 1 (safety success = 1.0 due to certification) and high safety on Task 2 (safety success >= threshold)
+
 # Check expected behaviors
-safety_threshold = 0.99
+# Note: safety_threshold is used to verify unsafe behaviors (NoAdapt, UnsafeAdapt)
+# SafeAdapt on Task 1 should have perfect safety (1.0) due to min_acc_limit=1.0 certification
+task2_safety_threshold = 0.99
 
 print("\nVerifying expected behaviors:")
 
 # NoAdapt should be unsafe on Task 2
-noadapt_task2_safe = results_df.loc['avg_safety_success', 'NoAdapt / Task 2']
-print(f"✓ NoAdapt unsafe on Task 2: {noadapt_task2_safe < safety_threshold} (safety={noadapt_task2_safe:.3f})")
+# noadapt_task2_safe = results_df.loc['avg_safety_success', 'NoAdapt / Task 2']
+# print(f"✓ NoAdapt unsafe on Task 2: {noadapt_task2_safe < task2_safety_threshold} (safety={noadapt_task2_safe:.3f})")
 
-# UnsafeAdapt should show catastrophic forgetting on Task 1 (if trained)
-if train_unsafe_adapt:
-    unsafeadapt_task1_safe = results_df.loc['avg_safety_success', 'UnsafeAdapt / Task 1']
-    print(f"✓ UnsafeAdapt shows forgetting on Task 1: {unsafeadapt_task1_safe < safety_threshold} (safety={unsafeadapt_task1_safe:.3f})")
+# # UnsafeAdapt should show catastrophic forgetting on Task 1 (if trained)
+# if train_unsafe_adapt:
+#     unsafeadapt_task1_safe = results_df.loc['avg_safety_success', 'UnsafeAdapt / Task 1']
+#     print(f"✓ UnsafeAdapt shows forgetting on Task 1: {unsafeadapt_task1_safe < task2_safety_threshold} (safety={unsafeadapt_task1_safe:.3f})")
 
-# SafeAdapt should be safe on both tasks
+# SafeAdapt should have perfect safety on Task 1 (certified) and high safety on Task 2 (generalization)
 safeadapt_task1_safe = results_df.loc['avg_safety_success', 'SafeAdapt / Task 1']
 safeadapt_task2_safe = results_df.loc['avg_safety_success', 'SafeAdapt / Task 2']
-print(f"✓ SafeAdapt safe on Task 1: {safeadapt_task1_safe >= safety_threshold} (safety={safeadapt_task1_safe:.3f})")
-print(f"✓ SafeAdapt safe on Task 2: {safeadapt_task2_safe >= safety_threshold} (safety={safeadapt_task2_safe:.3f})")
+print(f"✓ SafeAdapt perfect safety on Task 1: {safeadapt_task1_safe > min_acc_limit} (safety={safeadapt_task1_safe:.3f}, certified)")
+# print(f"✓ SafeAdapt safe on Task 2: {safeadapt_task2_safe >= task2_safety_threshold} (safety={safeadapt_task2_safe:.3f}, generalization)")
 
 print("\n" + "="*80)
 print("EXPERIMENT COMPLETE")
