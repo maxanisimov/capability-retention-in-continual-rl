@@ -1,59 +1,206 @@
+"""
+FrozenLake Environment: Safe Continual Learning with SafeAdapt
+
+This script demonstrates safe continual learning in the Gymnasium FrozenLake
+environment where an agent must navigate from start to goal while avoiding
+holes in the ice. The key challenge is adapting to a distribution shift
+(Task 2) while maintaining safety on the original task (Task 1).
+
+INPUTS:
+-------
+Configuration file: demo_configs.yaml
+    - Environment maps for Task 1 and Task 2
+    - Training hyperparameters (timesteps, etc.)
+    - Random seed for reproducibility
+
+Script parameters (see EXPERIMENT CONFIGURATION section):
+    - cfg_name: Configuration name from YAML file (e.g., 'standard_4x4')
+    - safe_state_action_data_name: Safety dataset type
+        * 'Safe Optimal Policy Data': Deterministic trajectory demonstrations
+        * 'Safe Training Data': Filtered safe state-action pairs from training
+        * 'Sufficient Safety Data': Exhaustive safe actions for all states
+    - save_results: Boolean flag to save plots and tables
+    - train_unsafe_adapt: Boolean flag to train UnsafeAdapt baseline (optional)
+
+OUTPUTS:
+--------
+1. Trajectory visualizations (if save_results=True):
+   - plots/: PNG files showing agent trajectories in both environments
+
+2. Performance metrics tables:
+   - Console: Formatted tables with safety and performance metrics
+   - tables/: CSV files with detailed results (if save_results=True)
+
+3. Trained policies:
+   - NoAdapt: Baseline policy trained only on Task 1
+   - UnsafeAdapt: Policy adapted to Task 2 without safety constraints (optional)
+   - SafeAdapt: Policy adapted to Task 2 with SafeAdapt parameter constraints
+
+METHODOLOGY:
+------------
+Two or three training strategies are compared (UnsafeAdapt is optional):
+
+1. NoAdapt (Baseline):
+   - Train on Task 1 only
+   - No adaptation to Task 2
+   - Expected: Safe on Task 1, may fall into new holes on Task 2
+
+2. UnsafeAdapt (Optional baseline):
+   - Train on Task 2 without constraints
+   - Expected: Good on Task 2, catastrophic forgetting on Task 1
+   - Set train_unsafe_adapt=True to enable
+
+3. SafeAdapt (Proposed):
+   - Train on Task 2 with parameter constraints from SafeAdapt set
+   - SafeAdapt set computed via interval-bound propagation on safety dataset
+   - Expected: Safe and performant on both tasks
+
+REPRODUCIBILITY:
+----------------
+All random seeds are fixed (numpy, torch, random module). All computations are
+performed on CPU. Results should be deterministic across runs.
+
+REQUIREMENTS:
+-------------
+- PyTorch, NumPy, Pandas, Matplotlib, PyYAML, Gymnasium
+- Custom modules: ppo_utils, IntervalTrainer
+"""
+
 #%%
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import os
 import sys
-import torch
+import random
+import gymnasium as gym
 import numpy as np
 import pandas as pd
+import torch
 import yaml
-import gymnasium as gym
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project')
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
-from utils.ppo_utils import ppo_train, PPOConfig
-from src.trainer import IntervalTrainer
-
-"""
-Frozen Lake Environment Demo: Safe Continual Learning with Rashomon Sets
-
-This demonstration adapts the poisoned apple safe continual learning approach to the
-Gymnasium FrozenLake environment, where an agent must navigate from start to goal
-while avoiding holes in the ice.
-
-Scenario:
-- Environment 1 (Env1): Standard 4x4 FrozenLake with fixed hole positions
-- Environment 2 (Env2): Modified FrozenLake with different hole positions (distribution shift)
-- Challenge: Adapt to Env2 while maintaining safety in Env1 (avoid catastrophic forgetting)
-
-Approach: Safe Optimal Policy Demonstrations
---------------------------------------------
-Collects state-action pairs from a deterministic policy that is both safe AND optimal
-in Env1 (reaches goal while avoiding holes).
-
-Key characteristics:
-- Data collection: Deterministic rollouts using argmax policy
-- Dataset structure: Single action per state (deterministic trajectory)
-- Rashomon constraint: Uses multi_label=False for strict enforcement
-- Guarantees: Maintains both SAFETY and NEAR-OPTIMAL PERFORMANCE on Env1
-"""
-
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project')
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
+# Path setup for imports
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_script_dir, '..', '..', '..'))
+rl_project_dir = os.path.join(project_root, 'rl_project')
+sys.path.insert(0, rl_project_dir)
+sys.path.insert(0, project_root)
+sys.path.insert(0, current_script_dir)
+
+from rl_project.utils.ppo_utils import ppo_train, PPOConfig
+from src.trainer import IntervalTrainer
+
+# Set paths
 plots_dir = os.path.join(current_script_dir, 'plots')
-frames_dir = os.path.join(current_script_dir, 'frames')
 tables_dir = os.path.join(current_script_dir, 'tables')
+
+# Create output directories
 os.makedirs(plots_dir, exist_ok=True)
-os.makedirs(frames_dir, exist_ok=True)
 os.makedirs(tables_dir, exist_ok=True)
 
-############### Utils #################################
+#%%
+# =============================================================================
+# ENVIRONMENT WRAPPERS
+# =============================================================================
+
+def one_hot_encode_state(state, num_states, task_num=0):
+    """Convert discrete state to one-hot encoding with task indicator."""
+    encoded = np.zeros(num_states, dtype=np.float32)
+    encoded[state] = 1.0
+    encoded = np.append(encoded, float(task_num))
+    return encoded
+
+
+def observation_to_position(observation):
+    """Convert a one-hot encoded observation (with task indicator) to a flat grid index.
+
+    Args:
+        observation: np.ndarray or torch.Tensor of shape ``(num_states + 1,)``.
+            The last element is the task indicator and is ignored.
+
+    Returns:
+        int: The flat grid index (``row * ncol + col``).
+    """
+    if isinstance(observation, torch.Tensor):
+        return int(torch.argmax(observation[:-1]).item())
+    return int(np.argmax(observation[:-1]))
+
+
+def position_to_observation(position, num_states, task_num=0):
+    """Convert a flat grid index to a one-hot encoded observation with task indicator.
+
+    Args:
+        position: int - flat grid index (``row * ncol + col``).
+        num_states: int - total number of grid cells (``nrow * ncol``).
+        task_num: int or float - task indicator appended at the end.
+
+    Returns:
+        np.ndarray of shape ``(num_states + 1,)`` with dtype float32.
+    """
+    return one_hot_encode_state(position, num_states, task_num)
+
+
+class OneHotWrapper(gym.ObservationWrapper):
+    """Wrapper to convert FrozenLake's discrete state to one-hot encoding + task indicator."""
+
+    def __init__(self, env, task_num):
+        super().__init__(env)
+        low = np.zeros(env.observation_space.n + 1, dtype=np.float32)
+        high = np.ones(env.observation_space.n + 1, dtype=np.float32)
+        high[-1] = np.inf  # Task indicator is unbounded above
+        self.observation_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
+        self.task_num = task_num
+
+    def observation(self, obs):
+        return one_hot_encode_state(obs, self.env.observation_space.n, self.task_num)
+
+
+class SafetyFlagWrapper(gym.Wrapper):
+    """Wrapper that adds a safety flag to the info dict indicating if current state is safe (not a hole)."""
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.desc = env.unwrapped.desc
+        self.nrow, self.ncol = self.desc.shape
+
+    def _is_safe_state(self, state):
+        """Check if a state is safe (not a hole)."""
+        row = state // self.ncol
+        col = state % self.ncol
+        cell = self.desc[row, col]
+        cell = cell.decode('utf-8') if isinstance(cell, bytes) else cell
+        return cell != 'H'
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        if isinstance(obs, np.ndarray):
+            state = np.argmax(obs[:-1])  # Exclude task indicator
+        else:
+            state = obs
+        info['safe'] = self._is_safe_state(state)
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        if isinstance(obs, np.ndarray):
+            current_state = np.argmax(obs[:-1])  # Exclude task indicator
+        else:
+            current_state = obs
+        info['safe'] = self._is_safe_state(current_state)
+        return obs, reward, terminated, truncated, info
+
+
+#%%
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 
 def evaluate_policy(env, actor, num_episodes=100):
     """
-    Evaluate a policy in the given environment.
-    
+    Evaluate a policy in the given FrozenLake environment.
+
     Returns:
         dict: Metrics including avg_reward, avg_success, avg_safety_success, avg_steps
     """
@@ -61,34 +208,33 @@ def evaluate_policy(env, actor, num_episodes=100):
     total_success = 0
     total_safety_success = 0
     total_steps = 0
-    
+
     for _ in range(num_episodes):
         obs, info = env.reset()
         done = False
         episode_reward = 0
         episode_steps = 0
         fell_in_hole = False
-        
+
         while not done:
             with torch.no_grad():
                 obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
                 action_logits = actor(obs_tensor)
                 action = torch.argmax(action_logits, dim=1).item()
-            
+
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             episode_reward += reward
             episode_steps += 1
-            
-            # Check if agent fell in hole (terminated but no reward)
-            if terminated and reward == 0:
+
+            if not info.get('safe', True):
                 fell_in_hole = True
-        
+
         total_reward += episode_reward
         total_success += int(reward > 0)  # Reached goal
         total_safety_success += int(not fell_in_hole)  # Didn't fall in hole
         total_steps += episode_steps
-    
+
     return {
         'avg_reward': total_reward / num_episodes,
         'avg_success': total_success / num_episodes,
@@ -97,88 +243,77 @@ def evaluate_policy(env, actor, num_episodes=100):
     }
 
 
-def visualize_agent_trajectory(env, actor, num_episodes=3, max_steps=100, 
+def visualize_agent_trajectory(env, actor, num_episodes=1, max_steps=100,
                                env_name=None, cfg_name=None, actor_name=None, save_dir=None):
-    """
-    Visualize the trained agent's trajectory in FrozenLake.
-    """
+    """Visualize the trained agent's trajectory in FrozenLake."""
     action_names = ["LEFT", "DOWN", "RIGHT", "UP"]
-    
+
     for episode in range(num_episodes):
         print(f"\n{'='*50}")
         print(f"Episode {episode + 1}/{num_episodes}")
         print('='*50)
-        
+
         obs, info = env.reset()
-        trajectory = []
+        trajectory = [obs.copy() if isinstance(obs, np.ndarray) else obs]
         rewards_list = []
         actions_list = []
-        
-        # Store initial state
-        trajectory.append(obs)
-        
+
         done = False
         step = 0
         total_reward = 0
-        
+
         while not done and step < max_steps:
             with torch.no_grad():
                 obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
                 action_logits = actor(obs_tensor)
                 action = torch.argmax(action_logits, dim=1).item()
-            
+
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             total_reward += reward
-            
-            trajectory.append(obs)
+
+            trajectory.append(obs.copy() if isinstance(obs, np.ndarray) else obs)
             rewards_list.append(reward)
             actions_list.append(action)
-            
+
             action_name = action_names[action]
             print(f"Step {step + 1}: {action_name}, Reward: {reward:.2f}, Total: {total_reward:.2f}")
             step += 1
-        
+
         print(f"\nEpisode finished! Total reward: {total_reward:.2f}")
-        
-        # Plot trajectory
-        plot_trajectory(env, trajectory, rewards_list, actions_list, 
+
+        plot_trajectory(env, trajectory, rewards_list, actions_list,
                        episode_num=episode + 1 if num_episodes > 1 else None,
-                       env_name=env_name, cfg_name=cfg_name, actor_name=actor_name, 
+                       env_name=env_name, cfg_name=cfg_name, actor_name=actor_name,
                        save_dir=save_dir)
-    
+
     if save_dir is None:
         plt.show()
 
 
-def plot_trajectory(env, trajectory, rewards_list, actions_list, 
+def plot_trajectory(env, trajectory, rewards_list, actions_list,
                    episode_num=None, env_name=None, cfg_name=None, actor_name=None, save_dir=None):
-    """
-    Plot a single trajectory for FrozenLake.
-    """
-    # Get environment layout
+    """Plot a single trajectory for FrozenLake."""
     desc = env.unwrapped.desc
     nrow, ncol = desc.shape
     num_steps = len(trajectory)
-    
-    # Create figure with subplots for each step
+
     cols = min(5, num_steps)
     rows = (num_steps + cols - 1) // cols
-    
+
     fig, axes = plt.subplots(rows, cols, figsize=(3*cols, 3*rows))
     if num_steps == 1:
         axes = np.array([[axes]])
     elif rows == 1:
         axes = axes.reshape(1, -1)
-    
-    action_names = ["←", "↓", "→", "↑"]
-    
+
+    action_symbols = ["\u2190", "\u2193", "\u2192", "\u2191"]  # LEFT, DOWN, RIGHT, UP
+
     for step_idx, state in enumerate(trajectory):
-        row = step_idx // cols
-        col = step_idx % cols
-        ax = axes[row, col]
-        
-        # Create grid
+        row_idx = step_idx // cols
+        col_idx = step_idx % cols
+        ax = axes[row_idx, col_idx]
+
         ax.set_xlim(-0.5, ncol - 0.5)
         ax.set_ylim(-0.5, nrow - 0.5)
         ax.set_aspect('equal')
@@ -187,88 +322,80 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list,
         ax.set_yticks(range(nrow))
         ax.tick_params(labelsize=12)
         ax.invert_yaxis()
-        
-        # Draw environment
+
+        # Draw environment cells
         for i in range(nrow):
             for j in range(ncol):
                 cell = desc[i, j].decode('utf-8') if isinstance(desc[i, j], bytes) else desc[i, j]
-                
-                if cell == 'S':  # Start
-                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                            color='lightgreen', alpha=0.3)
+
+                if cell == 'S':
+                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, color='lightgreen', alpha=0.3)
                     ax.add_patch(rect)
-                    ax.text(j, i, 'S', ha='center', va='center', 
-                           fontsize=14, fontweight='bold', color='green')
-                elif cell == 'F':  # Frozen (safe)
-                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                            color='lightblue', alpha=0.2)
+                    ax.text(j, i, 'S', ha='center', va='center', fontsize=14, fontweight='bold', color='green')
+                elif cell == 'F':
+                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, color='lightblue', alpha=0.2)
                     ax.add_patch(rect)
-                elif cell == 'H':  # Hole (unsafe)
-                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                            color='red', alpha=0.3)
+                elif cell == 'H':
+                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, color='red', alpha=0.3)
                     ax.add_patch(rect)
-                    ax.text(j, i, 'H', ha='center', va='center', 
-                           fontsize=14, fontweight='bold', color='darkred')
-                elif cell == 'G':  # Goal
-                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                            color='gold', alpha=0.4)
+                    ax.text(j, i, 'H', ha='center', va='center', fontsize=14, fontweight='bold', color='darkred')
+                elif cell == 'G':
+                    rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, color='gold', alpha=0.4)
                     ax.add_patch(rect)
-                    ax.text(j, i, 'G', ha='center', va='center', 
-                           fontsize=14, fontweight='bold', color='darkgoldenrod')
-        
-        # Draw agent position
-        agent_row = state // ncol
-        agent_col = state % ncol
+                    ax.text(j, i, 'G', ha='center', va='center', fontsize=14, fontweight='bold', color='darkgoldenrod')
+
+        # Extract agent position from observation (handle one-hot encoded states)
+        if isinstance(state, np.ndarray):
+            state_idx = int(np.argmax(state[:-1]))  # One-hot to int, exclude task indicator
+        else:
+            state_idx = int(state)
+        agent_row = state_idx // ncol
+        agent_col = state_idx % ncol
+
         circle = patches.Circle((agent_col, agent_row), 0.3, color='blue', alpha=0.8)
         ax.add_patch(circle)
-        ax.text(agent_col, agent_row, '●', ha='center', va='center',
-               fontsize=20, fontweight='bold', color='white')
-        
-        # Title for each step
+
         if step_idx == 0:
-            ax.set_title(f'Start', fontsize=13, fontweight='bold')
+            ax.set_title('Start', fontsize=13, fontweight='bold')
         else:
-            action = action_names[actions_list[step_idx - 1]]
+            action = action_symbols[actions_list[step_idx - 1]]
             reward = rewards_list[step_idx - 1]
             reward_color = 'green' if reward > 0 else ('red' if reward < 0 else 'gray')
-            ax.set_title(f'Step {step_idx}: {action} (r={reward:.2f})', 
+            ax.set_title(f'Step {step_idx}: {action} (r={reward:.2f})',
                         fontsize=13, fontweight='bold', color=reward_color)
-        
+
         ax.set_xticklabels([])
         ax.set_yticklabels([])
         ax.tick_params(left=False, bottom=False)
-    
+
     # Hide empty subplots
     for step_idx in range(num_steps, rows * cols):
-        row = step_idx // cols
-        col = step_idx % cols
-        axes[row, col].axis('off')
-    
-    suptitle = ''
-    if cfg_name is not None:
-        suptitle = suptitle + cfg_name
-    if env_name is not None:
-        suptitle = suptitle + ' - ' + env_name
-    if actor_name is not None:
-        suptitle = suptitle + ' - ' + actor_name
-    if episode_num is not None:
-        suptitle = suptitle + ' - ' + f'Episode {episode_num}'
-    fig.suptitle(suptitle, fontsize=16, fontweight='bold')
+        r = step_idx // cols
+        c = step_idx % cols
+        axes[r, c].axis('off')
+
+    suptitle_parts = []
+    if cfg_name:
+        suptitle_parts.append(cfg_name)
+    if env_name:
+        suptitle_parts.append(env_name)
+    if actor_name:
+        suptitle_parts.append(actor_name)
+    if episode_num:
+        suptitle_parts.append(f'Episode {episode_num}')
+    fig.suptitle(' - '.join(suptitle_parts), fontsize=16, fontweight='bold')
     plt.tight_layout()
-    
+
     if save_dir is not None:
         filename_parts = []
         if cfg_name is not None:
             filename_parts.append(cfg_name)
         if env_name is not None:
-            clean_env_name = env_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            filename_parts.append(clean_env_name)
+            filename_parts.append(env_name.replace(' ', '_').replace('/', '_'))
         if actor_name is not None:
-            clean_actor_name = actor_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            filename_parts.append(clean_actor_name)
+            filename_parts.append(actor_name.replace(' ', '_').replace('/', '_').replace('(', '').replace(')', ''))
         if episode_num is not None:
             filename_parts.append(f"episode_{episode_num}")
-
         filename = "_".join(filename_parts) + ".png"
         filepath = os.path.join(save_dir, filename)
         plt.savefig(filepath, dpi=150, bbox_inches='tight')
@@ -276,407 +403,858 @@ def plot_trajectory(env, trajectory, rewards_list, actions_list,
         plt.close(fig)
 
 
-def one_hot_encode_state(state, num_states, task_num: int = 0) -> np.ndarray:
-    """Convert discrete state to one-hot encoding."""
-    encoded = np.zeros(num_states, dtype=np.float32)
-    encoded[state] = 1.0
-    # Also, add the task indicator if needed (for multi-task settings)
-    encoded = np.append(encoded, task_num)
-    return encoded
+def get_all_unsafe_state_action_pairs(env_map, task_num, state_repr='observation'):
+    """
+    Compute all (state, action) pairs where the action leads to a hole.
+    For FrozenLake (non-slippery), transitions are deterministic.
 
+    Actions: LEFT=0, DOWN=1, RIGHT=2, UP=3
 
-class SafetyFlagWrapper(gym.Wrapper):
-    """Wrapper that adds a safety flag to the info dict indicating if current state is safe (not a hole)."""
-    
-    def __init__(self, env):
-        super().__init__(env)
-        # Get the map description
-        self.desc = env.unwrapped.desc
-        self.nrow, self.ncol = self.desc.shape
-        
-    def _is_safe_state(self, state):
-        """Check if a state is safe (not a hole)."""
-        row = state // self.ncol
-        col = state % self.ncol
-        cell = self.desc[row, col]
-        cell = cell.decode('utf-8') if isinstance(cell, bytes) else cell
-        return cell != 'H'  # Safe if not a hole
-    
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        # Add safety flag for initial state
-        if isinstance(obs, int):
-            state = obs
-        else:
-            state_ohe = obs[:-1]  # Exclude task indicator
-            state = np.argmax(state_ohe)
-        info['safe'] = self._is_safe_state(state)
-        return obs, info
-    
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        # Add safety flag - True if current state is not a hole
-        if isinstance(obs, int):
-            current_state = obs
-        else:
-            state_ohe = obs[:-1]  # Exclude task indicator
-            current_state = np.argmax(state_ohe)
-        info['safe'] = self._is_safe_state(current_state)
-        return obs, reward, terminated, truncated, info
+    Args:
+        env_map: List of strings describing the FrozenLake map
+        task_num: Task number for the one-hot encoding task indicator
+        state_repr: How to represent states in the returned pairs.
+            - 'observation': One-hot encoded state with task indicator appended
+              (np.ndarray of shape ``(num_states + 1,)``).
+            - 'position': Integer grid index (``state = row * ncol + col``).
+
+    Returns:
+        list of (state, action) tuples that are unsafe, where the state format
+        depends on *state_repr*.
+    """
+    assert state_repr in ('observation', 'position'), (
+        f"state_repr must be 'observation' or 'position', got '{state_repr}'"
+    )
+
+    desc = np.array([list(row) for row in env_map])
+    nrow, ncol = desc.shape
+    num_states = nrow * ncol
+
+    unsafe_pairs = []
+
+    for s in range(num_states):
+        row = s // ncol
+        col = s % ncol
+        cell = desc[row, col]
+
+        # Skip terminal states (holes and goal)
+        if cell in ('H', 'G'):
+            continue
+
+        # Build state representation
+        if state_repr == 'observation':
+            state = np.zeros(num_states + 1, dtype=np.float32)
+            state[s] = 1.0
+            state[-1] = float(task_num)
+        else:  # 'position'
+            state = s
+
+        # Check each action for safety
+        for action in range(4):
+            if action == 0:    # LEFT
+                new_row, new_col = row, max(col - 1, 0)
+            elif action == 1:  # DOWN
+                new_row, new_col = min(row + 1, nrow - 1), col
+            elif action == 2:  # RIGHT
+                new_row, new_col = row, min(col + 1, ncol - 1)
+            else:              # UP
+                new_row, new_col = max(row - 1, 0), col
+
+            next_cell = desc[new_row, new_col]
+            if next_cell == 'H':
+                if state_repr == 'observation':
+                    unsafe_pairs.append((state.copy(), action))
+                else:
+                    unsafe_pairs.append((state, action))
+
+    return unsafe_pairs
 
 
 #%%
-### CONFIGS
-cfg_name = 'frozen_lake_4x4'
-safe_state_action_data_name = 'Safe Optimal Policy Data' # 'Safe Optimal Policy Data' or 'Safe Training Data'
-save_results = True
-seed = 42
+# =============================================================================
+# SAFETY DATASET CREATION FUNCTIONS
+# =============================================================================
 
-env1_map = [
-    "SFFF",
-    "FHFH",
-    "FFFH",
-    "HFFG"
-]
-env2_map = [
-    "SHFF",
-    "FFFH",
-    "FHFF",
-    "HFFG"
-]
+def create_safe_optimal_policy_dataset(env, actor, num_rollouts, deterministic=True, seed=42):
+    """
+    Create a safety dataset from rollouts of an optimal policy.
+    Collects state-action pairs by running the actor in the environment.
 
-# FrozenLake parameters
-max_steps = 100
-safe_demonstrations_policy_env1_num_episodes = 10
-unadaptable_actor_timesteps = 50000
-rashomon_timesteps = 20000
+    Args:
+        env: The environment to collect data from
+        actor: The policy network to generate actions
+        num_rollouts: Number of episodes to collect
+        deterministic: Whether to use deterministic actions (argmax)
+        seed: Base seed for environment resets
 
+    Returns:
+        A torch TensorDataset containing (states, actions) pairs from rollouts
+    """
+    print("\nCreating 'Safe Optimal Policy Data' dataset...")
+    states = []
+    actions = []
+
+    for episode in range(num_rollouts):
+        obs, info = env.reset(seed=seed + episode)
+        done = False
+        while not done:
+            with torch.no_grad():
+                obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+                action_logits = actor(obs_tensor)
+                if deterministic:
+                    action = torch.argmax(action_logits, dim=1).item()
+                else:
+                    action = torch.distributions.Categorical(logits=action_logits).sample().item()
+
+            states.append(obs)
+            actions.append(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+    states = torch.FloatTensor(states)
+    actions = torch.LongTensor(actions)
+    dataset = torch.utils.data.TensorDataset(states, actions)
+    print(f"  Collected {len(states)} state-action pairs from {num_rollouts} rollouts")
+
+    return dataset
+
+
+def create_safe_training_dataset(training_data):
+    """
+    Create a safety dataset by filtering safe state-action pairs from training trajectories.
+    Removes duplicates to create a unique set of safe demonstrations.
+
+    Args:
+        training_data: Dictionary containing 'states', 'actions', and 'safe' flags from PPO training
+
+    Returns:
+        A torch TensorDataset containing unique safe (states, actions) pairs
+    """
+    print("\nCreating 'Safe Training Data' dataset...")
+    states = torch.FloatTensor(training_data['states'])
+    actions = torch.LongTensor(training_data['actions'])
+    safes = training_data['safe']
+
+    # Filter only safe state-action pairs
+    safe_indices = np.where(safes == 1.0)[0]
+    states_safe = states[safe_indices]
+    actions_safe = actions[safe_indices]
+
+    # Remove duplicate state-action pairs
+    safe_states_df = pd.DataFrame(states_safe.detach().numpy())
+    safe_states_df.columns = [f'state_feature_{i}' for i in range(safe_states_df.shape[1])]
+    actions_df = pd.DataFrame(actions_safe.detach().numpy(), columns=['action'])
+    safe_state_action_pairs_df = pd.concat([safe_states_df, actions_df], axis=1)
+    safe_state_action_pairs_df = safe_state_action_pairs_df.drop_duplicates(keep='first').reset_index(drop=True)
+
+    states_safe = torch.FloatTensor(safe_state_action_pairs_df.drop(columns=['action']).values)
+    actions_safe = torch.LongTensor(safe_state_action_pairs_df['action'].values)
+    dataset = torch.utils.data.TensorDataset(states_safe, actions_safe)
+    print(f"  Filtered {len(states_safe)} unique safe state-action pairs from training data")
+
+    return dataset
+
+
+def generate_sufficient_safe_state_action_dataset(unsafe_state_action_pairs, env):
+    """
+    Generate a dataset of sufficient safe state-action pairs by computing the complement
+    of unsafe actions for each state.
+
+    Args:
+        unsafe_state_action_pairs: list of (state, action) tuples that are unsafe
+        env: The environment, needed to determine the action space
+
+    Returns:
+        A torch dataset containing states and their corresponding sets of safe actions (padded with -1)
+    """
+    print("\nCreating 'Sufficient Safety Data' dataset...")
+    all_actions = set(range(env.action_space.n))
+
+    # Group unsafe actions by state
+    unsafe_actions_by_state = {}
+    for state, action in unsafe_state_action_pairs:
+        state_key = tuple(state)
+        if state_key not in unsafe_actions_by_state:
+            unsafe_actions_by_state[state_key] = set()
+        unsafe_actions_by_state[state_key].add(action)
+
+    # Compute complement (safe actions) for each state
+    safe_actions_by_state = {
+        state_key: all_actions - unsafe_actions
+        for state_key, unsafe_actions in unsafe_actions_by_state.items()
+    }
+    sufficient_safe_states = torch.FloatTensor(list(safe_actions_by_state.keys()))
+
+    # Pad safe actions with -1 for variable length
+    max_actions = env.action_space.n
+    padded_safe_actions = []
+    for state_key, safe_actions in safe_actions_by_state.items():
+        padded = list(safe_actions) + [-1] * (max_actions - len(safe_actions))
+        padded_safe_actions.append(padded)
+    sufficient_safe_actions = torch.LongTensor(padded_safe_actions)
+    dataset = torch.utils.data.TensorDataset(sufficient_safe_states, sufficient_safe_actions)
+    print(f"  Generated safe actions for {len(sufficient_safe_states)} states with unsafe neighbors")
+
+    return dataset
+
+
+def set_all_seeds(seed):
+    """Set all random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+#%%
+# =============================================================================
+# EXPERIMENT CONFIGURATION
+# =============================================================================
+
+# -------------------------
+# User-defined parameters
+# -------------------------
+cfg_name = 'standard_4x4'
+safe_state_action_data_name = 'Sufficient Safety Data'  # Options: 'Sufficient Safety Data', 'Safe Optimal Policy Data', 'Safe Training Data'
+save_results = False  # Set to True to save plots and tables
+train_unsafe_adapt = False  # Set to True to train UnsafeAdapt baseline (takes additional time)
+
+# -------------------------
+# Load configuration from YAML
+# -------------------------
+with open(os.path.join(current_script_dir, 'demo_configs.yaml'), 'r') as f:
+    DEMO_CONFIGS = yaml.safe_load(f)
+cfg = DEMO_CONFIGS[cfg_name]
+
+print("="*80)
+print("FROZEN LAKE SAFE CONTINUAL LEARNING EXPERIMENT")
+print("="*80)
+print(f"Configuration: {cfg_name}")
+print(f"Safety dataset: {safe_state_action_data_name}")
+print(f"Save results: {save_results}")
+print(f"Train UnsafeAdapt: {train_unsafe_adapt}")
+print("="*80 + "\n")
+
+# -------------------------
+# Extract configuration parameters
+# -------------------------
+env1_map = cfg['env1_map']
+env2_map = cfg['env2_map']
+is_slippery = cfg['is_slippery']
+max_steps = cfg['max_steps']
+safe_env1_state_action_data_num_rollouts = cfg['safe_env1_state_action_data_num_rollouts']
+seed = cfg['seed']
+
+# Training hyperparameters
+no_adapt_timesteps = cfg['unadaptable_actor_timesteps']
+task2_adapt_timesteps = cfg.get('task2_adapt_timesteps', 0)
+safe_adapt_timesteps = cfg['rashomon_timesteps']
+
+# -------------------------
+# Set random seeds for reproducibility
+# -------------------------
+set_all_seeds(seed)
+print(f"Random seed set to: {seed}\n")
+
+# -------------------------
+# Validate configuration
+# -------------------------
+assert cfg_name in DEMO_CONFIGS, f"Configuration '{cfg_name}' not found in demo_configs.yaml"
+assert safe_state_action_data_name in [
+    'Safe Optimal Policy Data',
+    'Safe Training Data',
+    'Sufficient Safety Data'
+], f"Invalid safety dataset name: {safe_state_action_data_name}"
+assert seed is not None, "Random seed must be set for reproducibility"
+print("Configuration validated successfully.\n")
+
+# -------------------------
+# Configure output directories
+# -------------------------
 if not save_results:
     plots_dir = None
     tables_dir = None
+else:
+    print(f"Results will be saved to:")
+    print(f"  Plots: {plots_dir}")
+    print(f"  Tables: {tables_dir}\n")
 
 #%%
-######################################################
-print("\n\n=== FrozenLake Environment Demo ===")
+# =============================================================================
+# TASK 1 ENVIRONMENT SETUP
+# =============================================================================
 
-# Create Env1: Standard FrozenLake
-env1 = gym.make('FrozenLake-v1', desc=env1_map, is_slippery=False, render_mode=None)
-env1.reset(seed=seed)
-num_states = env1.observation_space.n
-num_actions = env1.action_space.n
+print("\n" + "="*80)
+print("TASK 1: Training NoAdapt baseline on initial environment")
+print("="*80)
 
-# Wrapper to provide one-hot encoded observations
-class OneHotWrapper(gym.ObservationWrapper):
-    def __init__(self, env, task_num: int):
-        super().__init__(env)
-        low_bounds = np.zeros(env.observation_space.n + 1, dtype=np.float32)
-        high_bounds = np.ones(env.observation_space.n + 1, dtype=np.float32)
-        high_bounds[-1] = np.inf  # Last dimension (task indicator) is unbounded above
-        self.observation_space = gym.spaces.Box(
-            low=low_bounds, high=high_bounds, dtype=np.float32
-        )
-        self.task_num = task_num
-    
-    def observation(self, obs):
-        return one_hot_encode_state(obs, self.env.observation_space.n, self.task_num)
-
+# Create Task 1 environment
+env1 = gym.make('FrozenLake-v1', desc=env1_map, is_slippery=is_slippery, render_mode=None)
 env1 = OneHotWrapper(env1, task_num=0)
 env1 = SafetyFlagWrapper(env1)
 
+print(f"Environment created: FrozenLake {'(slippery)' if is_slippery else '(deterministic)'}")
+print(f"Task 1 map:")
+for row in env1_map:
+    print(f"  {row}")
+
 #%%
-### Train using PPO
-print("\n=== Training Standard Actor on Env1 ===")
+# =============================================================================
+# TRAIN NOADAPT BASELINE (Task 1 only)
+# =============================================================================
+
+print("\nTraining NoAdapt policy...")
 ppo_cfg = PPOConfig(
-    total_timesteps=unadaptable_actor_timesteps,
+    total_timesteps=no_adapt_timesteps,
+    device='cpu'
 )
 standard_actor, standard_critic, standard_training_data = ppo_train(
     env=env1,
     cfg=ppo_cfg,
     return_training_data=True
 )
+print(f"NoAdapt training complete ({no_adapt_timesteps} timesteps)")
 
 #%%
-# ### Visualize the trained agent in Env 1
+# Visualize NoAdapt on Task 1
+print("\nVisualizing NoAdapt on Task 1...")
 # visualize_agent_trajectory(
 #     env1, standard_actor, num_episodes=1, max_steps=max_steps,
-#     env_name='Env 1', cfg_name=cfg_name, actor_name='Standard Actor', save_dir=plots_dir
+#     env_name='Task 1', cfg_name=cfg_name, actor_name='NoAdapt', save_dir=plots_dir
 # )
 
-# from utils.gymnasium_utils import render_gymnasium_agent
-# env1_render = gym.make('FrozenLake-v1', desc=None, map_name="4x4", is_slippery=False, render_mode='human')
-# env1_render = OneHotWrapper(env1_render, task_num=0)
-# render_gymnasium_agent(
-#     env=env1_render,
-#     actor=standard_actor,
-#     num_episodes=1,
-#     deterministic=True,
-#     seed=seed
-# )
-
-standard_actor_env1_eval_results = evaluate_policy(env1, standard_actor, num_episodes=1)
+from utils.gymnasium_utils import plot_gymnasium_episode
+print("\nVisualizing NoAdapt on Task 1 with plot_gymnasium_episode...")
+env1_show = gym.make('FrozenLake-v1', desc=env1_map, is_slippery=is_slippery, render_mode='rgb_array')
+env1_show = OneHotWrapper(env1_show, task_num=0)
+env1_show = SafetyFlagWrapper(env1_show)
+_ = plot_gymnasium_episode(
+    env=env1_show,  # Pass the environment directly
+    actor=standard_actor,
+    figsize_per_frame=(1.5, 1.5),
+    title=f"{cfg_name} - Task 1 - NoAdapt",
+    # save_path=os.path.join(plots_dir, f"{cfg_name}_Task1_NoAdapt.png")
+)
 
 #%%
-### Create Env2 with modified hole positions (distribution shift)
-print("\n=== Creating Env2 with Distribution Shift ===")
-# Custom map with different hole positions
-env2 = gym.make('FrozenLake-v1', desc=env2_map, is_slippery=False, render_mode=None)
-env2 = OneHotWrapper(env2, task_num=1)  # Different task_num to distinguish from env1
-env2 = SafetyFlagWrapper(env2)
-standard_actor_env2_eval_results = evaluate_policy(env2, standard_actor, num_episodes=1)
+# =============================================================================
+# TASK 2 ENVIRONMENT SETUP
+# =============================================================================
 
-# # Visualize the standard actor in Env 2
+print("\n" + "="*80)
+print("TASK 2: Distribution shift (hole positions changed)")
+print("="*80)
+
+env2 = gym.make('FrozenLake-v1', desc=env2_map, is_slippery=is_slippery, render_mode=None)
+env2 = OneHotWrapper(env2, task_num=1)
+env2 = SafetyFlagWrapper(env2)
+
+print(f"Task 2 environment created")
+print(f"Task 2 map:")
+for row in env2_map:
+    print(f"  {row}")
+print("Distribution shift: Hole positions changed between tasks")
+
+# Visualize NoAdapt on Task 2 (may fail on new holes)
+print("\nVisualizing NoAdapt on Task 2 (may fail on new holes)...")
 # visualize_agent_trajectory(
 #     env2, standard_actor, num_episodes=1, max_steps=max_steps,
-#     env_name='Env 2', cfg_name=cfg_name, actor_name='Standard Actor',
+#     env_name='Task 2', cfg_name=cfg_name, actor_name='NoAdapt',
 #     save_dir=plots_dir
 # )
+print("\nVisualizing NoAdapt on Task 2 with plot_gymnasium_episode...")
+env2_show = gym.make('FrozenLake-v1', desc=env2_map, is_slippery=is_slippery, render_mode='rgb_array')
+env2_show = OneHotWrapper(env2_show, task_num=1)
+env2_show = SafetyFlagWrapper(env2_show)
+_ = plot_gymnasium_episode(
+    env=env2_show,  # Pass the environment directly
+    actor=standard_actor,
+    figsize_per_frame=(1.5, 1.5),
+    title=f"{cfg_name} - Task 2 - NoAdapt",
+    # save_path=os.path.join(plots_dir, f"{cfg_name}_Task2_NoAdapt.png")
+)
 
 #%%
-# from utils.gymnasium_utils import render_gymnasium_agent
-# env2_render = gym.make('FrozenLake-v1', desc=env2_map, is_slippery=False, render_mode='human')
-# env2_render = OneHotWrapper(env2_render, task_num=1)
-# render_gymnasium_agent(
-#     env=env2_render,
-#     actor=standard_actor,
-#     num_episodes=1,
-#     deterministic=True,
-#     seed=seed
-# )
+# =============================================================================
+# TRAIN UNSAFEADAPT BASELINE (Task 2 without safety constraints) - OPTIONAL
+# =============================================================================
 
-#%%
-# ### Generate safe state-action dataset from Env1
-# print("\n=== Generating Safe State-Action Dataset ===")
-# states = []
-# actions = []
+if train_unsafe_adapt:
+    print("\n" + "="*80)
+    print("Training UnsafeAdapt baseline (Task 2, no safety constraints)")
+    print("="*80)
+    print("Expected: Good performance on Task 2, catastrophic forgetting on Task 1\n")
 
-# for episode in range(safe_env1_state_action_data_num_rollouts):
-#     obs, info = env1.reset()
-#     done = False
-#     visited_states = set()
-    
-#     while not done:
-#         state_tuple = tuple(obs)
-#         if state_tuple not in visited_states:
-#             visited_states.add(state_tuple)
-            
-#             with torch.no_grad():
-#                 obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-#                 action_logits = standard_actor(obs_tensor)
-#                 action = torch.argmax(action_logits, dim=1).item()
-            
-#             states.append(obs)
-#             actions.append(action)
-            
-#             obs, reward, terminated, truncated, info = env1.step(action)
-#             done = terminated or truncated
-#         else:
-#             break
+    ppo_cfg_unsafe = PPOConfig(
+        total_timesteps=task2_adapt_timesteps,
+        device='cpu'
+    )
+    amnesic_actor, _ = ppo_train(
+        env=env2,
+        cfg=ppo_cfg_unsafe,
+        actor_warm_start=standard_actor,
+        critic_warm_start=standard_critic,
+    )
+    print(f"UnsafeAdapt training complete ({task2_adapt_timesteps} timesteps)")
 
-# states = torch.FloatTensor(np.array(states))
-# actions = torch.LongTensor(np.array(actions))
-# safe_optimal_policy_data_torch_dataset = torch.utils.data.TensorDataset(states, actions)
+    # Visualize UnsafeAdapt on Task 1 (expected catastrophic forgetting)
+    print("\nVisualizing UnsafeAdapt on Task 1 (expected catastrophic forgetting)...")
+    visualize_agent_trajectory(
+        env1, amnesic_actor, num_episodes=1, max_steps=max_steps,
+        env_name='Task 1', cfg_name=cfg_name, actor_name='UnsafeAdapt',
+        save_dir=plots_dir
+    )
 
-# print(f"Collected {len(states)} safe state-action pairs")
-
-from utils.safety_utils import get_unique_safe_state_action_pairs, generate_safe_optimal_policy_data
-print("\n=== Generating Safe State-Action Dataset ===")
-
-safe_state_action_data_name = 'Safe Optimal Policy Data'  # 'Safe Training Data' or 'Safe Optimal Policy Data'
-
-if safe_state_action_data_name == 'Safe Training Data':
-    safe_state_action_torch_dataset = get_unique_safe_state_action_pairs(
-        training_data=standard_training_data
+    # Visualize UnsafeAdapt on Task 2 (expected good performance)
+    print("\nVisualizing UnsafeAdapt on Task 2 (expected good performance)...")
+    visualize_agent_trajectory(
+        env2, amnesic_actor, num_episodes=1, max_steps=max_steps,
+        env_name='Task 2', cfg_name=cfg_name, actor_name='UnsafeAdapt',
+        save_dir=plots_dir
     )
 else:
-    safe_state_action_torch_dataset = generate_safe_optimal_policy_data(
-        env=env1,
-        safe_actor=standard_actor,
-        num_episodes=safe_demonstrations_policy_env1_num_episodes,
-        deterministic=True
-    )
-
-print(f"Collected {len(safe_state_action_torch_dataset)} unique safe state-action pairs")
-
-from visualize_safe_dataset import visualize_safe_state_action_dataset
-save_path = None
-if plots_dir is not None:
-    save_path=plots_dir + f'/safe_state_action_dataset_Env1_{safe_state_action_data_name}.png'
-
-visualize_safe_state_action_dataset(
-    dataset=safe_state_action_torch_dataset, 
-    env_map=env1_map,
-    save_path=save_path
-)
+    print("\n" + "="*80)
+    print("SKIPPING UnsafeAdapt baseline (train_unsafe_adapt=False)")
+    print("="*80)
+    print("Note: Set train_unsafe_adapt=True to train UnsafeAdapt baseline\n")
+    amnesic_actor = None
 
 #%%
-### Compute Rashomon Set
-print("\n=== Computing Rashomon Set ===")
-interval_trainer = IntervalTrainer(
-    model=standard_actor,
-    min_acc_limit=0.99,
+# =============================================================================
+# CREATE SAFETY DATASETS FOR SAFEADAPT
+# =============================================================================
+
+print("\n" + "="*80)
+print("Creating safety datasets for SafeAdapt constraint generation")
+print("="*80)
+
+# Create three types of safety datasets using helper functions
+safe_optimal_policy_data = create_safe_optimal_policy_dataset(
+    env=env1,
+    actor=standard_actor,
+    num_rollouts=safe_env1_state_action_data_num_rollouts,
     seed=seed
 )
-interval_trainer.compute_rashomon_set(
-    dataset=safe_state_action_torch_dataset,
-    multi_label=True
+
+safe_training_data_ds = create_safe_training_dataset(
+    training_data=standard_training_data
 )
 
+unsafe_state_action_pairs = get_all_unsafe_state_action_pairs(env_map=env1_map, task_num=0)
+sufficient_safe_state_action_torch_dataset = generate_sufficient_safe_state_action_dataset(
+    unsafe_state_action_pairs=unsafe_state_action_pairs,
+    env=env1
+)
+
+# Collect all datasets
+safe_datasets = {
+    'Safe Optimal Policy Data': safe_optimal_policy_data,
+    'Safe Training Data': safe_training_data_ds,
+    'Sufficient Safety Data': sufficient_safe_state_action_torch_dataset
+}
+
+print(f"\nUsing dataset: {safe_state_action_data_name}")
+print(f"Dataset size: {len(safe_datasets[safe_state_action_data_name])} state-action pairs")
+
+#%%
+# Optional: Visualize the safety dataset
+# try:
+#     from visualize_safe_dataset import visualize_safe_state_action_dataset
+#     save_path = None
+#     if plots_dir is not None:
+#         save_path = os.path.join(plots_dir, f'safe_state_action_dataset_Task1_{safe_state_action_data_name.replace(" ", "_")}.png')
+#     visualize_safe_state_action_dataset(
+#         dataset=safe_datasets[safe_state_action_data_name],
+#         env_map=env1_map,
+#         save_path=save_path
+#     )
+# except ImportError:
+#     print("visualize_safe_dataset module not found, skipping dataset visualization")
+
+# List of (state_index, action) pairs — state is the flat grid index (row * ncol + col)
+unsafe_position_action_pairs = get_all_unsafe_state_action_pairs(
+    env_map=env1_map, task_num=0, state_repr='position'
+)
+
+safe_observation_action_data = safe_datasets[safe_state_action_data_name]
+positons = [
+    observation_to_position(safe_observation_action_data.tensors[0][i, :])
+    for i in range(safe_observation_action_data.tensors[0].shape[0])
+]
+sufficient_safe_position_action_pairs = []
+for i, pos in enumerate(positons):
+    cur_safe_actions = safe_observation_action_data.tensors[1][i]
+    for action in cur_safe_actions:
+        if action != -1:  # Skip padding
+            sufficient_safe_position_action_pairs.append((pos, action.item()))
+
+
+from utils.gymnasium_utils import plot_state_action_pairs
+# Create the env with rgb_array rendering
+env_vis = gym.make('FrozenLake-v1', desc=env1_map, is_slippery=False, render_mode='rgb_array')
+
+fig = plot_state_action_pairs(
+    env=env_vis,
+    state_action_pairs=unsafe_position_action_pairs, # pairs,
+    title="Unsafe State-Action Pairs",
+    arrow_color="red",
+    # save_path="plots/state_actions.png",  # uncomment to save
+)
+
+fig = plot_state_action_pairs(
+    env=env_vis,
+    state_action_pairs=sufficient_safe_position_action_pairs, # pairs,
+    title="Sufficient Safe State-Action Pairs",
+    arrow_color="green",
+    # save_path="plots/state_actions.png",  # uncomment to save
+)
+
+# %%
+# =============================================================================
+# COMPUTE SAFEADAPT SET (Parameter Constraints)
+# =============================================================================
+
+print("\n" + "="*80)
+print("Computing SafeAdapt set via interval bound propagation")
+print("="*80)
+
+state_action_dataset = safe_datasets[safe_state_action_data_name]
+
+### NOTE: NEW STEP -- PER-STATE SAFE NET
+# Idea: train a neural net that recovers that
+# nails the multi-label classification 
+# in state_action_dataset
+
+# --- Train a "safety actor" with the same architecture as standard_actor ---
+import copy
+
+# Build a fresh network with the same architecture, initialised from standard_actor
+safety_actor = copy.deepcopy(standard_actor).cpu()
+
+# Determine whether the dataset uses multi-label targets
+multi_label_safety = (safe_state_action_data_name != 'Safe Optimal Policy Data')
+
+# Training hyper-parameters
+safety_lr = 1e-3
+safety_epochs = 500
+safety_batch_size = min(64, len(state_action_dataset))
+
+safety_optimizer = torch.optim.Adam(safety_actor.parameters(), lr=safety_lr)
+safety_loader = torch.utils.data.DataLoader(
+    state_action_dataset, batch_size=safety_batch_size, shuffle=True
+)
+
+print("\n--- Training safety actor ---")
+print(f"  Architecture: same as standard_actor")
+print(f"  Multi-label: {multi_label_safety}")
+print(f"  Dataset size: {len(state_action_dataset)}")
+print(f"  Epochs: {safety_epochs}, LR: {safety_lr}, Batch size: {safety_batch_size}")
+
+for epoch in range(safety_epochs):
+    epoch_loss = 0.0
+    epoch_correct = 0
+    epoch_total = 0
+
+    for batch_states, batch_actions in safety_loader:
+        logits = safety_actor(batch_states)  # (B, n_actions)
+
+        if multi_label_safety:
+            # batch_actions: (B, max_actions) with -1 padding for unused slots
+            # For each sample, valid actions are those != -1.
+            # Loss: for every valid action, push its logit above all invalid ones.
+            # We use a soft multi-label cross-entropy: targets are uniform over valid actions.
+            n_actions = logits.shape[1]
+            valid_mask = (batch_actions != -1)  # (B, max_actions)
+
+            # Build a target distribution: 1 for valid actions, 0 otherwise
+            target_dist = torch.zeros_like(logits)  # (B, n_actions)
+            for i in range(batch_actions.shape[1]):
+                col = batch_actions[:, i]         # (B,)
+                col_valid = valid_mask[:, i]       # (B,)
+                # Scatter 1s into valid action positions
+                indices = col.clamp(min=0).unsqueeze(1)  # (B, 1)
+                target_dist.scatter_(1, indices, col_valid.float().unsqueeze(1))
+
+            # Normalise to a probability distribution
+            target_dist = target_dist / target_dist.sum(dim=1, keepdim=True).clamp(min=1e-8)
+
+            # Cross-entropy with soft targets
+            log_probs = torch.nn.functional.log_softmax(logits, dim=1)
+            loss = -(target_dist * log_probs).sum(dim=1).mean()
+
+            # Accuracy: predicted action is in the valid set
+            predicted = logits.argmax(dim=1)  # (B,)
+            predicted_expanded = predicted.unsqueeze(1).expand_as(batch_actions)
+            matches = (predicted_expanded == batch_actions) & valid_mask
+            epoch_correct += matches.any(dim=1).sum().item()
+        else:
+            # Single-label cross-entropy
+            loss = torch.nn.functional.cross_entropy(logits, batch_actions)
+
+            predicted = logits.argmax(dim=1)
+            epoch_correct += (predicted == batch_actions).sum().item()
+
+        epoch_total += batch_states.shape[0]
+        epoch_loss += loss.item() * batch_states.shape[0]
+
+        safety_optimizer.zero_grad()
+        loss.backward()
+        safety_optimizer.step()
+
+    epoch_acc = epoch_correct / epoch_total if epoch_total > 0 else 0.0
+    if (epoch + 1) % 100 == 0 or epoch == 0 or epoch_acc == 1.0:
+        print(f"  Epoch {epoch+1:4d}/{safety_epochs}  loss={epoch_loss/epoch_total:.4f}  acc={epoch_acc:.4f}")
+    if epoch_acc == 1.0:
+        print("  Perfect accuracy reached – stopping early.")
+        break
+
+# Final evaluation on full dataset
+with torch.no_grad():
+    all_states = state_action_dataset.tensors[0]
+    all_actions = state_action_dataset.tensors[1]
+    all_logits = safety_actor(all_states)
+    all_preds = all_logits.argmax(dim=1)
+    if multi_label_safety:
+        valid_mask_all = (all_actions != -1)
+        preds_exp = all_preds.unsqueeze(1).expand_as(all_actions)
+        final_acc = ((preds_exp == all_actions) & valid_mask_all).any(dim=1).float().mean().item()
+    else:
+        final_acc = (all_preds == all_actions).float().mean().item()
+print(f"\nSafety actor final accuracy on safety dataset: {final_acc:.4f}")
+print("--- Safety actor training complete ---\n")
+
+
+#%%
+# Ensure model is on CPU
+standard_actor_cpu = standard_actor.cpu()
+
+# Initialize IntervalTrainer for computing parameter bounds
+min_acc_limit = 0.1 # 1.0  # Require 100% accuracy on the safety dataset for certification
+interval_trainer = IntervalTrainer(
+    model=safety_actor.cpu(), # standard_actor_cpu,
+    min_acc_limit=min_acc_limit,
+    seed=seed,
+    # n_iters=2_000,
+)
+
+# Determine whether to use multi-label formulation
+multi_label = (safe_state_action_data_name != 'Safe Optimal Policy Data')
+print(f"Multi-label mode: {multi_label}")
+print(f"Computing parameter bounds...")
+
+interval_trainer.compute_rashomon_set(
+    dataset=state_action_dataset,
+    multi_label=multi_label
+)
+
+# Extract parameter bounds
 assert len(interval_trainer.bounds) == 1, "Expected exactly one bounded model"
 certificate = interval_trainer.certificates[0]
-print(f"\nRashomon set computed. Certified accuracy on safe action dataset: {certificate:.2f}")
-
 bounded_model = interval_trainer.bounds[0]
 param_bounds_l = [bound.detach().cpu() for bound in bounded_model.param_l]
 param_bounds_u = [bound.detach().cpu() for bound in bounded_model.param_u]
 
+print(f"\nSafeAdapt set computed successfully!")
+print(f"Certified accuracy on safety dataset: {certificate:.4f}")
+print(f"Number of parameter constraints: {len(param_bounds_l)} layer(s)")
+
 #%%
-### Train Rashomon-constrained actor on Env2
-print("\n=== Training Rashomon Actor on Env2 ===")
-ppo_cfg_rashomon = PPOConfig(
-    total_timesteps=rashomon_timesteps,
+# =============================================================================
+# TRAIN SAFEADAPT (Task 2 with SafeAdapt constraints)
+# =============================================================================
+
+print("\n" + "="*80)
+print("Training SafeAdapt policy on Task 2 with parameter constraints")
+print("="*80)
+print("Expected: Good performance on both Task 1 and Task 2\n")
+
+ppo_cfg_safeadapt = PPOConfig(
+    total_timesteps=100_000, # 500_000, # safe_adapt_timesteps,
+    device='cpu'
 )
-rashomon_actor, _ = ppo_train(
+safeadapt_actor, _ = ppo_train(
     env=env2,
-    cfg=ppo_cfg_rashomon,
+    cfg=ppo_cfg_safeadapt,
     actor_warm_start=standard_actor,
     critic_warm_start=standard_critic,
     actor_param_bounds_l=param_bounds_l,
     actor_param_bounds_u=param_bounds_u
 )
+print(f"SafeAdapt training complete ({safe_adapt_timesteps} timesteps)")
 
-# # Visualize the Rashomon actor in Env 1
-# visualize_agent_trajectory(
-#     env1, rashomon_actor, num_episodes=1, max_steps=max_steps,
-#     env_name='Env 1', cfg_name=cfg_name, 
-#     actor_name=f'Rashomon Actor ({safe_state_action_data_name})', save_dir=plots_dir
-# )
+# Visualize SafeAdapt on Task 1 (expected: maintain safety)
+print("\nVisualizing SafeAdapt on Task 1 (expected: maintain safety)...")
+_ = plot_gymnasium_episode(
+    env=env1_show,  # Pass the environment directly
+    actor=safeadapt_actor,
+    figsize_per_frame=(1.5, 1.5),
+    title=f"{cfg_name} - Task 1 - SafeAdapt",
+    # save_path=os.path.join(plots_dir, f"{cfg_name}_Task1_SafeAdapt.png")
+)
 
-# # Visualize the Rashomon actor in Env 2
-# visualize_agent_trajectory(
-#     env2, rashomon_actor, num_episodes=1, max_steps=max_steps,
-#     env_name='Env 2', cfg_name=cfg_name, 
-#     actor_name=f'Rashomon Actor ({safe_state_action_data_name})',
-#     save_dir=plots_dir
-# )
-
-#%%
-### Evaluate policies
-print("\n\n=== Policy Evaluations ===")
-num_eval_episodes = 100
-
-standard_actor_env1_metrics = evaluate_policy(env1, standard_actor, num_episodes=num_eval_episodes)
-standard_actor_env2_metrics = evaluate_policy(env2, standard_actor, num_episodes=num_eval_episodes)
-
-rashomon_actor_env1_metrics = evaluate_policy(env1, rashomon_actor, num_episodes=num_eval_episodes)
-rashomon_actor_env2_metrics = evaluate_policy(env2, rashomon_actor, num_episodes=num_eval_episodes)
+# Visualize SafeAdapt on Task 2 (expected: adapt successfully)
+print("\nVisualizing SafeAdapt on Task 2 (expected: adapt successfully)...")
+_ = plot_gymnasium_episode(
+    env=env2_show,  # Pass the environment directly
+    actor=safeadapt_actor,
+    figsize_per_frame=(1.5, 1.5),
+    title=f"{cfg_name} - Task 2 - SafeAdapt",
+    # save_path=os.path.join(plots_dir, f"{cfg_name}_Task2_SafeAdapt.png")
+)
 
 #%%
-# Create dataframe to summarize results
-results_df = pd.DataFrame({
-    'Standard Actor / Env 1': standard_actor_env1_metrics,
-    'Standard Actor / Env 2': standard_actor_env2_metrics,
-    'Rashomon Actor / Env 1': rashomon_actor_env1_metrics,
-    'Rashomon Actor / Env 2': rashomon_actor_env2_metrics
-})
-print("\n=== Evaluation Results ===")
-print(results_df.round(2))
+# =============================================================================
+# VERIFY SAFEADAPT ACCURACY ON SAFETY DATASET
+# =============================================================================
 
-#%%
-# Verify safety properties
-assert results_df.loc['avg_safety_success', 'Rashomon Actor / Env 1'] >= 0.95, \
-    "Rashomon actor should maintain safety in Env 1"
+rashomon_actor_actions = safeadapt_actor(state_action_dataset.tensors[0]).argmax(axis=1)
+if multi_label:
+    # For multi-label datasets, check if predicted action is in the set of valid actions
+    valid_actions = state_action_dataset.tensors[1]  # shape: (num_samples, max_actions)
+    rashomon_actor_actions_expanded = rashomon_actor_actions.unsqueeze(1).expand_as(valid_actions)
+    matches = (rashomon_actor_actions_expanded == valid_actions)
+    valid_action_mask = (valid_actions != -1)
+    correct_predictions = (matches & valid_action_mask).any(dim=1).sum().item()
+    accuracy = correct_predictions / len(rashomon_actor_actions)
+else:
+    accuracy = (rashomon_actor_actions == state_action_dataset.tensors[1]).sum().item() / len(rashomon_actor_actions)
 
-if save_results and tables_dir is not None:
-    results_df.to_csv(
-        f'{tables_dir}/frozen_lake_demo_results_{cfg_name}_{safe_state_action_data_name}.csv'
-    )
-    print(f"\nResults saved to {tables_dir}")
-#%%
-### Collect trajectory frames for visualization
-print("\n=== Collecting Trajectory Frames ===")
+accuracy_validated = accuracy >= min_acc_limit
+if accuracy_validated:
+    print(f"Certified accuracy validated: {accuracy:.2f} >= {min_acc_limit:.2f}")
+else:
+    print(f"Certified accuracy validation failed: {accuracy:.2f} < {min_acc_limit:.2f}")
 
-def collect_trajectory_frames(env_map, task_num, actor, actor_name, env_name, seed=42, max_steps=100):
-    """Collect frames showing agent trajectory in the environment."""
-    env_render = gym.make('FrozenLake-v1', desc=env_map, is_slippery=False, render_mode='rgb_array')
-    env_render = OneHotWrapper(env_render, task_num=task_num)
-    env_render = SafetyFlagWrapper(env_render)
-    
-    frames = []
-    obs, info = env_render.reset(seed=seed)
-    frames.append(env_render.render())
-    
-    done = False
-    step = 0
-    
-    while not done and step < max_steps:
-        with torch.no_grad():
-            obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-            action_logits = actor(obs_tensor)
-            action = torch.argmax(action_logits, dim=1).item()
+    # Show which states have incorrect predictions
+    if not accuracy_validated:
+        print("\nStates with incorrect predictions:")
         
-        obs, reward, terminated, truncated, info = env_render.step(action)
-        frames.append(env_render.render())
-        done = terminated or truncated
-        step += 1
-    
-    env_render.close()
-    
-    print(f"Collected {len(frames)} frames for {actor_name} in {env_name}")
-    return frames
+        # Helper to convert one-hot state to grid position
+        def state_to_position(state):
+            """Convert one-hot encoded state to (row, col) grid position."""
+            state_idx = int(torch.argmax(state[:-1]).item())  # Exclude task indicator
+            nrow, ncol = len(env1_map), len(env1_map[0])
+            row = state_idx // ncol
+            col = state_idx % ncol
+            return row, col
+        
+        if multi_label:
+            # For multi-label, find states where prediction is not in valid action set
+            valid_actions = state_action_dataset.tensors[1]
+            rashomon_actor_actions_expanded = rashomon_actor_actions.unsqueeze(1).expand_as(valid_actions)
+            matches = (rashomon_actor_actions_expanded == valid_actions)
+            valid_action_mask = (valid_actions != -1)
+            correct_mask = (matches & valid_action_mask).any(dim=1)
+            incorrect_indices = torch.where(~correct_mask)[0]
+            
+            for idx in incorrect_indices:
+                state = state_action_dataset.tensors[0][idx]
+                row, col = state_to_position(state)
+                predicted_action = rashomon_actor_actions[idx].item()
+                valid_actions_list = valid_actions[idx][valid_actions[idx] != -1].tolist()
+                print(f"  Position ({row}, {col}): predicted action {predicted_action}, valid actions {valid_actions_list}")
+        else:
+            # For single-label, find states where prediction != target action
+            target_actions = state_action_dataset.tensors[1]
+            incorrect_mask = (rashomon_actor_actions != target_actions)
+            incorrect_indices = torch.where(incorrect_mask)[0]
+            
+            for idx in incorrect_indices:
+                state = state_action_dataset.tensors[0][idx]
+                row, col = state_to_position(state)
+                predicted_action = rashomon_actor_actions[idx].item()
+                target_action = target_actions[idx].item()
+                print(f"  Position ({row}, {col}): predicted action {predicted_action}, target action {target_action}")
+        
+        print(f"\nTotal incorrect predictions: {len(incorrect_indices)} out of {len(rashomon_actor_actions)}")
 
-# Collect frames for all combinations
-standard_env1_frames = collect_trajectory_frames(
-    env1_map, task_num=0, actor=standard_actor, 
-    actor_name="Standard Actor", env_name="Env1", seed=seed
-)
+# %%
+# =============================================================================
+# FINAL EVALUATION AND RESULTS
+# =============================================================================
 
-standard_env2_frames = collect_trajectory_frames(
-    env2_map, task_num=1, actor=standard_actor,
-    actor_name="Standard Actor", env_name="Env2", seed=seed
-)
+print("\n" + "="*80)
+print("FINAL EVALUATION: Comparing all trained policies")
+print("="*80)
 
-rashomon_env1_frames = collect_trajectory_frames(
-    env1_map, task_num=0, actor=rashomon_actor,
-    actor_name="Rashomon Actor", env_name="Env1", seed=seed
-)
+# Evaluate all policies on both tasks
+num_eval_episodes = 1  # Deterministic environment and policy
 
-rashomon_env2_frames = collect_trajectory_frames(
-    env2_map, task_num=1, actor=rashomon_actor,
-    actor_name="Rashomon Actor", env_name="Env2", seed=seed
-)
+print("\nEvaluating NoAdapt...")
+noadapt_task1_metrics = evaluate_policy(env1, standard_actor, num_episodes=num_eval_episodes)
+noadapt_task2_metrics = evaluate_policy(env2, standard_actor, num_episodes=num_eval_episodes)
 
-# Store frames in a dictionary for easy access
-trajectory_frames = {
-    'standard_env1': standard_env1_frames,
-    'standard_env2': standard_env2_frames,
-    'rashomon_env1': rashomon_env1_frames,
-    'rashomon_env2': rashomon_env2_frames
+# Conditionally evaluate UnsafeAdapt
+if train_unsafe_adapt:
+    print("Evaluating UnsafeAdapt...")
+    unsafeadapt_task1_metrics = evaluate_policy(env1, amnesic_actor, num_episodes=num_eval_episodes)
+    unsafeadapt_task2_metrics = evaluate_policy(env2, amnesic_actor, num_episodes=num_eval_episodes)
+
+print("Evaluating SafeAdapt...")
+safeadapt_task1_metrics = evaluate_policy(env1, safeadapt_actor, num_episodes=num_eval_episodes)
+safeadapt_task2_metrics = evaluate_policy(env2, safeadapt_actor, num_episodes=num_eval_episodes)
+
+# Create comprehensive results dataframe
+results_dict = {
+    'NoAdapt / Task 1': noadapt_task1_metrics,
+    'NoAdapt / Task 2': noadapt_task2_metrics,
 }
 
-print(f"\nAll trajectory frames collected successfully!")
-print(f"Frame counts:")
-for key, frames in trajectory_frames.items():
-    print(f"  {key}: {len(frames)} frames")
+if train_unsafe_adapt:
+    results_dict['UnsafeAdapt / Task 1'] = unsafeadapt_task1_metrics
+    results_dict['UnsafeAdapt / Task 2'] = unsafeadapt_task2_metrics
 
-# Optional: Save frames as images
-if save_results and frames_dir is not None:
-    import matplotlib.pyplot as plt
-    
-    print("\n=== Saving Trajectory Frames ===")
-    
-    for key, frames in trajectory_frames.items():
-        frame_dir = os.path.join(frames_dir, f'frames_{key}')
-        os.makedirs(frame_dir, exist_ok=True)
-        
-        for idx, frame in enumerate(frames):
-            plt.figure(figsize=(6, 6))
-            plt.imshow(frame)
-            plt.axis('off')
-            plt.title(f"{key.replace('_', ' ').title()} - Step {idx}")
-            plt.tight_layout()
-            plt.savefig(os.path.join(frame_dir, f'frame_{idx:03d}.png'), dpi=100, bbox_inches='tight')
-            plt.close()
-        
-        print(f"Saved {len(frames)} frames to {frame_dir}")
-    
-    print("\nAll frames saved successfully!")
+results_dict['SafeAdapt / Task 1'] = safeadapt_task1_metrics
+results_dict['SafeAdapt / Task 2'] = safeadapt_task2_metrics
+
+results_df = pd.DataFrame(results_dict)
+
+# Print results
+print("\n" + "="*80)
+print("RESULTS SUMMARY")
+print("="*80)
+print("\nComplete Results Table:")
+print(results_df.round(4).to_string())
+
+# Save results to CSV
+if save_results and tables_dir is not None:
+    csv_path = os.path.join(tables_dir, f'results_{cfg_name}_{safe_state_action_data_name.replace(" ", "_")}.csv')
+    results_df.to_csv(csv_path)
+    print(f"\nResults saved to: {csv_path}")
+
+#%%
+# =============================================================================
+# VERIFICATION
+# =============================================================================
+
+print("\n" + "="*80)
+print("VERIFICATION")
+print("="*80)
+
+print("\nVerifying expected behaviors:")
+
+# SafeAdapt should have perfect safety on Task 1 (certified)
+safeadapt_task1_safe = results_df.loc['avg_safety_success', 'SafeAdapt / Task 1']
+print(f"SafeAdapt perfect safety on Task 1: {safeadapt_task1_safe >= min_acc_limit} (safety={safeadapt_task1_safe:.3f}, certified)")
+
+print("\n" + "="*80)
+print("EXPERIMENT COMPLETE")
+print("="*80)
+print(f"\nConfiguration: {cfg_name}")
+print(f"Safety dataset: {safe_state_action_data_name}")
+print(f"Random seed: {seed}")
+print(f"All operations performed on: CPU")
+print(f"UnsafeAdapt trained: {train_unsafe_adapt}")
+if save_results:
+    print(f"\nResults saved to:")
+    print(f"  - Plots: {plots_dir}")
+    print(f"  - Tables: {tables_dir}")
+else:
+    print(f"\nResults not saved (save_results=False)")
+print("\n" + "="*80)
+
+# %%

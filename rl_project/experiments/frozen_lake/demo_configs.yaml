@@ -1,0 +1,47 @@
+standard_4x4:
+  env1_map: ["SFFF", "FHFH", "FFFH", "HFFG"]
+  env2_map: ["SHFF", "FFFH", "FHFF", "HFFG"]
+  is_slippery: false
+  max_steps: 100
+  unadaptable_actor_timesteps: 500000
+  task2_adapt_timesteps: 30000
+  rashomon_timesteps: 20000
+  safe_env1_state_action_data_num_rollouts: 10
+  seed: 42
+  notes: "Classic 4x4 FrozenLake. Standard hole positions shift between tasks."
+
+bottleneck_4x4:
+  env1_map: ["SFFF", "FHFF", "FHFF", "FFFG"]
+  env2_map: ["SFFH", "FFHF", "FFFF", "FFFG"]
+  is_slippery: false
+  max_steps: 100
+  unadaptable_actor_timesteps: 50000
+  task2_adapt_timesteps: 30000
+  rashomon_timesteps: 20000
+  safe_env1_state_action_data_num_rollouts: 10
+  seed: 42
+  notes: "Holes create bottleneck passages, testing adaptation in constrained spaces."
+
+diagonal_4x4:
+  env1_map: ["SFFF", "FHFF", "FFHF", "FFFG"]
+  env2_map: ["SFFH", "FFFF", "FHFF", "FFFG"]
+  is_slippery: false
+  max_steps: 100
+  unadaptable_actor_timesteps: 50000
+  task2_adapt_timesteps: 30000
+  rashomon_timesteps: 20000
+  safe_env1_state_action_data_num_rollouts: 10
+  seed: 42
+  notes: "Diagonal hole pattern. Holes shift perpendicular to natural paths."
+
+standard_8x8:
+  env1_map: ["SFFFFFFF", "FFFFFFFF", "FFFHFFFF", "FFFFFHFF", "FFFHFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFFFFG"]
+  env2_map: ["SFFFFFFF", "FHFFFFFF", "FFFFFFFF", "FFFHFFFF", "FFFFFFHF", "FFFFFFFF", "FFFFFHFF", "FFFFFFFG"]
+  is_slippery: false
+  max_steps: 200
+  unadaptable_actor_timesteps: 100000
+  task2_adapt_timesteps: 50000
+  rashomon_timesteps: 50000
+  safe_env1_state_action_data_num_rollouts: 20
+  seed: 42
+  notes: "Larger 8x8 grid testing scalability to bigger state spaces."
