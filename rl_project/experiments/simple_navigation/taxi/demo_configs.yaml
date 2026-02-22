@@ -1,0 +1,38 @@
+top_to_bottom:
+  task1_passenger_locs: [0, 1]    # R (top-left), G (top-right)
+  task1_dest_locs: [2, 3]         # Y (bottom-left), B (bottom-right)
+  task2_passenger_locs: [2, 3]    # Y, B
+  task2_dest_locs: [0, 1]         # R, G
+  noadapt_train_timesteps: 500000
+  unsafeadapt_train_timesteps: 500000
+  safeadapt_train_timesteps: 200000
+  safe_env1_state_action_data_num_rollouts: 100
+  num_eval_episodes: 100
+  seed: 42
+  notes: "Task 1: pick up from top (R/G), deliver to bottom (Y/B). Task 2: reversed."
+
+left_to_right:
+  task1_passenger_locs: [0, 2]    # R (left col), Y (left col)
+  task1_dest_locs: [1, 3]         # G (right col), B (right col)
+  task2_passenger_locs: [1, 3]    # G, B
+  task2_dest_locs: [0, 2]         # R, Y
+  noadapt_train_timesteps: 500000
+  unsafeadapt_train_timesteps: 500000
+  safeadapt_train_timesteps: 200000
+  safe_env1_state_action_data_num_rollouts: 100
+  num_eval_episodes: 100
+  seed: 42
+  notes: "Task 1: pick up from left (R/Y), deliver to right (G/B). Task 2: reversed."
+
+diagonal:
+  task1_passenger_locs: [0, 3]    # R (top-left), B (bottom-right)
+  task1_dest_locs: [1, 2]         # G (top-right), Y (bottom-left)
+  task2_passenger_locs: [1, 2]    # G, Y
+  task2_dest_locs: [0, 3]         # R, B
+  noadapt_train_timesteps: 500000
+  unsafeadapt_train_timesteps: 500000
+  safeadapt_train_timesteps: 200000
+  safe_env1_state_action_data_num_rollouts: 100
+  num_eval_episodes: 100
+  seed: 42
+  notes: "Diagonal routes. Task 1: R/B -> G/Y. Task 2: G/Y -> R/B."
