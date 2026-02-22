@@ -144,80 +144,111 @@ def bound_multi_label_accuracy(
     logits: IntervalTensor, targets: torch.Tensor, *, lower: bool = True
 ) -> torch.Tensor:
     """
-    Compute a lower bound on the accuracy of a model for multi-label problems.
-    
+    Compute a bound on the accuracy of a model for multi-label problems.
+
+    For the lower bound (worst-case), a sample is certified correct when the
+    best valid action's lower-bound logit exceeds every invalid action's
+    upper-bound logit, i.e.::
+
+        max_{k ∈ valid} logits_l[k]  >  max_{j ∉ valid} logits_u[j]
+
+    This mirrors the single-label ``bound_accuracy`` logic and is sound: any
+    model whose parameters sit inside the interval is guaranteed to predict a
+    valid action for that sample.
+
     Args:
         logits: IntervalTensor containing logit bounds
         targets: Tensor where each row contains valid class indices for that sample.
                 Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
         lower: Whether to compute lower bound (True) or upper bound (False)
-    
+
     Returns:
         Accuracy bound tensor
     """
     logits_l, logits_u = logits
-    batch_size = targets.shape[0]
-    
+    batch_size, n_classes = logits_l.shape
+
+    # Build a boolean mask of valid actions: (batch_size, n_classes)
+    valid_mask = torch.zeros(batch_size, n_classes, dtype=torch.bool, device=targets.device)
+    for col_idx in range(targets.shape[1]):
+        col = targets[:, col_idx]
+        col_valid = col != -1
+        # Scatter True into valid_mask for valid action indices
+        indices = col.clamp(min=0)
+        valid_mask[torch.arange(batch_size, device=targets.device)[col_valid], indices[col_valid]] = True
+
+    invalid_mask = ~valid_mask
+
     if lower:
-        # For lower bound, we want the worst-case scenario
-        # Use lower bounds for all classes to get conservative predictions
-        worst_case_logits = logits_l
-        predictions = worst_case_logits.argmax(dim=1)
+        # Worst-case: valid logits at their minimum, invalid logits at their maximum.
+        # Best valid logit lower bound vs worst invalid logit upper bound.
+        NEG_INF = torch.tensor(float('-inf'), device=logits_l.device)
+        POS_INF = torch.tensor(float('inf'), device=logits_l.device)
+
+        best_valid_lower = logits_l.masked_fill(~valid_mask, NEG_INF).max(dim=1).values
+        worst_invalid_upper = logits_u.masked_fill(~invalid_mask, NEG_INF).max(dim=1).values
+
+        # Where there are no invalid actions the sample is trivially correct
+        no_invalid = (~invalid_mask.any(dim=1))
+        correct = (best_valid_lower > worst_invalid_upper) | no_invalid
     else:
-        # For upper bound, we want the best-case scenario  
-        # Use upper bounds for all classes to get optimistic predictions
-        best_case_logits = logits_u
-        predictions = best_case_logits.argmax(dim=1)
-    
-    # Check if predictions are in the set of valid targets for each sample
-    correct_predictions = torch.zeros(batch_size, dtype=torch.bool, device=targets.device)
-    
-    for i in range(batch_size):
-        # Get valid targets for this sample (exclude -1 padding)
-        valid_targets = targets[i][targets[i] != -1]
-        if len(valid_targets) > 0:
-            # Check if prediction is in the set of valid targets
-            correct_predictions[i] = predictions[i].item() in valid_targets
-    
-    return correct_predictions.float().mean()
+        # Best-case: valid logits at their maximum, invalid logits at their minimum.
+        NEG_INF = torch.tensor(float('-inf'), device=logits_u.device)
+
+        best_valid_upper = logits_u.masked_fill(~valid_mask, NEG_INF).max(dim=1).values
+        worst_invalid_lower = logits_l.masked_fill(~invalid_mask, NEG_INF).max(dim=1).values
+
+        no_invalid = (~invalid_mask.any(dim=1))
+        correct = (best_valid_upper > worst_invalid_lower) | no_invalid
+
+    return correct.float().mean()
 
 
 def bound_multi_label_soft_accuracy(
     logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True
 ) -> torch.Tensor:
     """
-    Compute a lower bound on the soft accuracy of a model for multi-label problems.
-    
+    Compute a bound on the soft accuracy of a model for multi-label problems.
+
+    Soft accuracy is defined as the total probability mass on valid actions.
+    For a sound lower bound we construct worst-case logits: lower bounds for
+    valid actions and upper bounds for invalid actions (minimising the mass on
+    valid classes).
+
     Args:
         logits: IntervalTensor containing logit bounds
         targets: Tensor where each row contains valid class indices for that sample.
                 Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
         T: Temperature parameter for softmax
         lower: Whether to compute lower bound (True) or upper bound (False)
-    
+
     Returns:
         Soft accuracy bound tensor
     """
     logits_l, logits_u = logits
-    batch_size = targets.shape[0]
-    
+    batch_size, n_classes = logits_l.shape
+
+    # Build a boolean mask of valid actions: (batch_size, n_classes)
+    valid_mask = torch.zeros(batch_size, n_classes, dtype=torch.bool, device=targets.device)
+    for col_idx in range(targets.shape[1]):
+        col = targets[:, col_idx]
+        col_valid = col != -1
+        indices = col.clamp(min=0)
+        valid_mask[torch.arange(batch_size, device=targets.device)[col_valid], indices[col_valid]] = True
+
+    valid_mask_float = valid_mask.float()
+
     if lower:
-        # For lower bound, use worst-case logits
-        worst_case_logits = logits_l
+        # Worst-case: minimise probability on valid actions
+        # valid logits at lower bound, invalid logits at upper bound
+        worst_case_logits = valid_mask_float * logits_l + (1 - valid_mask_float) * logits_u
         probabilities = torch.nn.functional.softmax(worst_case_logits * T, dim=1)
     else:
-        # For upper bound, use best-case logits
-        best_case_logits = logits_u
+        # Best-case: maximise probability on valid actions
+        best_case_logits = valid_mask_float * logits_u + (1 - valid_mask_float) * logits_l
         probabilities = torch.nn.functional.softmax(best_case_logits * T, dim=1)
-    
-    # Compute probability mass assigned to valid targets for each sample
-    correct_probs = torch.zeros(batch_size, device=targets.device)
-    
-    for i in range(batch_size):
-        # Get valid targets for this sample (exclude -1 padding)
-        valid_targets = targets[i][targets[i] != -1]
-        if len(valid_targets) > 0:
-            # Sum probabilities for all valid target classes
-            correct_probs[i] = probabilities[i, valid_targets].sum()
-    
+
+    # Sum probability mass on valid actions
+    correct_probs = (probabilities * valid_mask_float).sum(dim=1)
+
     return correct_probs.mean()
