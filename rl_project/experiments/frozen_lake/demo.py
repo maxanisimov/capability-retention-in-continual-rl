@@ -782,7 +782,6 @@ _ = plot_gymnasium_episode(
 # =============================================================================
 # TRAIN UNSAFEADAPT BASELINE (Task 2 without safety constraints) - OPTIONAL
 # =============================================================================
-
 if train_unsafe_adapt:
     print("\n" + "="*80)
     print("Training UnsafeAdapt baseline (Task 2, no safety constraints)")
@@ -803,19 +802,24 @@ if train_unsafe_adapt:
 
     # Visualize UnsafeAdapt on Task 1 (expected catastrophic forgetting)
     print("\nVisualizing UnsafeAdapt on Task 1 (expected catastrophic forgetting)...")
-    visualize_agent_trajectory(
-        env1, amnesic_actor, num_episodes=1, max_steps=max_steps,
-        env_name='Task 1', cfg_name=cfg_name, actor_name='UnsafeAdapt',
-        save_dir=plots_dir
+    _ = plot_gymnasium_episode(
+        env=env1_show,  # Pass the environment directly
+        actor=amnesic_actor,
+        figsize_per_frame=(1.5, 1.5),
+        title=f"{cfg_name} - Task 1 - UnsafeAdapt",
+        # save_path=os.path.join(plots_dir, f"{cfg_name}_Task1_UnsafeAdapt.png")
     )
 
     # Visualize UnsafeAdapt on Task 2 (expected good performance)
     print("\nVisualizing UnsafeAdapt on Task 2 (expected good performance)...")
-    visualize_agent_trajectory(
-        env2, amnesic_actor, num_episodes=1, max_steps=max_steps,
-        env_name='Task 2', cfg_name=cfg_name, actor_name='UnsafeAdapt',
-        save_dir=plots_dir
+    _ = plot_gymnasium_episode(
+        env=env2_show,  # Pass the environment directly
+        actor=amnesic_actor,
+        figsize_per_frame=(1.5, 1.5),
+        title=f"{cfg_name} - Task 2 - UnsafeAdapt",
+        # save_path=os.path.join(plots_dir, f"{cfg_name}_Task2_UnsafeAdapt.png")
     )
+
 else:
     print("\n" + "="*80)
     print("SKIPPING UnsafeAdapt baseline (train_unsafe_adapt=False)")
@@ -931,6 +935,15 @@ state_action_dataset = safe_datasets[safe_state_action_data_name]
 
 # --- Train a "safety actor" with the same architecture as standard_actor ---
 import copy
+########################################################################
+# The safety_actor is best described as a safety reference model —     #
+# a neural shield whose learned parameters define the center of a      #
+# certified safe region in parameter space.                            #
+# The novelty relative to classical shielding                          #
+# is that the safety constraint is "baked into"                        #
+# the policy's parameters via interval bound propagation,              #
+#  rather than applied as an external filter.                          #
+########################################################################
 
 # Build a fresh network with the same architecture, initialised from standard_actor
 safety_actor = copy.deepcopy(standard_actor).cpu()
@@ -1021,24 +1034,25 @@ with torch.no_grad():
     if multi_label_safety:
         valid_mask_all = (all_actions != -1)
         preds_exp = all_preds.unsqueeze(1).expand_as(all_actions)
-        final_acc = ((preds_exp == all_actions) & valid_mask_all).any(dim=1).float().mean().item()
+        final_safety_actor_acc = ((preds_exp == all_actions) & valid_mask_all).any(dim=1).float().mean().item()
     else:
-        final_acc = (all_preds == all_actions).float().mean().item()
-print(f"\nSafety actor final accuracy on safety dataset: {final_acc:.4f}")
+        final_safety_actor_acc = (all_preds == all_actions).float().mean().item()
+print(f"\nSafety actor final accuracy on safety dataset: {final_safety_actor_acc:.4f}")
 print("--- Safety actor training complete ---\n")
 
 
 #%%
-# Ensure model is on CPU
-standard_actor_cpu = standard_actor.cpu()
 
 # Initialize IntervalTrainer for computing parameter bounds
-min_acc_limit = 0.1 # 1.0  # Require 100% accuracy on the safety dataset for certification
+# min_acc_limit = 1.0 # Require 100% accuracy on the safety dataset for certification
+### Min acc limit is ideally inferred from the safety reference model
+min_acc_limit = final_safety_actor_acc
+assert min_acc_limit == 1.0, "Expected safety actor to achieve perfect accuracy on the safety dataset"
+print(f"Using min_acc_limit = {min_acc_limit:.4f} for interval training (based on safety actor performance)")
 interval_trainer = IntervalTrainer(
-    model=safety_actor.cpu(), # standard_actor_cpu,
+    model=safety_actor.cpu(), # we use the safety_actor as the reference model for interval training
     min_acc_limit=min_acc_limit,
     seed=seed,
-    # n_iters=2_000,
 )
 
 # Determine whether to use multi-label formulation
@@ -1073,9 +1087,13 @@ print("="*80)
 print("Expected: Good performance on both Task 1 and Task 2\n")
 
 ppo_cfg_safeadapt = PPOConfig(
-    total_timesteps=100_000, # 500_000, # safe_adapt_timesteps,
+    total_timesteps=200_000, # 500_000, # safe_adapt_timesteps,
     device='cpu'
 )
+# In continual learning, the initialisation should be the previously learned policy
+# In general, one could use the safety_actor as the initialisation, but here we warm-start
+#  from the standard_actor to be in line with continual learning setting and show that the constraints
+#  alone are sufficient to maintain safety
 safeadapt_actor, _ = ppo_train(
     env=env2,
     cfg=ppo_cfg_safeadapt,
@@ -1256,5 +1274,242 @@ if save_results:
 else:
     print(f"\nResults not saved (save_results=False)")
 print("\n" + "="*80)
+
+# %%
+### Visualisaiton of actors across tasks
+_ = plot_gymnasium_episode(
+    env=env2_show,  # Pass the environment directly
+    actor=standard_actor,
+    n_cols=3,
+    figsize_per_frame=(1.5, 1.5),
+    title=f"{cfg_name} - Task 2 - NoAdapt",
+    # save_path=os.path.join(plots_dir, f"{cfg_name}_Task2_NoAdapt.png")
+)
+# %%
+def plot_gymnasium_episode_multitask(
+        actor: torch.nn.Module,
+        env_task1: gymnasium.Env | None = None,
+        env_task2: gymnasium.Env | None = None,
+        env_id_task1: str | None = None,
+        env_id_task2: str | None = None,
+        env_kwargs_task1: dict | None = None,
+        env_kwargs_task2: dict | None = None,
+        n_cols: int = 4,
+        log_std: torch.nn.Parameter | None = None,
+        deterministic: bool = True,
+        seed: int = 42,
+        save_path: str | None = None,
+        figsize_per_frame: tuple[float, float] = (3.0, 3.0),
+        title: str | None = None,
+        task1_label: str = "Task 1 (Source)",
+        task2_label: str = "Task 2 (Downstream)",
+        task1_title_y: float = 0.7,
+        task2_title_y: float = 0.7,
+        suptitle_y: float = 0.98,
+    ):
+    """
+    Run one episode in two Gymnasium environments (source and downstream tasks)
+    and display all frames as a matplotlib grid with both tasks clearly separated.
+
+    The top rows show frames from Task 1 and the bottom rows show frames from
+    Task 2, with a bold label separating the two sections.
+
+    Args:
+        actor: Trained policy network (nn.Sequential or nn.Module).
+        env_task1: Optional pre-created Gymnasium environment for Task 1.
+        env_task2: Optional pre-created Gymnasium environment for Task 2.
+        env_id_task1: Gymnasium environment ID for Task 1 (used if env_task1 is None).
+        env_id_task2: Gymnasium environment ID for Task 2 (used if env_task2 is None).
+        env_kwargs_task1: Extra keyword arguments for Task 1 gymnasium.make.
+        env_kwargs_task2: Extra keyword arguments for Task 2 gymnasium.make.
+        n_cols: Number of columns in the image grid.
+        log_std: Log standard deviation parameter for continuous action spaces.
+        deterministic: Whether to select actions deterministically.
+        seed: Random seed for both episodes.
+        save_path: If provided, save the figure to this file path.
+        figsize_per_frame: (width, height) in inches for each subplot cell.
+        title: Optional suptitle for the entire figure.
+        task1_label: Label displayed above the Task 1 rows.
+        task2_label: Label displayed above the Task 2 rows.
+
+    Returns:
+        tuple[list[np.ndarray], list[np.ndarray]]: The collected RGB frames
+            for Task 1 and Task 2 respectively.
+    """
+
+    def _collect_frames(env, env_id, env_kwargs):
+        """Create env if needed and collect one episode of frames."""
+        if env is None and env_id is None:
+            raise ValueError("Either env or env_id must be provided for each task")
+
+        close_env = False
+        if env is not None:
+            assert env.unwrapped.render_mode == 'rgb_array', \
+                "Environment must be created with render_mode='rgb_array'"
+        elif env_id is not None:
+            env_kwargs = env_kwargs or {}
+            env = gymnasium.make(env_id, render_mode='rgb_array', **env_kwargs)
+            close_env = True
+
+        continuous_actions = isinstance(env.action_space, gymnasium.spaces.Box)
+        if not deterministic and continuous_actions:
+            assert log_std is not None, \
+                "log_std must be provided for stochastic continuous actions"
+
+        frames: list[np.ndarray] = []
+        obs, _ = env.reset(seed=seed)
+        frame = env.render()
+        if frame is not None:
+            frames.append(frame)
+
+        done = False
+        while not done:
+            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                if continuous_actions:
+                    if deterministic:
+                        action = actor(obs_t).cpu().numpy()[0]
+                    else:
+                        mean = actor(obs_t)
+                        std = torch.exp(log_std)  # type: ignore[arg-type]
+                        dist = torch.distributions.Normal(mean, std)
+                        action = dist.sample().cpu().numpy()[0]
+                    action = np.clip(action, env.action_space.low, env.action_space.high)
+                else:
+                    logits = actor(obs_t)
+                    if deterministic:
+                        action = torch.argmax(logits, dim=-1).item()
+                    else:
+                        dist = torch.distributions.Categorical(logits=logits)
+                        action = dist.sample().item()
+
+            obs, reward, terminated, truncated, info = env.step(action)
+            frame = env.render()
+            if frame is not None:
+                frames.append(frame)
+            done = terminated or truncated
+
+        if close_env:
+            env.close()
+
+        return frames
+
+    # --- collect frames for both tasks ---
+    frames_task1 = _collect_frames(env_task1, env_id_task1, env_kwargs_task1)
+    frames_task2 = _collect_frames(env_task2, env_id_task2, env_kwargs_task2)
+
+    # --- compute grid layout ---
+    n_frames_t1 = len(frames_task1)
+    n_frames_t2 = len(frames_task2)
+    n_rows_t1 = math.ceil(n_frames_t1 / n_cols)
+    n_rows_t2 = math.ceil(n_frames_t2 / n_cols)
+
+    # Dedicated label rows for Task 1 (top) and Task 2 (separator)
+    label_ratio = 0.18  # height of a label row relative to a frame row
+    total_rows = 1 + n_rows_t1 + 1 + n_rows_t2  # label1 + t1 frames + label2 + t2 frames
+
+    fig_w = figsize_per_frame[0] * n_cols
+    fig_h = figsize_per_frame[1] * (n_rows_t1 + n_rows_t2) + figsize_per_frame[1] * label_ratio * 2
+
+    height_ratios = (
+        [label_ratio]
+        + [1] * n_rows_t1
+        + [label_ratio]
+        + [1] * n_rows_t2
+    )
+
+    fig, axes = plt.subplots(
+        total_rows, n_cols,
+        figsize=(fig_w, fig_h),
+        gridspec_kw={
+            'height_ratios': height_ratios,
+            'hspace': 0.08,
+            'wspace': 0.04,
+        },
+    )
+    axes = np.asarray(axes).reshape(total_rows, n_cols)
+
+    # --- Task 1 label row (row 0) ---
+    for col_idx in range(n_cols):
+        axes[0, col_idx].axis('off')
+    axes[0, n_cols // 2].text(
+        x=0.5, y=task1_title_y, 
+        s=task1_label,
+        transform=axes[0, n_cols // 2].transAxes,
+        fontsize=11, fontweight='bold',
+        ha='center', va='center',
+    )
+
+    # --- Task 1 frame rows ---
+    for row_idx in range(n_rows_t1):
+        for col_idx in range(n_cols):
+            ax = axes[1 + row_idx, col_idx]
+            frame_idx = row_idx * n_cols + col_idx
+            if frame_idx < n_frames_t1:
+                ax.imshow(frames_task1[frame_idx])
+                ax.set_title(f"Step {frame_idx}", fontsize=8, pad=2)
+            ax.axis('off')
+
+    # --- Task 2 label row ---
+    sep_row = 1 + n_rows_t1
+    for col_idx in range(n_cols):
+        axes[sep_row, col_idx].axis('off')
+    axes[sep_row, n_cols // 2].text(
+        x=0.5, y=task2_title_y, 
+        s=task2_label,
+        transform=axes[sep_row, n_cols // 2].transAxes,
+        fontsize=11, fontweight='bold',
+        ha='center', va='center',
+    )
+    axes[sep_row, 0].set_ylabel(
+        task2_label, fontsize=11, fontweight='bold', labelpad=10
+    )
+
+    # --- Task 2 frame rows ---
+    for row_idx in range(n_rows_t2):
+        for col_idx in range(n_cols):
+            ax = axes[sep_row + 1 + row_idx, col_idx]
+            frame_idx = row_idx * n_cols + col_idx
+            if frame_idx < n_frames_t2:
+                ax.imshow(frames_task2[frame_idx])
+                ax.set_title(f"Step {frame_idx}", fontsize=8, pad=2)
+            ax.axis('off')
+
+    fig.tight_layout(pad=0.3)
+
+    if title is not None:
+        fig.suptitle(title, fontsize=13, fontweight='bold',y=suptitle_y)
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, bbox_inches='tight', dpi=150)
+        print(f"Figure saved to {save_path}")
+
+    plt.show()
+    return frames_task1, frames_task2
+
+#%%
+### Visualize all actors on both tasks in a single combined plot
+# from utils.gymnasium_utils import plot_gymnasium_episode_multitask
+plots_dir = 'plots'
+# actor_to_plot = 'SafeAdapt' # NoAdapt, UnsafeAdapt, SafeAdapt
+for actor_to_plot in ['NoAdapt', 'UnsafeAdapt', 'SafeAdapt']:
+    if actor_to_plot == 'NoAdapt':
+        actor = standard_actor
+    elif actor_to_plot == 'UnsafeAdapt' and train_unsafe_adapt:
+        actor = amnesic_actor
+    elif actor_to_plot == 'SafeAdapt':
+        actor = safeadapt_actor
+
+    title=f"{cfg_name} - {actor_to_plot} on Task 1 and Task 2"
+    _ = plot_gymnasium_episode_multitask(
+        env_task1=env1_show,
+        env_task2=env2_show,
+        actor=actor,
+        n_cols=7,
+        figsize_per_frame=(1.5, 1.5),
+        title=title,
+        save_path=os.path.join(plots_dir, f"{cfg_name}_{actor_to_plot}_multitask.png")
+    )
 
 # %%
