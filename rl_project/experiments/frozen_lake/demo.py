@@ -50,6 +50,18 @@ safe_state_action_data_name: str = "Sufficient Safety Data"
 # --- Optional baselines ----------------------------------------------------
 train_unsafe_adapt: bool = True  # train UnsafeAdapt (takes extra time)
 
+# --- Compute device --------------------------------------------------------
+device: str = "cpu"              # 'cpu' or 'cuda'
+
+# --- Early stopping (applied to NoAdapt and SafeAdapt training) ------------
+#   Checked at every periodic evaluation (~every 10×rollout_steps steps).
+#   Triggers when ALL non-None thresholds are simultaneously satisfied.
+#   Set early_stop=False to disable entirely.
+early_stop: bool = True
+early_stop_min_steps: int = 10_000      # do not check before this many steps
+early_stop_reward_threshold: float | None = 1.0 # None  # stop if mean reward >= this
+early_stop_failure_rate_threshold: float | None = 0.0 #  None  # stop if failure_rate <= this
+
 # --- Output control ---------------------------------------------------------
 save_results: bool = True        # write plots & tables to disk
 
@@ -147,7 +159,11 @@ print(f"  Safety dataset   : {safe_state_action_data_name}")
 print(f"  Train UnsafeAdapt: {train_unsafe_adapt}")
 print(f"  Save results     : {save_results}")
 print(f"  Seed             : {seed}")
-print(f"  Device           : cpu")
+print(f"  Device           : {device}")
+print(f"  Early stop       : {early_stop}"
+      + (f"  (min_steps={early_stop_min_steps:,}, "
+         f"reward>={early_stop_reward_threshold}, "
+         f"failure_rate<={early_stop_failure_rate_threshold})" if early_stop else ""))
 print("=" * 72)
 
 
@@ -180,9 +196,18 @@ print(f"\n[2/9]  Training NoAdapt on Task 1  ({no_adapt_timesteps:,} steps) …"
 
 standard_actor, standard_critic, standard_training_data = ppo_train(
     env=env1,
-    cfg=PPOConfig(total_timesteps=no_adapt_timesteps, device="cpu"),
+    cfg=PPOConfig(
+        total_timesteps=no_adapt_timesteps,
+        device=device,
+        early_stop=early_stop,
+        early_stop_min_steps=early_stop_min_steps,
+        early_stop_reward_threshold=early_stop_reward_threshold,
+        early_stop_failure_rate_threshold=early_stop_failure_rate_threshold,
+    ),
     return_training_data=True,
 )
+standard_actor.cpu()
+standard_critic.cpu()
 print("  NoAdapt training complete.")
 
 # Visualise
@@ -209,10 +234,18 @@ if train_unsafe_adapt:
     print(f"\n[3/9]  Training UnsafeAdapt on Task 2  ({task2_adapt_timesteps:,} steps) …")
     amnesic_actor, _ = ppo_train(
         env=env2,
-        cfg=PPOConfig(total_timesteps=task2_adapt_timesteps, device="cpu"),
+        cfg=PPOConfig(
+            total_timesteps=task2_adapt_timesteps,
+            device=device,
+            early_stop=early_stop,
+            early_stop_min_steps=early_stop_min_steps,
+            early_stop_reward_threshold=early_stop_reward_threshold,
+            early_stop_failure_rate_threshold=early_stop_failure_rate_threshold,
+        ),
         actor_warm_start=standard_actor,
         critic_warm_start=standard_critic,
     )
+    amnesic_actor.cpu()
     print("  UnsafeAdapt training complete.")
 
     _ = plot_gymnasium_episode(
@@ -281,6 +314,7 @@ safety_actor, safety_acc = train_safety_actor(
     base_actor=standard_actor,
     dataset=state_action_dataset,
     multi_label=multi_label,
+    device=device,
 )
 
 assert safety_acc == 1.0, (
@@ -324,12 +358,20 @@ print(f"\n[7/9]  Training SafeAdapt on Task 2  ({safe_adapt_ppo_timesteps:,} ste
 
 safeadapt_actor, _ = ppo_train(
     env=env2,
-    cfg=PPOConfig(total_timesteps=safe_adapt_ppo_timesteps, device="cpu"),
+    cfg=PPOConfig(
+        total_timesteps=safe_adapt_ppo_timesteps,
+        device=device,
+        early_stop=early_stop,
+        early_stop_min_steps=early_stop_min_steps,
+        early_stop_reward_threshold=early_stop_reward_threshold,
+        early_stop_failure_rate_threshold=early_stop_failure_rate_threshold,
+    ),
     actor_warm_start=standard_actor,
     critic_warm_start=standard_critic,
     actor_param_bounds_l=param_bounds_l,
     actor_param_bounds_u=param_bounds_u,
 )
+safeadapt_actor.cpu()
 print("  SafeAdapt training complete.")
 
 _ = plot_gymnasium_episode(
