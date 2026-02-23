@@ -27,6 +27,12 @@ class PPOConfig:
     lr: float = 3e-4
     max_grad_norm: float = 0.5
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    # Early stopping: checked at every periodic evaluation (every 10×rollout_steps steps).
+    # Triggers when BOTH non-None thresholds are simultaneously satisfied.
+    early_stop: bool = False
+    early_stop_min_steps: int = 0             # do not check before this many steps
+    early_stop_reward_threshold: float | None = None   # stop if mean_reward >= threshold
+    early_stop_failure_rate_threshold: float | None = None  # stop if failure_rate <= threshold
 
 def make_actor_critic(
     obs_dim: int, n_actions: int, 
@@ -451,6 +457,24 @@ def ppo_train(
             if use_pgd:
                 log_msg += f" | PGD projections={pgd_projections}"
             print(log_msg)
+
+            # ── Early stopping ──────────────────────────────────────────
+            if cfg.early_stop and global_step >= cfg.early_stop_min_steps:
+                reward_ok = (
+                    cfg.early_stop_reward_threshold is None
+                    or mean_r >= cfg.early_stop_reward_threshold
+                )
+                failure_ok = (
+                    cfg.early_stop_failure_rate_threshold is None
+                    or failure_rate <= cfg.early_stop_failure_rate_threshold
+                )
+                if reward_ok and failure_ok:
+                    print(
+                        f"  [Early stop] step={global_step} | "
+                        f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
+                        f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold})"
+                    )
+                    break
 
     env.close()
 
