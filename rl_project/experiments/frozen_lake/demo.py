@@ -39,7 +39,7 @@ Outputs
 # ─────────────────────────────────────────────────────────────────────────────
 
 # --- Which map / hyper-parameter set from demo_configs.yaml ----------------
-cfg_name: str = "standard_4x4"
+cfg_name: str = "standard_8x8"
 
 # --- Which safety dataset to use ------------------------------------------
 #   'Sufficient Safety Data'    – exhaustive safe actions for every risky state
@@ -100,6 +100,8 @@ from frozenlake_utils import (
     build_all_safety_datasets,
     evaluate_policy,
     extract_position_action_pairs,
+    generate_sufficient_safe_state_action_dataset,
+    generate_sufficient_safe_state_action_dataset,
     get_all_unsafe_state_action_pairs,
     make_frozenlake_env,
     set_all_seeds,
@@ -142,10 +144,9 @@ env2_map: list[str] = cfg["env2_map"]
 is_slippery: bool = cfg["is_slippery"]
 max_steps: int = cfg["max_steps"]
 seed: int = cfg["seed"]
-no_adapt_timesteps: int = cfg["noadapt_train_timesteps"]
-task2_adapt_timesteps: int = cfg.get("unsafeadapt_train_timesteps", 0)
-safe_adapt_ppo_timesteps: int = cfg["safeadapt_train_timesteps"]
-safe_env1_rollouts: int = cfg["safe_env1_state_action_data_num_rollouts"]
+no_adapt_timesteps: int = cfg["noadapt_max_train_timesteps"]
+task2_adapt_timesteps: int = cfg.get("unsafeadapt_max_train_timesteps", 0)
+safe_adapt_ppo_timesteps: int = cfg["safeadapt_max_train_timesteps"]
 
 # ── Seed everything ────────────────────────────────────────────────────────
 set_all_seeds(seed)
@@ -155,7 +156,6 @@ print("=" * 72)
 print("FROZEN LAKE – SAFE CONTINUAL LEARNING EXPERIMENT")
 print("=" * 72)
 print(f"  Config           : {cfg_name}")
-print(f"  Safety dataset   : {safe_state_action_data_name}")
 print(f"  Train UnsafeAdapt: {train_unsafe_adapt}")
 print(f"  Save results     : {save_results}")
 print(f"  Seed             : {seed}")
@@ -192,7 +192,7 @@ for row in env2_map:
 # =============================================================================
 # 2. TRAIN NoAdapt BASELINE (Task 1 only)
 # =============================================================================
-print(f"\n[2/9]  Training NoAdapt on Task 1  ({no_adapt_timesteps:,} steps) …")
+print(f"\n[2/9]  Training NoAdapt on Task 1  (max {no_adapt_timesteps:,} steps) …")
 
 standard_actor, standard_critic, standard_training_data = ppo_train(
     env=env1,
@@ -231,7 +231,7 @@ _ = plot_gymnasium_episode(
 # =============================================================================
 amnesic_actor = None
 if train_unsafe_adapt:
-    print(f"\n[3/9]  Training UnsafeAdapt on Task 2  ({task2_adapt_timesteps:,} steps) …")
+    print(f"\n[3/9]  Training UnsafeAdapt on Task 2  (max {task2_adapt_timesteps:,} steps) …")
     amnesic_actor, _ = ppo_train(
         env=env2,
         cfg=PPOConfig(
@@ -266,24 +266,14 @@ else:
 
 #%%
 # =============================================================================
-# 4. BUILD SAFETY DATASETS
+# 4. BUILD SAFETY DATASET
 # =============================================================================
-print("\n[4/9]  Building safety datasets …")
+print("\n[4/9]  Building safety demonstration dataset …")
 
-safe_datasets = build_all_safety_datasets(
-    env=env1,
-    actor=standard_actor,
-    env_map=env1_map,
-    task_num=0,
-    training_data=standard_training_data,
-    num_rollouts=safe_env1_rollouts,
-    seed=seed,
-)
-
-state_action_dataset = safe_datasets[safe_state_action_data_name]
-multi_label = safe_state_action_data_name != "Safe Optimal Policy Data"
-print(f"\n  Selected: {safe_state_action_data_name}  ({len(state_action_dataset)} samples)")
-print(f"  Multi-label: {multi_label}")
+unsafe_pairs = get_all_unsafe_state_action_pairs(env_map=env1_map, task_num=0)
+state_action_dataset = generate_sufficient_safe_state_action_dataset(unsafe_pairs, env1)
+multi_label = True
+print(f"\n Safety demonstration dataset contains {len(state_action_dataset)} samples")
 
 #%%
 # ── Visualise unsafe & sufficient-safe pairs on the grid ────────────────────
@@ -308,7 +298,7 @@ _ = plot_state_action_pairs(
 # =============================================================================
 # 5. TRAIN SAFETY ACTOR (reference model)
 # =============================================================================
-print("\n[5/9]  Training safety actor …")
+print("\n[5/9]  Training base safety actor …")
 
 safety_actor, safety_acc = train_safety_actor(
     base_actor=standard_actor,
@@ -318,7 +308,7 @@ safety_actor, safety_acc = train_safety_actor(
 )
 
 assert safety_acc == 1.0, (
-    f"Safety actor must achieve perfect accuracy on the safety dataset "
+    f"Base safety actor must achieve perfect accuracy on the safety dataset "
     f"(got {safety_acc:.4f})"
 )
 min_acc_limit = safety_acc
@@ -326,9 +316,9 @@ min_acc_limit = safety_acc
 
 #%%
 # =============================================================================
-# 6. COMPUTE SafeAdapt SET (parameter-space bounds via IBP)
+# 6. COMPUTE Rashomon set (parameter-space bounds via IBP)
 # =============================================================================
-print(f"\n[6/9]  Computing SafeAdapt bounds  (min_acc={min_acc_limit:.2f}) …")
+print(f"\n[6/9]  Computing Rashomon bounds  (min_acc={min_acc_limit:.2f}) …")
 
 interval_trainer = IntervalTrainer(
     model=safety_actor.cpu(),
@@ -347,6 +337,7 @@ param_bounds_l = [b.detach().cpu() for b in bounded_model.param_l]
 param_bounds_u = [b.detach().cpu() for b in bounded_model.param_u]
 
 print(f"  Certified accuracy: {certificate:.4f}")
+assert certificate >= min_acc_limit, "Certificate does not meet minimum accuracy requirement"
 print(f"  Parameter layers constrained: {len(param_bounds_l)}")
 
 
@@ -354,7 +345,7 @@ print(f"  Parameter layers constrained: {len(param_bounds_l)}")
 # =============================================================================
 # 7. TRAIN SafeAdapt (Task 2 with parameter constraints)
 # =============================================================================
-print(f"\n[7/9]  Training SafeAdapt on Task 2  ({safe_adapt_ppo_timesteps:,} steps) …")
+print(f"\n[7/9]  Training SafeAdapt on Task 2  (max {safe_adapt_ppo_timesteps:,} steps) …")
 
 safeadapt_actor, _ = ppo_train(
     env=env2,
