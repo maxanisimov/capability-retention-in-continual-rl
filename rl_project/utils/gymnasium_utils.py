@@ -382,6 +382,7 @@ def plot_gymnasium_episode_multitask(
         task1_title_y: float = 0.7,
         task2_title_y: float = 0.7,
         suptitle_y: float = 0.98,
+        frame_stride: int = 1,
     ):
     """
     Run one episode in two Gymnasium environments (source and downstream tasks)
@@ -407,10 +408,13 @@ def plot_gymnasium_episode_multitask(
         title: Optional suptitle for the entire figure.
         task1_label: Label displayed above the Task 1 rows.
         task2_label: Label displayed above the Task 2 rows.
+        frame_stride: Display every n-th frame starting from frame 0.
+            The last frame is always included regardless of the stride.
+            Default 1 shows every frame.
 
     Returns:
         tuple[list[np.ndarray], list[np.ndarray]]: The collected RGB frames
-            for Task 1 and Task 2 respectively.
+            for Task 1 and Task 2 respectively (all frames, before striding).
     """
 
     def _collect_frames(env, env_id, env_kwargs):
@@ -474,9 +478,20 @@ def plot_gymnasium_episode_multitask(
     frames_task1 = _collect_frames(env_task1, env_id_task1, env_kwargs_task1)
     frames_task2 = _collect_frames(env_task2, env_id_task2, env_kwargs_task2)
 
+    # --- apply frame stride (always keep frame 0 and the last frame) ---
+    def _apply_stride(frames, stride):
+        """Return (display_frames, original_indices) honouring stride + last frame."""
+        indices = list(range(0, len(frames), stride))
+        if frames and (len(frames) - 1) not in indices:
+            indices.append(len(frames) - 1)
+        return [frames[i] for i in indices], indices
+
+    display_t1, indices_t1 = _apply_stride(frames_task1, frame_stride)
+    display_t2, indices_t2 = _apply_stride(frames_task2, frame_stride)
+
     # --- compute grid layout ---
-    n_frames_t1 = len(frames_task1)
-    n_frames_t2 = len(frames_task2)
+    n_frames_t1 = len(display_t1)
+    n_frames_t2 = len(display_t2)
     n_rows_t1 = math.ceil(n_frames_t1 / n_cols)
     n_rows_t2 = math.ceil(n_frames_t2 / n_cols)
 
@@ -522,8 +537,8 @@ def plot_gymnasium_episode_multitask(
             ax = axes[1 + row_idx, col_idx]
             frame_idx = row_idx * n_cols + col_idx
             if frame_idx < n_frames_t1:
-                ax.imshow(frames_task1[frame_idx])
-                ax.set_title(f"Step {frame_idx}", fontsize=8, pad=2)
+                ax.imshow(display_t1[frame_idx])
+                ax.set_title(f"Step {indices_t1[frame_idx]}", fontsize=8, pad=2)
             ax.axis('off')
 
     # --- Task 2 label row ---
@@ -547,8 +562,8 @@ def plot_gymnasium_episode_multitask(
             ax = axes[sep_row + 1 + row_idx, col_idx]
             frame_idx = row_idx * n_cols + col_idx
             if frame_idx < n_frames_t2:
-                ax.imshow(frames_task2[frame_idx])
-                ax.set_title(f"Step {frame_idx}", fontsize=8, pad=2)
+                ax.imshow(display_t2[frame_idx])
+                ax.set_title(f"Step {indices_t2[frame_idx]}", fontsize=8, pad=2)
             ax.axis('off')
 
     fig.tight_layout(pad=0.3)
