@@ -7,17 +7,26 @@ This script demonstrates:
 3. Custom spot placement vs random placement
 """
 
+import os
 import sys
 import numpy as np
 import gymnasium
 import highway_env
 import matplotlib.pyplot as plt
 
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning/rl_project')
-sys.path.append('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
+# ── Path setup ──────────────────────────────────────────────────────────────
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", ".."))
+_RL_DIR = os.path.join(_PROJECT_ROOT, "rl_project")
+for p in (_RL_DIR, _PROJECT_ROOT, _SCRIPT_DIR):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 # Import to register the custom environment
-from rl_project.utils.custom_envs import CustomParkingEnv
+from utils.custom_envs import CustomParkingEnv
+
+# ── Output directory ────────────────────────────────────────────────────────
+_RESULTS_DIR = os.path.join(_SCRIPT_DIR, "results")
 
 
 def demo_custom_placement():
@@ -75,8 +84,9 @@ def demo_custom_placement():
     plt.title(f"Custom Placement - Initial State (seed={seed})")
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig('results/custom_placement_demo.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/custom_placement_demo.png")
+    _path = os.path.join(_RESULTS_DIR, "custom_placement_demo.png")
+    plt.savefig(_path, dpi=150, bbox_inches='tight')
+    print(f"Saved: {_path}")
 
     env.close()
     return frame
@@ -120,8 +130,9 @@ def demo_random_placement():
     plt.title(f"Random Placement - Initial State (seed={seed})")
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig('results/random_placement_demo.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/random_placement_demo.png")
+    _path = os.path.join(_RESULTS_DIR, "random_placement_demo.png")
+    plt.savefig(_path, dpi=150, bbox_inches='tight')
+    print(f"Saved: {_path}")
 
     env.close()
     return frame
@@ -173,15 +184,14 @@ def demo_comparison():
     axes[1].axis('off')
 
     plt.tight_layout()
-    plt.savefig('results/comparison_demo.png', dpi=150, bbox_inches='tight')
-    print("Saved: results/comparison_demo.png")
+    _path = os.path.join(_RESULTS_DIR, "comparison_demo.png")
+    plt.savefig(_path, dpi=150, bbox_inches='tight')
+    print(f"Saved: {_path}")
     print("\nNotice how custom placement is deterministic regardless of seed!")
 
 
 if __name__ == "__main__":
-    # Create results directory if it doesn't exist
-    import os
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(_RESULTS_DIR, exist_ok=True)
 
     # Run demos
     demo_custom_placement()
