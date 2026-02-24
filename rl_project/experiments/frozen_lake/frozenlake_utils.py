@@ -357,6 +357,70 @@ def build_all_safety_datasets(
 # Safety-actor training
 # =============================================================================
 
+def margin_cross_entropy(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    margin: float = 2.0,
+) -> torch.Tensor:
+    """Cross-entropy with a margin penalty to encourage large logit gaps.
+
+    Adds a hinge term that penalises samples where the correct-class logit
+    is not at least *margin* above the highest competing logit.  This makes
+    the safety actor easier to certify with interval bound propagation.
+
+    Args:
+        logits: Raw network outputs, shape ``(B, C)``.
+        targets: Ground-truth class indices, shape ``(B,)``.
+        margin: Required gap between correct-class logit and runner-up.
+
+    Returns:
+        Scalar loss (CE + mean hinge violation).
+    """
+    ce = F.cross_entropy(logits, targets)
+    correct_logits = logits.gather(1, targets.unsqueeze(1))  # (B, 1)
+    # Mask out the target class so we take max over non-target logits
+    mask = torch.ones_like(logits, dtype=torch.bool)
+    mask.scatter_(1, targets.unsqueeze(1), False)
+    max_other = logits.masked_fill(~mask, -1e9).max(dim=1, keepdim=True).values
+    margin_violation = torch.clamp(margin - (correct_logits - max_other), min=0)
+    return ce + margin_violation.mean()
+
+
+def _multi_label_margin_cross_entropy(
+    logits: torch.Tensor,
+    target_dist: torch.Tensor,
+    valid_mask_any: torch.Tensor,
+    margin: float = 2.0,
+) -> torch.Tensor:
+    """Soft CE + margin penalty for the multi-label case.
+
+    The margin is enforced between the *best valid-action logit* and the
+    *best invalid-action logit* for each sample.
+
+    Args:
+        logits: Raw network outputs, shape ``(B, C)``.
+        target_dist: Normalised target distribution, shape ``(B, C)``.
+        valid_mask_any: Boolean mask of shape ``(B, C)`` — True for valid actions.
+        margin: Required gap.
+
+    Returns:
+        Scalar loss.
+    """
+    log_probs = F.log_softmax(logits, dim=1)
+    ce = -(target_dist * log_probs).sum(dim=1).mean()
+
+    # Best valid-action logit per sample
+    valid_logits = logits.masked_fill(~valid_mask_any, -1e9)
+    best_valid = valid_logits.max(dim=1).values  # (B,)
+
+    # Best invalid-action logit per sample
+    invalid_logits = logits.masked_fill(valid_mask_any, -1e9)
+    best_invalid = invalid_logits.max(dim=1).values  # (B,)
+
+    margin_violation = torch.clamp(margin - (best_valid - best_invalid), min=0)
+    return ce + margin_violation.mean()
+
+
 def train_safety_actor(
     base_actor: torch.nn.Module,
     dataset: torch.utils.data.TensorDataset,
@@ -366,6 +430,8 @@ def train_safety_actor(
     batch_size: int = 64,
     device: str = "cpu",
     verbose: bool = True,
+    use_margin_loss: bool = False,
+    margin: float = 2.0,
 ) -> tuple[torch.nn.Module, float]:
     """Train a *safety reference model* on the safety dataset.
 
@@ -385,6 +451,11 @@ def train_safety_actor(
         batch_size: Mini-batch size (clamped to dataset length).
         device: ``'cpu'`` or ``'cuda'``.
         verbose: Print progress every 100 epochs.
+        use_margin_loss: If ``True``, add a hinge-margin penalty that
+            encourages the correct-class logit to exceed all others by at
+            least *margin*.  This produces larger logit gaps that are easier
+            to certify with interval bound propagation.
+        margin: Required logit gap when ``use_margin_loss=True``.
 
     Returns:
         ``(safety_actor, final_accuracy)``
@@ -398,6 +469,8 @@ def train_safety_actor(
         print("\n--- Training safety actor ---")
         print(f"  Multi-label: {multi_label}  |  Dataset size: {len(dataset)}")
         print(f"  Epochs: {epochs}  |  LR: {lr}  |  Batch size: {batch_size}")
+        if use_margin_loss:
+            print(f"  Margin loss: enabled  |  Margin: {margin}")
 
     for epoch in range(epochs):
         epoch_loss, epoch_correct, epoch_total = 0.0, 0, 0
@@ -415,14 +488,29 @@ def train_safety_actor(
                     col_valid = valid_mask[:, i].float().unsqueeze(1)
                     target_dist.scatter_(1, col, col_valid)
                 target_dist = target_dist / target_dist.sum(dim=1, keepdim=True).clamp(min=1e-8)
-                log_probs = F.log_softmax(logits, dim=1)
-                loss = -(target_dist * log_probs).sum(dim=1).mean()
+
+                if use_margin_loss:
+                    # Build a (B, C) boolean mask of valid actions
+                    valid_action_mask = torch.zeros_like(logits, dtype=torch.bool)
+                    for i in range(batch_actions.shape[1]):
+                        col = batch_actions[:, i].clamp(min=0).unsqueeze(1)
+                        col_valid = valid_mask[:, i].unsqueeze(1)
+                        valid_action_mask.scatter_(1, col, col_valid)
+                    loss = _multi_label_margin_cross_entropy(
+                        logits, target_dist, valid_action_mask, margin=margin,
+                    )
+                else:
+                    log_probs = F.log_softmax(logits, dim=1)
+                    loss = -(target_dist * log_probs).sum(dim=1).mean()
 
                 predicted = logits.argmax(dim=1)
                 pred_exp = predicted.unsqueeze(1).expand_as(batch_actions)
                 epoch_correct += ((pred_exp == batch_actions) & valid_mask).any(dim=1).sum().item()
             else:
-                loss = F.cross_entropy(logits, batch_actions)
+                if use_margin_loss:
+                    loss = margin_cross_entropy(logits, batch_actions, margin=margin)
+                else:
+                    loss = F.cross_entropy(logits, batch_actions)
                 epoch_correct += (logits.argmax(dim=1) == batch_actions).sum().item()
 
             epoch_total += batch_states.shape[0]
