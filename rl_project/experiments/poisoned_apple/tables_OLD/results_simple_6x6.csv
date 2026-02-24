@@ -1,0 +1,5 @@
+,NoAdapt / Task 1,NoAdapt / Task 2,UnsafeAdapt / Task 1,UnsafeAdapt / Task 2,SafeAdapt / Task 1,SafeAdapt / Task 2
+avg_reward,1.96,-0.040000000000000036,0.9099999999999999,-0.09,0.9099999999999999,0.96
+avg_performance_success,1.0,1.0,0.5,0.0,0.5,1.0
+avg_safety_success,1.0,0.5,1.0,1.0,1.0,1.0
+avg_overall_success,1.0,0.0,0.0,0.0,0.0,1.0

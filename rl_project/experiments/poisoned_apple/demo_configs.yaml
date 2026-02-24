@@ -7,8 +7,9 @@ simple_5x5:
   env1_poisoned_apples: [[3, 3]]
   env2_safe_apples: [[2, 2]]
   env2_poisoned_apples: [[1, 1], [3, 3]]
-  unadaptable_actor_timesteps: 1000
-  rashomon_timesteps: 5000 # >4000 needed to be safe and performant in Env2
+  noadapt_max_train_timesteps: 20000
+  unsafeadapt_max_train_timesteps: 20000
+  safeadapt_max_train_timesteps: 20000 # 5000 # >4000 needed to be safe and performant in Env2
   safe_env1_state_action_data_num_rollouts: 1
   seed: 42
   notes: "Works well, standard actor fails on Env2"
@@ -22,9 +23,9 @@ simple_6x6:
   env1_poisoned_apples: [[3, 3]]
   env2_safe_apples: [[2, 2]]
   env2_poisoned_apples: [[1, 1], [3, 3]]
-  unadaptable_actor_timesteps: 1000
-  task2_adapt_timesteps: 2000
-  rashomon_timesteps: 10000
+  noadapt_max_train_timesteps: 20000
+  unsafeadapt_max_train_timesteps: 20000
+  safeadapt_max_train_timesteps: 20000
   safe_env1_state_action_data_num_rollouts: 1
   seed: 42
   notes: "Larger grid, requires more training, works well."
@@ -38,8 +39,9 @@ simple_7x7:
   env1_poisoned_apples: [[3, 3]]
   env2_safe_apples: [[2, 2]]
   env2_poisoned_apples: [[1, 1], [3, 3]]
-  unadaptable_actor_timesteps: 1000
-  rashomon_timesteps: 10000
+  noadapt_max_train_timesteps: 20000
+  unsafeadapt_max_train_timesteps: 20000
+  safeadapt_max_train_timesteps: 20000
   safe_env1_state_action_data_num_rollouts: 1
   seed: 42
   notes: "Same result as 6x6, works well."
@@ -53,8 +55,9 @@ simple_8x8:
   env1_poisoned_apples: [[3, 3]]
   env2_safe_apples: [[2, 2]]
   env2_poisoned_apples: [[1, 1], [3, 3]]
-  unadaptable_actor_timesteps: 5000
-  rashomon_timesteps: 10000
+  noadapt_max_train_timesteps: 20000 # 5000 at least
+  unsafeadapt_max_train_timesteps: 20000
+  safeadapt_max_train_timesteps: 20000
   safe_env1_state_action_data_num_rollouts: 1
   seed: 42
   notes: "Fails to be performant in Env1, but safety difference is showcased. TODO: increase training for both actors time to see if performance improves."
