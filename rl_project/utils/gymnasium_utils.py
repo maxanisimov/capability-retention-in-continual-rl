@@ -92,12 +92,139 @@ def render_gymnasium_agent(
 
     env.close()
 
+import math
+import numpy as np
+import os
 
-def plot_gymnasium_episode(
+def plot_episode_frames(
+        frames: list[np.ndarray], n_cols: int = 5, 
+        figsize_per_frame: tuple = (3, 2), one_row: bool = False, title: str | None = None, save_path: str | None = None
+    ):
+    """Plot a sequence of RGB frames in a grid layout."""
+    n_frames = len(frames)
+    n_rows = math.ceil(n_frames / n_cols)
+    frames_to_plot = frames
+    indices = list(range(n_frames))
+    if one_row:
+        n_rows = 1
+        # Take the first frame, the last frame, and evenly spaced frames in between
+        if n_frames > 2:
+            indices = np.linspace(0, n_frames - 1, min(n_frames, n_cols), dtype=int)
+            frames_to_plot = [frames[i] for i in indices]
+        else:
+            frames_to_plot = frames  # If there are 2 or fewer frames, just use them as is
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(figsize_per_frame[0] * n_cols, figsize_per_frame[1] * n_rows),
+    )
+    # Always work with a flat array of axes
+    axes = np.asarray(axes).flatten()
+
+    for idx, ax in enumerate(axes):
+        if idx < len(frames_to_plot):
+            ax.imshow(frames_to_plot[idx])
+            ax.set_title(f"Step {indices[idx]}", fontsize=9)
+        ax.axis('off')
+
+    if title is not None:
+        fig.suptitle(title, fontsize=14, y=1.0)
+    fig.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, bbox_inches='tight', dpi=150)
+        print(f"Figure saved to {save_path}")
+
+    plt.show()
+
+def plot_multi_episode_frames(
+        episodes: list[list[np.ndarray]],
+        n_cols: int = 5,
+        figsize_per_frame: tuple[float, float] = (3.0, 2.0),
+        episode_labels: list[str] | None = None,
+        title: str | None = None,
+        save_path: str | None = None,
+    ):
+    """
+    Plot multiple episodes, each in its own row.
+
+    For every episode the displayed frames are chosen with ``numpy.linspace``
+    so that the first column is always the first frame, the last column is
+    always the last frame, and the intermediate columns are evenly spaced.
+
+    Args:
+        episodes: List of episodes, where each episode is a list of RGB frames
+            (``np.ndarray`` of shape ``(H, W, 3)``).
+        n_cols: Number of frame columns per episode row.
+        figsize_per_frame: ``(width, height)`` in inches for each subplot cell.
+        episode_labels: Optional list of row labels, one per episode.  If
+            ``None`` (default), rows are labelled ``"Episode 0"``,
+            ``"Episode 1"``, etc.  Pass an empty list ``[]`` to suppress all
+            labels.
+        title: Optional suptitle for the whole figure.
+        save_path: If provided, save the figure to this path (parent
+            directories are created automatically).
+    """
+    n_episodes = len(episodes)
+    if n_episodes == 0:
+        return
+
+    if episode_labels is None:
+        episode_labels = [f"Ep. {i}" for i in range(n_episodes)]
+
+    fig, axes = plt.subplots(
+        n_episodes, n_cols,
+        figsize=(figsize_per_frame[0] * n_cols, figsize_per_frame[1] * n_episodes),
+        squeeze=False,
+    )
+
+    for ep_idx, ep_frames in enumerate(episodes):
+        n_frames = len(ep_frames)
+
+        # Select frame indices via linspace so first and last are always included
+        if n_frames <= n_cols:
+            indices = list(range(n_frames))
+        else:
+            indices = np.linspace(0, n_frames - 1, n_cols, dtype=int).tolist()
+
+        selected_frames = [ep_frames[i] for i in indices]
+
+        for col_idx in range(n_cols):
+            ax = axes[ep_idx, col_idx]
+            if col_idx < len(selected_frames):
+                ax.imshow(selected_frames[col_idx])
+                ax.set_title(f"Step {indices[col_idx]}", fontsize=8, pad=2)
+            ax.axis('off')
+
+        if episode_labels and ep_idx < len(episode_labels):
+            axes[ep_idx, 0].set_ylabel(
+                episode_labels[ep_idx],
+                fontsize=10, fontweight='bold', labelpad=16, rotation=0, va='center'
+            )
+            axes[ep_idx, 0].axis('on')
+            axes[ep_idx, 0].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            for spine in axes[ep_idx, 0].spines.values():
+                spine.set_visible(False)
+
+    if title is not None:
+        fig.suptitle(title, fontsize=13, fontweight='bold', y=1.01)
+
+    fig.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, bbox_inches='tight', dpi=150)
+        print(f"Figure saved to {save_path}")
+
+    plt.show()
+
+
+def plot_episode(
         actor: torch.nn.Module,
         env_id: str | None = None,
         env: gymnasium.Env | None = None,
         n_cols: int = 4,
+        one_row: bool = False,
         log_std: torch.nn.Parameter | None = None,
         deterministic: bool = True,
         seed: int = 42,
@@ -114,6 +241,7 @@ def plot_gymnasium_episode(
         env_id: Gymnasium environment ID (e.g. 'FrozenLake-v1').
         env: Optional pre-created Gymnasium environment (if None, env_id is used to create it).
         n_cols: Number of columns in the image grid.
+        one_row: If True, display all frames in a single row (overrides n_cols).
         log_std: Log standard deviation parameter for continuous action spaces.
         deterministic: Whether to select actions deterministically.
         seed: Random seed for the episode.
@@ -177,34 +305,13 @@ def plot_gymnasium_episode(
 
     env.close()
 
-    # --- plot grid ---
-    n_frames = len(frames)
-    n_rows = math.ceil(n_frames / n_cols)
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(figsize_per_frame[0] * n_cols, figsize_per_frame[1] * n_rows),
+    plot_episode_frames(
+        frames=frames, 
+        title=f"Episode frames for {env_id}" if title is None else title, 
+        n_cols=n_cols, 
+        figsize_per_frame=figsize_per_frame, save_path=save_path, one_row=one_row
     )
-    # Always work with a flat array of axes
-    axes = np.asarray(axes).flatten()
-
-    for idx, ax in enumerate(axes):
-        if idx < n_frames:
-            ax.imshow(frames[idx])
-            ax.set_title(f"Step {idx}", fontsize=9)
-        ax.axis('off')
-
-    if title is not None:
-        fig.suptitle(title, fontsize=14, y=1.02)
-    fig.tight_layout()
-
-    if save_path is not None:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        fig.savefig(save_path, bbox_inches='tight', dpi=150)
-        print(f"Figure saved to {save_path}")
-
-    plt.show()
     return frames
-
 
 def plot_state_action_pairs(
     env: gymnasium.Env,
