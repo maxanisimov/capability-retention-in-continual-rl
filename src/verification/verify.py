@@ -252,3 +252,64 @@ def bound_multi_label_soft_accuracy(
     correct_probs = (probabilities * valid_mask_float).sum(dim=1)
 
     return correct_probs.mean()
+
+def bound_multi_label_lse_margin(
+    logits: IntervalTensor, targets: torch.Tensor, *, T: float = 10, lower: bool = True
+) -> torch.Tensor:
+    """
+    Compute a bound on the LSE margin surrogate for multi-label safety.
+
+    The LSE margin surrogate is defined as:
+        phi_tau = tau * log(sum_{safe} exp(z_a / tau)) - tau * log(sum_{unsafe} exp(z_a / tau))
+
+    This approximates the true margin:
+        m = max_{safe} z_a - max_{unsafe} z_a
+
+    with a controllable gap that vanishes as tau -> 0. Safety (phi^safe = 1)
+    is guaranteed when phi_tau > tau * log(N - K).
+
+    For a sound lower bound on the surrogate, we construct worst-case logits:
+    lower bounds for safe actions and upper bounds for unsafe actions.
+
+    Args:
+        logits: IntervalTensor containing logit bounds
+        targets: Tensor where each row contains valid class indices for that sample.
+                 Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
+        T: Temperature parameter. Higher values give tighter approximation
+             of the true margin but sharper gradients.
+        lower: Whether to compute lower bound (True) or upper bound (False)
+
+    Returns:
+        LSE margin surrogate bound tensor (per-sample mean)
+    """
+    logits_l, logits_u = logits
+    batch_size, n_classes = logits_l.shape
+    tau = 1 / T
+
+    # Build a boolean mask of valid (safe) actions: (batch_size, n_classes)
+    valid_mask = torch.zeros(batch_size, n_classes, dtype=torch.bool, device=targets.device)
+    for col_idx in range(targets.shape[1]):
+        col = targets[:, col_idx]
+        col_valid = col != -1
+        indices = col.clamp(min=0)
+        valid_mask[torch.arange(batch_size, device=targets.device)[col_valid], indices[col_valid]] = True
+
+    valid_mask_float = valid_mask.float()
+    invalid_mask_float = 1.0 - valid_mask_float
+
+    if lower:
+        # Worst-case: minimise the margin (safe logits low, unsafe logits high)
+        safe_logits = valid_mask_float * logits_l + invalid_mask_float * (-1e9)
+        unsafe_logits = invalid_mask_float * logits_u + valid_mask_float * (-1e9)
+    else:
+        # Best-case: maximise the margin (safe logits high, unsafe logits low)
+        safe_logits = valid_mask_float * logits_u + invalid_mask_float * (-1e9)
+        unsafe_logits = invalid_mask_float * logits_l + valid_mask_float * (-1e9)
+
+    # Compute LSE margin: tau * logsumexp(safe / tau) - tau * logsumexp(unsafe / tau)
+    lse_safe = tau * torch.logsumexp(safe_logits / tau, dim=1)
+    lse_unsafe = tau * torch.logsumexp(unsafe_logits / tau, dim=1)
+
+    margin_surrogate = lse_safe - lse_unsafe
+
+    return margin_surrogate.mean()

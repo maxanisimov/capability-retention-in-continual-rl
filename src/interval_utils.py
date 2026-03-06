@@ -98,7 +98,7 @@ def _get_min_acc(
     
     if multi_label:
         if soft:
-            acc = verify.bound_multi_label_soft_accuracy(logits, y, T=SOFT_ACC_TEMP, lower=lower)
+            acc = verify.bound_multi_label_lse_margin(logits, y, T=SOFT_ACC_TEMP, lower=lower)
         else:
             acc = verify.bound_multi_label_accuracy(logits, y, lower=lower)
     else:
