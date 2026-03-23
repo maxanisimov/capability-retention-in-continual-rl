@@ -189,6 +189,8 @@ figures/
 
 # Others
 archive/
+outputs/
+results/
 plots/
 tables/
 .DS_Store
