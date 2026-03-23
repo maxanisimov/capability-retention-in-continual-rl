@@ -21,6 +21,7 @@ class IntervalTrainer(BaseTrainer):
         n_certificate_samples=256,
         min_acc_increment=0.05,
         min_acc_limit=0.9,
+        T: float | None = None,
         paradigm: str = "TIL",
         domain_map_fn: Callable = None,
         seed: int = 42,
@@ -36,6 +37,9 @@ class IntervalTrainer(BaseTrainer):
         self.min_acc_limit = min_acc_limit
         self.bounds = []
         self.paradigm = paradigm
+        if T is None:
+            T = 10
+        rashomon_kwargs["soft_acc_temperature"] = T
         self.rashomon_kwargs = rashomon_kwargs
         self.final_certificates = []
         self.certificates = []
@@ -160,7 +164,7 @@ class IntervalTrainer(BaseTrainer):
         if not multi_label:
             task_acc = (model_class_preds == y).float().mean()
         else:
-            task_acc = float(numpy.mean([pred in y[i] for i, pred in enumerate(model_class_preds)]))
+            task_acc = float(numpy.mean([y[i][pred].item() > 0 for i, pred in enumerate(model_class_preds)]))
         
         if isinstance(self.model[-1], utils.InContextHead):
             model = self.model[:-1]
@@ -195,7 +199,7 @@ class IntervalTrainer(BaseTrainer):
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
             param_mask=param_mask,
             multi_label=multi_label,
-            **self.rashomon_kwargs,
+            **{**self.rashomon_kwargs, **kwargs},
         )
         self.bounds = bounded_models
         self.certificates = certificates

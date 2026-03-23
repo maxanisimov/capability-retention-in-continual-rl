@@ -141,14 +141,15 @@ def bound_soft_accuracy(
 
 
 def bound_multi_label_accuracy(
-    logits: IntervalTensor, targets: torch.Tensor, *, lower: bool = True
+    logits: IntervalTensor, targets: torch.Tensor, *, lower: bool = True,
+    aggregation: str = 'min'
 ) -> torch.Tensor:
     """
     Compute a bound on the accuracy of a model for multi-label problems.
 
     For the lower bound (worst-case), a sample is certified correct when the
     best valid action's lower-bound logit exceeds every invalid action's
-    upper-bound logit, i.e.::
+    upper-bound logit, i.e.:
 
         max_{k ∈ valid} logits_l[k]  >  max_{j ∉ valid} logits_u[j]
 
@@ -158,32 +159,23 @@ def bound_multi_label_accuracy(
 
     Args:
         logits: IntervalTensor containing logit bounds
-        targets: Tensor where each row contains valid class indices for that sample.
-                Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
+        targets: Multi-hot tensor of shape (batch_size, n_classes) where 1 indicates
+                a valid action and 0 indicates an invalid action.
         lower: Whether to compute lower bound (True) or upper bound (False)
+        aggregation: Method to aggregate per-sample correctness into a single bound.
 
     Returns:
-        Accuracy bound tensor
+        Aggregated accuracy bound tensor
     """
     logits_l, logits_u = logits
-    batch_size, n_classes = logits_l.shape
 
-    # Build a boolean mask of valid actions: (batch_size, n_classes)
-    valid_mask = torch.zeros(batch_size, n_classes, dtype=torch.bool, device=targets.device)
-    for col_idx in range(targets.shape[1]):
-        col = targets[:, col_idx]
-        col_valid = col != -1
-        # Scatter True into valid_mask for valid action indices
-        indices = col.clamp(min=0)
-        valid_mask[torch.arange(batch_size, device=targets.device)[col_valid], indices[col_valid]] = True
-
+    valid_mask = targets.bool()
     invalid_mask = ~valid_mask
 
     if lower:
         # Worst-case: valid logits at their minimum, invalid logits at their maximum.
         # Best valid logit lower bound vs worst invalid logit upper bound.
         NEG_INF = torch.tensor(float('-inf'), device=logits_l.device)
-        POS_INF = torch.tensor(float('inf'), device=logits_l.device)
 
         best_valid_lower = logits_l.masked_fill(~valid_mask, NEG_INF).max(dim=1).values
         worst_invalid_upper = logits_u.masked_fill(~invalid_mask, NEG_INF).max(dim=1).values
@@ -201,41 +193,38 @@ def bound_multi_label_accuracy(
         no_invalid = (~invalid_mask.any(dim=1))
         correct = (best_valid_upper > worst_invalid_lower) | no_invalid
 
-    return correct.float().mean()
+    if aggregation == 'min':
+        return correct.float().min()
+    elif aggregation == 'mean':
+        return correct.float().mean()
+    else:
+        raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
 
 def bound_multi_label_soft_accuracy(
-    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True
+    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True, aggregation: str = 'min'
 ) -> torch.Tensor:
     """
     Compute a bound on the soft accuracy of a model for multi-label problems.
 
-    Soft accuracy is defined as the total probability mass on valid actions.
+    Soft accuracy is defined as the total softmax mass on valid actions.
     For a sound lower bound we construct worst-case logits: lower bounds for
     valid actions and upper bounds for invalid actions (minimising the mass on
     valid classes).
 
     Args:
         logits: IntervalTensor containing logit bounds
-        targets: Tensor where each row contains valid class indices for that sample.
-                Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
-        T: Temperature parameter for softmax
+        targets: Multi-hot tensor of shape (batch_size, n_classes) where 1 indicates
+                a valid action and 0 indicates an invalid action.
+        T: Temperature parameter for softmax (as T approaches infinity, soft accuracy approaches hard accuracy)
         lower: Whether to compute lower bound (True) or upper bound (False)
-
+        aggregation: Method to aggregate per-sample correctness into a single bound.
     Returns:
         Soft accuracy bound tensor
     """
     logits_l, logits_u = logits
-    batch_size, n_classes = logits_l.shape
 
-    # Build a boolean mask of valid actions: (batch_size, n_classes)
-    valid_mask = torch.zeros(batch_size, n_classes, dtype=torch.bool, device=targets.device)
-    for col_idx in range(targets.shape[1]):
-        col = targets[:, col_idx]
-        col_valid = col != -1
-        indices = col.clamp(min=0)
-        valid_mask[torch.arange(batch_size, device=targets.device)[col_valid], indices[col_valid]] = True
-
+    valid_mask = targets.bool()
     valid_mask_float = valid_mask.float()
 
     if lower:
@@ -251,65 +240,9 @@ def bound_multi_label_soft_accuracy(
     # Sum probability mass on valid actions
     correct_probs = (probabilities * valid_mask_float).sum(dim=1)
 
-    return correct_probs.mean()
-
-def bound_multi_label_lse_margin(
-    logits: IntervalTensor, targets: torch.Tensor, *, T: float = 10, lower: bool = True
-) -> torch.Tensor:
-    """
-    Compute a bound on the LSE margin surrogate for multi-label safety.
-
-    The LSE margin surrogate is defined as:
-        phi_tau = tau * log(sum_{safe} exp(z_a / tau)) - tau * log(sum_{unsafe} exp(z_a / tau))
-
-    This approximates the true margin:
-        m = max_{safe} z_a - max_{unsafe} z_a
-
-    with a controllable gap that vanishes as tau -> 0. Safety (phi^safe = 1)
-    is guaranteed when phi_tau > tau * log(N - K).
-
-    For a sound lower bound on the surrogate, we construct worst-case logits:
-    lower bounds for safe actions and upper bounds for unsafe actions.
-
-    Args:
-        logits: IntervalTensor containing logit bounds
-        targets: Tensor where each row contains valid class indices for that sample.
-                 Should be padded with -1 for variable length. Shape: (batch_size, max_labels)
-        T: Temperature parameter. Higher values give tighter approximation
-             of the true margin but sharper gradients.
-        lower: Whether to compute lower bound (True) or upper bound (False)
-
-    Returns:
-        LSE margin surrogate bound tensor (per-sample mean)
-    """
-    logits_l, logits_u = logits
-    batch_size, n_classes = logits_l.shape
-    tau = 1 / T
-
-    # Build a boolean mask of valid (safe) actions: (batch_size, n_classes)
-    valid_mask = torch.zeros(batch_size, n_classes, dtype=torch.bool, device=targets.device)
-    for col_idx in range(targets.shape[1]):
-        col = targets[:, col_idx]
-        col_valid = col != -1
-        indices = col.clamp(min=0)
-        valid_mask[torch.arange(batch_size, device=targets.device)[col_valid], indices[col_valid]] = True
-
-    valid_mask_float = valid_mask.float()
-    invalid_mask_float = 1.0 - valid_mask_float
-
-    if lower:
-        # Worst-case: minimise the margin (safe logits low, unsafe logits high)
-        safe_logits = valid_mask_float * logits_l + invalid_mask_float * (-1e9)
-        unsafe_logits = invalid_mask_float * logits_u + valid_mask_float * (-1e9)
+    if aggregation == 'min':
+        return correct_probs.min()
+    elif aggregation == 'mean':
+        return correct_probs.mean()
     else:
-        # Best-case: maximise the margin (safe logits high, unsafe logits low)
-        safe_logits = valid_mask_float * logits_u + invalid_mask_float * (-1e9)
-        unsafe_logits = invalid_mask_float * logits_l + valid_mask_float * (-1e9)
-
-    # Compute LSE margin: tau * logsumexp(safe / tau) - tau * logsumexp(unsafe / tau)
-    lse_safe = tau * torch.logsumexp(safe_logits / tau, dim=1)
-    lse_unsafe = tau * torch.logsumexp(unsafe_logits / tau, dim=1)
-
-    margin_surrogate = lse_safe - lse_unsafe
-
-    return margin_surrogate.mean()
+        raise ValueError(f"Unsupported aggregation method: {aggregation}")

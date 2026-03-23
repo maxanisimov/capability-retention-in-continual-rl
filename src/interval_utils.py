@@ -75,35 +75,43 @@ def _get_min_acc(
     lower: bool = True,
     context_mask: torch.Tensor | None = None,
     multi_label: bool = False,
+    soft_acc_temperature: float = SOFT_ACC_TEMP,
+    aggregation: str = "mean",
 ) -> torch.Tensor:
     """
     Compute the minimum accuracy of the model on the given data using IBP.
-    
+
     Args:
         bounded_model: The interval-bounded model
         X: Input data tensor
-        y: Target labels. For multi-label case, should be a tensor where each row 
-           contains valid class indices (padded with -1 for variable length)
+        y: Target labels. For multi-label case, should be a multi-hot tensor of shape
+           (N, n_classes) with 1 for valid actions and 0 otherwise
         soft: Whether to use soft accuracy
         lower: Whether to compute lower bound (True) or upper bound (False)
         context_mask: Optional context mask
         multi_label: If True, treats y as containing multiple valid labels per sample
-    
+        soft_acc_temperature: Temperature for softmax in soft accuracy computation
+        aggregation: Aggregation method for multi-label accuracy ('mean' or 'min')
+
     Returns:
         Accuracy bound tensor
     """
     logits = IntervalTensor(*bounded_model.bound_forward(X, X))
     if context_mask is not None:
         logits = logits * context_mask
-    
+
     if multi_label:
         if soft:
-            acc = verify.bound_multi_label_lse_margin(logits, y, T=SOFT_ACC_TEMP, lower=lower)
+            acc = verify.bound_multi_label_soft_accuracy(
+                logits, y, T=soft_acc_temperature, lower=lower, aggregation=aggregation,
+            )
         else:
-            acc = verify.bound_multi_label_accuracy(logits, y, lower=lower)
+            acc = verify.bound_multi_label_accuracy(
+                logits, y, lower=lower, aggregation=aggregation,
+            )
     else:
         if soft:
-            acc = verify.bound_soft_accuracy(logits, y, T=SOFT_ACC_TEMP, lower=lower)
+            acc = verify.bound_soft_accuracy(logits, y, T=soft_acc_temperature, lower=lower)
         else:
             acc = verify.bound_accuracy(logits, y, lower=lower)
     return acc
@@ -157,6 +165,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         domain_map_fn: Callable | None = None,
         task_labels: list[tuple[int, int]] = None,
         multi_label: bool = False,
+        soft_acc_temperature: float = SOFT_ACC_TEMP,
+        aggregation: str = "mean",
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -173,6 +183,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn
         self.multi_label = multi_label
+        self.soft_acc_temperature = soft_acc_temperature
+        self.aggregation = aggregation
         self.penalty_updater = (
             cooper.penalty_coefficients.MultiplicativePenaltyCoefficientUpdater(
                 growth_factor=1.01, violation_tolerance=0.05
@@ -258,6 +270,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 soft=True,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
+                soft_acc_temperature=self.soft_acc_temperature,
+                aggregation=self.aggregation,
             )
             min_acc = _get_min_acc(
                 self.bounded_model,
@@ -266,6 +280,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 soft=False,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
+                aggregation=self.aggregation,
             )
 
             defect = self.min_acc_limits[i] - soft_min_acc
@@ -390,6 +405,8 @@ def compute_rashomon_set(
     param_mask: Iterable | None = None,
     task_labels: list[tuple[float]] = None,
     multi_label: bool = False,
+    soft_acc_temperature: float = SOFT_ACC_TEMP,
+    aggregation: str = "mean",
 ) -> tuple[list[IntervalBoundedModel], list[float]]:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -518,8 +535,9 @@ def compute_rashomon_set(
     # Check initial constraint satisfaction feasibility
     with torch.no_grad():
         initial_defect = min_acc_limit - _get_min_acc(
-            bounded_model, X_cert, y_cert, min_acc_limit, context_mask=context_mask,
-            multi_label=multi_label
+            bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask,
+            multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
+            aggregation=aggregation,
         )
     if torch.isnan(initial_defect):
         raise ValueError("Initial bmodel results in NaN defect for the constraint.")
@@ -533,7 +551,7 @@ def compute_rashomon_set(
         )
         outer_min_acc = _get_min_acc(
             outer_bbox, X_cert, y_cert, soft=False, context_mask=context_mask,
-            multi_label=multi_label
+            multi_label=multi_label, aggregation=aggregation,
         )
         if outer_min_acc > min_acc_limit:
             print(
@@ -554,6 +572,8 @@ def compute_rashomon_set(
         domain_map_fn=domain_map_fn,
         task_labels=task_labels,
         multi_label=multi_label,
+        soft_acc_temperature=soft_acc_temperature,
+        aggregation=aggregation,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -585,8 +605,8 @@ def compute_rashomon_set(
         "Initial bbox: ",
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
-        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label):.2f}",
+        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}, ",
+        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}",
     )
     primal_lr_scheduler, dual_lr_scheduler = get_lr_schedulers(
         primal_optimizer, dual_optimizer, cmp
@@ -630,8 +650,8 @@ def compute_rashomon_set(
         "Final bbox: ",
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
-        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label):.2f}",
+        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}, ",
+        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}",
     )
 
     # Remove the hooks created for masking
@@ -664,7 +684,8 @@ def compute_rashomon_set(
                     context_mask, bounded_model = update_context_mask_with_bounded_model(task, context_mask, bounded_model)
 
                 cert = _get_min_acc(
-                    m, inputs, targets, soft=False, context_mask=context_mask, multi_label=multi_label
+                    m, inputs, targets, soft=False, context_mask=context_mask, multi_label=multi_label,
+                    aggregation=aggregation,
                 ).item()
                 certs.append(cert)
             multi_task_certs.append(certs)
@@ -672,7 +693,8 @@ def compute_rashomon_set(
     for m in checkpoint_models:
         checkpoint_certs.append(
             _get_min_acc(
-                m, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label
+                m, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label,
+                aggregation=aggregation,
             ).item()
         )
 
