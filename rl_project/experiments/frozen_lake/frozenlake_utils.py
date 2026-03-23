@@ -442,8 +442,8 @@ def train_safety_actor(
     Args:
         base_actor: The actor to clone and fine-tune.
         dataset: ``TensorDataset(states, actions)``.  For multi-label datasets
-            the actions tensor has shape ``(N, max_actions)`` and is padded
-            with ``-1``.
+            the actions tensor is a multi-hot float tensor of shape
+            ``(N, n_actions)`` with 1 for valid actions and 0 otherwise.
         multi_label: Whether the dataset contains multiple valid actions per
             state.
         lr: Learning rate.
@@ -481,21 +481,10 @@ def train_safety_actor(
             logits = safety_actor(batch_states)
 
             if multi_label:
-                valid_mask = batch_actions != -1
-                target_dist = torch.zeros_like(logits)
-                for i in range(batch_actions.shape[1]):
-                    col = batch_actions[:, i].clamp(min=0).unsqueeze(1)
-                    col_valid = valid_mask[:, i].float().unsqueeze(1)
-                    target_dist.scatter_(1, col, col_valid)
-                target_dist = target_dist / target_dist.sum(dim=1, keepdim=True).clamp(min=1e-8)
+                target_dist = batch_actions / batch_actions.sum(dim=1, keepdim=True).clamp(min=1e-8)
 
                 if use_margin_loss:
-                    # Build a (B, C) boolean mask of valid actions
-                    valid_action_mask = torch.zeros_like(logits, dtype=torch.bool)
-                    for i in range(batch_actions.shape[1]):
-                        col = batch_actions[:, i].clamp(min=0).unsqueeze(1)
-                        col_valid = valid_mask[:, i].unsqueeze(1)
-                        valid_action_mask.scatter_(1, col, col_valid)
+                    valid_action_mask = batch_actions.bool()
                     loss = _multi_label_margin_cross_entropy(
                         logits, target_dist, valid_action_mask, margin=margin,
                     )
@@ -504,8 +493,7 @@ def train_safety_actor(
                     loss = -(target_dist * log_probs).sum(dim=1).mean()
 
                 predicted = logits.argmax(dim=1)
-                pred_exp = predicted.unsqueeze(1).expand_as(batch_actions)
-                epoch_correct += ((pred_exp == batch_actions) & valid_mask).any(dim=1).sum().item()
+                epoch_correct += batch_actions[torch.arange(batch_actions.size(0)), predicted].sum().item()
             else:
                 if use_margin_loss:
                     loss = margin_cross_entropy(logits, batch_actions, margin=margin)
@@ -535,9 +523,7 @@ def train_safety_actor(
         all_logits = safety_actor(all_states)
         all_preds = all_logits.argmax(dim=1)
         if multi_label:
-            vm = all_actions != -1
-            pe = all_preds.unsqueeze(1).expand_as(all_actions)
-            final_acc = ((pe == all_actions) & vm).any(dim=1).float().mean().item()
+            final_acc = all_actions[torch.arange(all_actions.size(0)), all_preds].float().mean().item()
         else:
             final_acc = (all_preds == all_actions).float().mean().item()
 
@@ -604,45 +590,50 @@ def evaluate_policy(
 # Safety-certificate verification
 # =============================================================================
 
-def verify_safety_accuracy(
+def verify_safety_posthoc(
     actor: torch.nn.Module,
     dataset: torch.utils.data.TensorDataset,
     multi_label: bool,
-    min_acc_limit: float = 1.0,
+    min_safety_limit: float = 1.0,
     env_map: list[str] | None = None,
+    aggregation: str = 'min', # 'min' or 'mean'
     verbose: bool = True,
 ) -> tuple[float, bool]:
-    """Check the SafeAdapt actor's accuracy on the safety dataset.
+    """Check the SafeAdapt actor's safety on the safety dataset.
 
     Args:
         actor: The trained SafeAdapt actor.
         dataset: Safety ``TensorDataset(states, actions)``.
         multi_label: Whether *dataset* uses multi-label targets.
-        min_acc_limit: Required accuracy threshold.
+        min_safety_limit: Required safety threshold.
         env_map: Used only for printing grid positions of failures.
+        aggregation: Method to aggregate the safety - 'min' implies taking the min acorss states, 'mean' implies taking the mean across states.
         verbose: Print diagnostics.
 
     Returns:
-        ``(accuracy, passed)`` where *passed* is ``accuracy >= min_acc_limit``.
+        ``(accuracy, passed)`` where *passed* is ``accuracy >= min_safety_limit``.
     """
     with torch.no_grad():
         preds = actor(dataset.tensors[0]).argmax(dim=1)
 
     if multi_label:
-        valid_actions = dataset.tensors[1]
-        valid_mask = valid_actions != -1
-        preds_exp = preds.unsqueeze(1).expand_as(valid_actions)
-        correct = ((preds_exp == valid_actions) & valid_mask).any(dim=1)
-        accuracy = correct.float().mean().item()
+        valid_mask = dataset.tensors[1].bool()  # multi-hot (N, n_actions)
+        correct = valid_mask[torch.arange(len(preds)), preds]
+        safe_per_state = correct.float()
     else:
-        accuracy = (preds == dataset.tensors[1]).float().mean().item()
+        safe_per_state = (preds == dataset.tensors[1]).float()
+        
+    if aggregation == 'min':
+        accuracy = safe_per_state.min().item()
+    else:
+        accuracy = safe_per_state.mean().item()
 
-    passed = accuracy >= min_acc_limit
+    passed = safe_per_state >= min_safety_limit
 
     if verbose:
         status = "PASSED" if passed else "FAILED"
         print(f"\nSafety-certificate verification: {status}")
-        print(f"  Accuracy: {accuracy:.4f}  (required >= {min_acc_limit:.4f})")
+        print(f"  Accuracy: {accuracy:.4f}  (required >= {min_safety_limit:.4f})")
 
     if verbose and not passed and env_map is not None:
         nrow, ncol = len(env_map), len(env_map[0])
@@ -656,7 +647,7 @@ def verify_safety_accuracy(
             for i in wrong:
                 r, c = _pos(dataset.tensors[0][i])
                 p = preds[i].item()
-                va = valid_actions[i][valid_actions[i] != -1].tolist()
+                va = torch.where(valid_mask[i])[0].tolist()
                 print(f"  ({r},{c}): predicted {p}, valid {va}")
         else:
             wrong = torch.where(preds != dataset.tensors[1])[0]

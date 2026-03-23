@@ -28,11 +28,16 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     # Early stopping: checked at every periodic evaluation (every 10×rollout_steps steps).
-    # Triggers when BOTH non-None thresholds are simultaneously satisfied.
+    # Triggers when ALL non-None thresholds are simultaneously satisfied.
     early_stop: bool = False
     early_stop_min_steps: int = 0             # do not check before this many steps
     early_stop_reward_threshold: float | None = None   # stop if mean_reward >= threshold
     early_stop_failure_rate_threshold: float | None = None  # stop if failure_rate <= threshold
+    # Optional deterministic-performance criterion for early stopping.
+    # Useful when an environment has a known "max achievable total reward" and you
+    # want to stop as soon as the deterministic actor reaches it.
+    early_stop_deterministic_total_reward_threshold: float | None = None
+    early_stop_deterministic_eval_episodes: int = 1
 
 def make_actor_critic(
     obs_dim: int, n_actions: int, 
@@ -231,6 +236,14 @@ def ppo_train(
     # env_kwargs = cfg.env_kwargs if cfg.env_kwargs is not None else {}
     # env = gym.make(cfg.env_id, **env_kwargs)
     set_seed(env, cfg.seed)
+    if (
+        cfg.early_stop_deterministic_total_reward_threshold is not None
+        and cfg.early_stop_deterministic_eval_episodes <= 0
+    ):
+        raise ValueError(
+            "early_stop_deterministic_eval_episodes must be > 0 when "
+            "early_stop_deterministic_total_reward_threshold is set.",
+        )
 
     # Determine action space type
     continuous_actions = isinstance(env.action_space, gym.spaces.Box)
@@ -448,12 +461,35 @@ def ppo_train(
                             param.data.clamp_(lb, ub)
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
-            mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=10, log_std=log_std) # type: ignore
-            # Reset the environment after evaluation since the last episode ended
+            mean_r, std_r, failure_rate = evaluate(
+                env=env,
+                actor=actor,
+                device=device,
+                episodes=10,
+                log_std=log_std,
+            ) # type: ignore
+            deterministic_total_reward = None
+            if cfg.early_stop_deterministic_total_reward_threshold is not None:
+                deterministic_total_reward, _, _ = evaluate(
+                    env=env,
+                    actor=actor,
+                    device=device,
+                    episodes=cfg.early_stop_deterministic_eval_episodes,
+                    deterministic=True,
+                    log_std=log_std,
+                ) # type: ignore
+
+            # Reset the environment after evaluation since evaluation episodes ended.
             obs, _ = env.reset()
             elapsed = time.time() - start_time
             log_msg = f"Steps={global_step} | meanR={mean_r:.1f} +/- {std_r:.1f} | elapsed={elapsed:.1f}s"
             log_msg += f" | failure_rate={failure_rate:.2f}"
+            if deterministic_total_reward is not None:
+                log_msg += (
+                    " | det_meanR="
+                    f"{deterministic_total_reward:.2f}"
+                    f" ({cfg.early_stop_deterministic_eval_episodes} ep)"
+                )
             if use_pgd:
                 log_msg += f" | PGD projections={pgd_projections}"
             print(log_msg)
@@ -468,11 +504,23 @@ def ppo_train(
                     cfg.early_stop_failure_rate_threshold is None
                     or failure_rate <= cfg.early_stop_failure_rate_threshold
                 )
-                if reward_ok and failure_ok:
+                det_reward_ok = (
+                    cfg.early_stop_deterministic_total_reward_threshold is None
+                    or (
+                        deterministic_total_reward is not None
+                        and deterministic_total_reward
+                        >= cfg.early_stop_deterministic_total_reward_threshold
+                    )
+                )
+                if reward_ok and failure_ok and det_reward_ok:
                     print(
                         f"  [Early stop] step={global_step} | "
                         f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
-                        f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold})"
+                        f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
+                        "det_meanR="
+                        f"{(deterministic_total_reward if deterministic_total_reward is not None else float('nan')):.2f} "
+                        f"(threshold={cfg.early_stop_deterministic_total_reward_threshold}, "
+                        f"episodes={cfg.early_stop_deterministic_eval_episodes})"
                     )
                     break
 

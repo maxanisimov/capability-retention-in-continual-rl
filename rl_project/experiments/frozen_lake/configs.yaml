@@ -1,0 +1,139 @@
+standard_4x4:
+  env1_map: [
+    "SFFF", 
+    "FHFH", 
+    "FFFH", 
+    "HFFG"
+  ]
+  env2_map: [
+    "SHFF", 
+    "FFFH", 
+    "FHFF", 
+    "HFFG"
+  ]
+  is_slippery: false
+  max_steps: 100 # max number of steps per episode in the environment
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Classic 4x4 FrozenLake. Standard hole positions shift between tasks."
+
+standard_4x4_v2:
+  env1_map: [
+    "SFFF", 
+    "FHFH", 
+    "FFFH", 
+    "HFFG"
+  ]
+  env2_map: [
+    "SFFF", 
+    "HFFH", 
+    "FHFF", 
+    "HFFG"
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Classic 4x4 FrozenLake. Standard hole positions shift between tasks."
+
+standard_4x4_v3:
+  env1_map: [
+    "SFFF", 
+    "FHFH", 
+    "FFFH", 
+    "HFFG"
+  ]
+  env2_map: [
+    "SFFF", 
+    "FHHF", 
+    "FHHF", 
+    "FFFG"
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Classic 4x4 FrozenLake with big hole in the centre."
+
+standard_4x4_v4:
+  env1_map: [
+    "SFFF", 
+    "FHFH", 
+    "FFFH", 
+    "HFFG"
+  ]
+  env2_map: [
+    "SFFH", 
+    "FHFF", 
+    "FFHF", 
+    "HFFG"
+  ]
+  is_slippery: false
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Classic 4x4 FrozenLake with holes in the corners and on the diagonal."
+
+
+bottleneck_4x4:
+  env1_map: ["SFFF", "FHFF", "FHFF", "FFFG"]
+  env2_map: ["SFFH", "FFHF", "FFFF", "FFFG"]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Holes create bottleneck passages, testing adaptation in constrained spaces."
+
+diagonal_4x4:
+  env1_map: [
+    "SFHH", 
+    "FFFH", 
+    "HFFF",
+    "HFFG"
+  ]
+  env2_map: [
+    "SFFF", 
+    "FHFF", 
+    "FFHF", 
+    "FFFG"
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
+
+diagonal_8x8:
+  env1_map: [
+    "SFHHHHHH",
+    "FFFHHHHH", 
+    "HFFFHHHH", 
+    "HHFFFHHH",
+    "HHHFFFHH",
+    "HHHHFFFH",
+    "HHHHHFFF",
+    "HHHHHHFG",
+  ]
+  env2_map: [
+    "SFFFFFFF",
+    "FHFFFFFF", 
+    "FFHFFFFF", 
+    "FFFHFFFF",
+    "FFFFHFFF",
+    "FFFFFHFF",
+    "FFFFFFHF",
+    "FFFFFFFG",
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
+
+standard_8x8:
+  env1_map: ["SFFFFFFF", "FFFFFFFF", "FFFHFFFF", "HHHHFFFF", "FFFHFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFFFFG"]
+  env2_map: ["SFFFFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFHHHH", "FFFFFFHF", "FFFFFFFF", "FFFFFHFF", "FFFFFFFG"]
+  is_slippery: false
+  max_steps: 200
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Larger 8x8 grid testing scalability to bigger state spaces."

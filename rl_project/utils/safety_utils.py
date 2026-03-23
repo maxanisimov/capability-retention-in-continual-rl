@@ -18,7 +18,8 @@ def generate_sufficient_safe_state_action_dataset(
         unsafe_state_action_pairs: list of (state, action) tuples that are unsafe.
         env: The environment, needed to determine the action space for computing the complement set of safe actions.
     Returns:
-        A torch dataset containing states and their corresponding sets of safe actions (padded with -1 for variable length)
+        A torch dataset containing states and their corresponding multi-hot safe action masks
+        (1 for valid actions, 0 for invalid actions).
     """
     all_actions = set(range(env.action_space.n)) # type: ignore
     # Group unsafe actions by state
@@ -35,15 +36,13 @@ def generate_sufficient_safe_state_action_dataset(
     }
     sufficient_safe_states = torch.FloatTensor(list(safe_actions_by_state.keys()))
 
-    max_actions = env.action_space.n # type: ignore
-    padded_safe_actions = []
-    for state_key, safe_actions in safe_actions_by_state.items():
-        padded_actions = list(safe_actions) + [-1] * (max_actions - len(safe_actions))
-        padded_safe_actions.append(padded_actions)
-    sufficient_safe_actions = torch.LongTensor([list(actions) for actions in padded_safe_actions])
-    sufficient_safe_state_action_torch_dataset = torch.utils.data.TensorDataset(sufficient_safe_states, sufficient_safe_actions)
+    n_actions = env.action_space.n # type: ignore
+    multi_hot = torch.zeros(len(safe_actions_by_state), n_actions)
+    for i, safe_actions in enumerate(safe_actions_by_state.values()):
+        for a in safe_actions:
+            multi_hot[i, a] = 1.0
 
-    return sufficient_safe_state_action_torch_dataset
+    return torch.utils.data.TensorDataset(sufficient_safe_states, multi_hot)
 
 
 def get_unique_safe_state_action_pairs(training_data: dict[str, np.ndarray | torch.Tensor]) -> torch.utils.data.TensorDataset:
@@ -230,6 +229,46 @@ class SafetyCriticNetwork(nn.Module):
     def forward(self, s: torch.Tensor) -> torch.Tensor:
         """Returns Q_safe values of shape (batch, n_actions)."""
         return self.net(s)
+
+
+class ContinuousSafetyCriticNetwork(nn.Module):
+    """
+    Safety Q-network for continuous action spaces.
+
+    Maps (state, action) -> scalar Q_safe(s, a).
+    Input is the concatenation of state and action vectors.
+
+    Q_safe(s, a) estimates the discounted cumulative probability that the agent
+    will reach an unsafe state in the future, starting from (s, a).
+    Higher values = more dangerous.
+    """
+
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 256,
+                 n_hidden: int = 2):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        layers: list[nn.Module] = []
+        in_dim = obs_dim + action_dim
+        for _ in range(n_hidden):
+            layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU(),
+            ])
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, 1))  # single scalar output
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            s: (batch, obs_dim) state tensor
+            a: (batch, action_dim) action tensor
+        Returns:
+            Q_safe logit of shape (batch,)
+        """
+        sa = torch.cat([s, a], dim=-1)
+        return self.net(sa).squeeze(-1)
 
 
 class SafetyReplayBuffer:
@@ -504,6 +543,181 @@ def _train_supervised_safety_critic(
     return safety_critic, info
 
 
+def _train_supervised_continuous_safety_critic(
+    training_data: dict[str, np.ndarray],
+    action_dim: int,
+    obs_dim: int,
+    cfg: SafetyCriticConfig,
+    verbose: bool = True,
+) -> tuple["ContinuousSafetyCritic", dict]:
+    """
+    Supervised training of a continuous-action safety critic (gamma_safe == 0).
+
+    When gamma_safe = 0 the target is just the immediate cost c(s,a), so we
+    train with BCE on binary labels.  The network takes (s, a) and outputs
+    a single logit for P(unsafe | s, a).
+
+    Args:
+        training_data: dict with 'states', 'actions', 'safe'
+        action_dim: continuous action dimensionality
+        obs_dim: observation dimension
+        cfg: training configuration
+        verbose: print progress
+
+    Returns:
+        safety_critic: ContinuousSafetyCritic, info dict
+    """
+    import time
+
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    device = torch.device(cfg.device)
+
+    # ── Prepare data ──
+    states = torch.tensor(
+        np.array(training_data['states'], dtype=np.float32), device=device
+    )
+    actions = torch.tensor(
+        np.array(training_data['actions'], dtype=np.float32), device=device
+    )
+    costs = 1.0 - torch.tensor(
+        np.array(training_data['safe'], dtype=np.float32), device=device
+    )  # 1 = unsafe, 0 = safe
+
+    N = states.shape[0]
+    n_unsafe = int(costs.sum().item())
+
+    if verbose:
+        print(f"Training supervised continuous safety critic (gamma_safe=0, one-step):")
+        print(f"  {N} transitions, {n_unsafe} unsafe ({n_unsafe/N:.2%})")
+        print(f"  obs_dim={obs_dim}, action_dim={action_dim}")
+        print(f"  epochs={cfg.epochs}, patience={cfg.patience}, batch_size={cfg.batch_size}")
+
+    # ── Train / Val split ──
+    perm = torch.randperm(N, device=device)
+    n_val = max(1, int(N * cfg.val_fraction))
+    n_train = N - n_val
+
+    train_idx, val_idx = perm[:n_train], perm[n_train:]
+    X_train, a_train, y_train = states[train_idx], actions[train_idx], costs[train_idx]
+    X_val, a_val, y_val = states[val_idx], actions[val_idx], costs[val_idx]
+
+    if verbose:
+        print(f"  Split: train={n_train}, val={n_val}")
+
+    # ── Handle class imbalance ──
+    n_pos = y_train.sum().clamp(min=1)  # unsafe count
+    n_neg = (n_train - n_pos).clamp(min=1)
+    pos_weight = (n_neg / n_pos).clamp(max=10.0)
+
+    # ── Build model ──
+    model = ContinuousSafetyCriticNetwork(
+        obs_dim=obs_dim, action_dim=action_dim,
+        hidden_dim=cfg.hidden_dim, n_hidden=cfg.n_hidden,
+    ).to(device)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
+
+    # BCE on the scalar logit
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.unsqueeze(0))
+
+    # ── Training loop ──
+    best_val_loss = float('inf')
+    best_state = None
+    patience_counter = 0
+    train_losses: list[float] = []
+    val_losses: list[float] = []
+    start_time = time.time()
+
+    train_dataset = torch.utils.data.TensorDataset(X_train, a_train, y_train)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=False,
+    )
+
+    for epoch in range(cfg.epochs):
+        model.train()
+        epoch_loss = 0.0
+        n_batches = 0
+        for batch_s, batch_a, batch_y in train_loader:
+            logits = model(batch_s, batch_a)          # (B,)
+            loss = criterion(logits, batch_y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+            n_batches += 1
+        scheduler.step()
+        train_loss = epoch_loss / max(n_batches, 1)
+
+        # ── Validation ──
+        model.eval()
+        with torch.no_grad():
+            val_logits = model(X_val, a_val)
+            val_loss = criterion(val_logits, y_val).item()
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        if verbose and (epoch + 1) % 10 == 0:
+            elapsed = time.time() - start_time
+            print(f"  Epoch {epoch+1}/{cfg.epochs} | "
+                  f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | {elapsed:.1f}s")
+
+        if patience_counter >= cfg.patience:
+            if verbose:
+                print(f"  Early stopping at epoch {epoch+1}")
+            break
+
+    # Load best model
+    assert best_state is not None
+    model.load_state_dict(best_state)
+    model.to(device)
+    model.eval()
+
+    # ── Final statistics ──
+    if verbose:
+        with torch.no_grad():
+            all_q = torch.sigmoid(model(states, actions)).cpu()
+            safe_frac = (all_q < cfg.epsilon_safe).float().mean().item()
+            print(f"\nSupervised continuous safety critic trained.")
+            print(f"  Fraction of (s,a) pairs predicted safe: {safe_frac:.2%}")
+            print(f"  Mean Q_safe: {all_q.mean():.4f}")
+            print(f"  Max Q_safe:  {all_q.max():.4f}")
+
+    # ── Wrap ──
+    safety_critic = ContinuousSafetyCritic(
+        model=model,
+        action_dim=action_dim,
+        obs_dim=obs_dim,
+        gamma_safe=0.0,
+        epsilon_safe=cfg.epsilon_safe,
+        device=device,
+        use_sigmoid=True,
+    )
+
+    info = {
+        'losses': train_losses,
+        'val_losses': val_losses,
+        'n_transitions': N,
+        'gamma_safe': 0.0,
+        'epsilon_safe': cfg.epsilon_safe,
+        'best_epoch': len(train_losses) - patience_counter,
+        'training_mode': 'supervised_continuous',
+    }
+
+    return safety_critic, info
+
+
 def train_safety_critic(
     training_data: dict[str, np.ndarray],
     n_actions: int,
@@ -511,13 +725,18 @@ def train_safety_critic(
     actor: nn.Module | None = None,
     cfg: SafetyCriticConfig | None = None,
     verbose: bool = True,
-) -> tuple["SafetyCritic", dict]:
+    continuous: bool = False,
+) -> tuple["SafetyCritic | ContinuousSafetyCritic", dict]:
     """
     Train a safety critic from offline data.
 
-    Dispatches between two training modes:
-      - gamma_safe == 0: supervised learning (fast, no bootstrapping)
-      - gamma_safe > 0:  fitted Q-iteration with Bellman backups (SQRL-style)
+    Dispatches between training modes:
+      - continuous=True, gamma_safe == 0: supervised learning for continuous actions
+      - continuous=False, gamma_safe == 0: supervised learning for discrete actions
+      - continuous=False, gamma_safe > 0:  fitted Q-iteration (SQRL-style)
+
+    When continuous=True, ``n_actions`` is interpreted as ``action_dim``
+    (the dimensionality of the continuous action vector).
 
     The safety Q-function satisfies:
         Q_safe(s,a) = c(s,a) + (1 - c(s,a)) * gamma_safe * E_{a'~pi}[Q_safe(s', a')]
@@ -526,14 +745,15 @@ def train_safety_critic(
 
     Args:
         training_data: dict with keys 'states', 'actions', 'safe', 'terminated', 'truncated'
-        n_actions: number of discrete actions
+        n_actions: number of discrete actions, or action dimensionality if continuous
         obs_dim: observation dimension
         actor: the pre-trained policy (required when gamma_safe > 0, unused for gamma_safe == 0)
         cfg: training configuration (uses defaults if None)
         verbose: print training progress
+        continuous: if True, use continuous-action safety critic
 
     Returns:
-        safety_critic: trained SafetyCritic object
+        safety_critic: trained SafetyCritic or ContinuousSafetyCritic object
         info: dict with training metrics
     """
     import copy
@@ -541,6 +761,18 @@ def train_safety_critic(
 
     if cfg is None:
         cfg = SafetyCriticConfig()
+
+    # ── Dispatch: continuous actions ──
+    if continuous:
+        if cfg.gamma_safe == 0.0:
+            return _train_supervised_continuous_safety_critic(
+                training_data, action_dim=n_actions, obs_dim=obs_dim, cfg=cfg, verbose=verbose,
+            )
+        else:
+            raise NotImplementedError(
+                "Bellman-based training for continuous actions is not yet implemented. "
+                "Use gamma_safe=0.0 for the supervised path."
+            )
 
     # ── Dispatch: supervised fast-path when gamma_safe == 0 ──
     if cfg.gamma_safe == 0.0:
@@ -942,4 +1174,130 @@ class SafetyCritic:
             default_safe_action=checkpoint['default_safe_action'],
             device=device,
             use_sigmoid=checkpoint.get('use_sigmoid', False),
+        )
+
+
+class ContinuousSafetyCritic:
+    """
+    Safety critic for continuous action spaces.
+
+    Q_safe(s, a) estimates the probability that (s, a) leads to an unsafe
+    outcome.  Higher values = more dangerous.
+    An action is rejected when Q_safe(s, a) >= epsilon_safe.
+
+    Key methods:
+        predict_q_safe(states, actions) -> (batch,) failure probabilities
+        is_safe(state, action) -> bool
+    """
+
+    def __init__(
+        self,
+        model: ContinuousSafetyCriticNetwork,
+        action_dim: int,
+        obs_dim: int,
+        gamma_safe: float = 0.0,
+        epsilon_safe: float = 0.15,
+        device: torch.device | str = 'cpu',
+        use_sigmoid: bool = True,
+    ):
+        self.model = model
+        self.action_dim = action_dim
+        self.obs_dim = obs_dim
+        self.gamma_safe = gamma_safe
+        self.epsilon_safe = epsilon_safe
+        self.device = torch.device(device) if isinstance(device, str) else device
+        self.use_sigmoid = use_sigmoid
+        self.model.eval()
+
+    def predict_q_safe(
+        self,
+        states: torch.Tensor | np.ndarray,
+        actions: torch.Tensor | np.ndarray,
+    ) -> torch.Tensor:
+        """
+        Predict Q_safe(s, a) for continuous (state, action) pairs.
+
+        Args:
+            states: (batch, obs_dim) or (obs_dim,) state tensor/array
+            actions: (batch, action_dim) or (action_dim,) action tensor/array
+        Returns:
+            q_safe: (batch,) — estimated failure probabilities
+        """
+        if isinstance(states, np.ndarray):
+            states = torch.from_numpy(states).float()
+        if isinstance(actions, np.ndarray):
+            actions = torch.from_numpy(actions).float()
+        if states.dim() == 1:
+            states = states.unsqueeze(0)
+        if actions.dim() == 1:
+            actions = actions.unsqueeze(0)
+        states = states.to(self.device)
+        actions = actions.to(self.device)
+        with torch.no_grad():
+            q = self.model(states, actions)
+            if self.use_sigmoid:
+                q = torch.sigmoid(q)
+            return q
+
+    def is_safe(
+        self,
+        state: torch.Tensor | np.ndarray,
+        action: torch.Tensor | np.ndarray,
+        epsilon: float | None = None,
+    ) -> bool:
+        """Check if a single (state, action) pair is safe."""
+        if epsilon is None:
+            epsilon = self.epsilon_safe
+        q = self.predict_q_safe(state, action).item()
+        return q < epsilon
+
+    def summary(
+        self,
+        states: torch.Tensor | np.ndarray,
+        actions: torch.Tensor | np.ndarray,
+        epsilon: float | None = None,
+    ) -> dict:
+        """
+        Compute summary statistics over a set of (state, action) pairs.
+        """
+        if epsilon is None:
+            epsilon = self.epsilon_safe
+        q_safe = self.predict_q_safe(states, actions)
+        safe_mask = q_safe < epsilon
+
+        return {
+            'frac_safe': safe_mask.float().mean().item(),
+            'avg_q_safe': q_safe.mean().item(),
+            'max_q_safe': q_safe.max().item(),
+            'min_q_safe': q_safe.min().item(),
+        }
+
+    def state_dict(self) -> dict:
+        """Serialize for saving."""
+        return {
+            'model_state_dict': self.model.state_dict(),
+            'action_dim': self.action_dim,
+            'obs_dim': self.obs_dim,
+            'gamma_safe': self.gamma_safe,
+            'epsilon_safe': self.epsilon_safe,
+            'use_sigmoid': self.use_sigmoid,
+        }
+
+    @classmethod
+    def load(cls, checkpoint: dict, device: str = 'cpu') -> "ContinuousSafetyCritic":
+        """Load from checkpoint dict."""
+        model = ContinuousSafetyCriticNetwork(
+            obs_dim=checkpoint['obs_dim'],
+            action_dim=checkpoint['action_dim'],
+        )
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+        return cls(
+            model=model,
+            action_dim=checkpoint['action_dim'],
+            obs_dim=checkpoint['obs_dim'],
+            gamma_safe=checkpoint['gamma_safe'],
+            epsilon_safe=checkpoint['epsilon_safe'],
+            device=device,
+            use_sigmoid=checkpoint.get('use_sigmoid', True),
         )

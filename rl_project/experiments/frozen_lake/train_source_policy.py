@@ -46,10 +46,7 @@ from frozenlake_utils import (
 from rl_project.utils.ppo_utils import PPOConfig, ppo_train
 
 # ── constants ───────────────────────────────────────────────────────────────
-ACTION_NAMES = {0: "L", 1: "D", 2: "R", 3: "U"}
-ACTION_ARROWS = {0: "\u2190", 1: "\u2193", 2: "\u2192", 3: "\u2191"}  # ← ↓ → ↑
 N_ACTIONS = 4
-
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 def _set_seeds(seed: int) -> None:
@@ -188,22 +185,22 @@ def plot_policy_arrows(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train an omnisafe source policy for FrozenLake Task 1.")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--cfg", type=str, default="standard_4x4", help="Config key in demo_configs.yaml.")
+    parser.add_argument("--cfg", type=str, default="standard_4x4", help="Config key in configs.yaml.")
     parser.add_argument("--total-steps", type=int, default=500_000, help="Max PPO timesteps.")
     parser.add_argument("--hidden", type=int, default=64)
-    parser.add_argument("--output-dir", type=str, default=None, help="Where to save outputs (default: frozen_lake/outputs/<cfg>_seed<s>).")
+    parser.add_argument("--output-dir", type=str, default=None, help="Where to save outputs (default: outputs/<cfg>/<seed>/source).")
     args = parser.parse_args()
 
     # ── load config ──
-    with open(_SCRIPT_DIR / "demo_configs.yaml") as f:
+    with open(_SCRIPT_DIR / "configs.yaml") as f:
         all_cfgs = yaml.safe_load(f)
     if args.cfg not in all_cfgs:
-        raise ValueError(f"Config '{args.cfg}' not in demo_configs.yaml. Available: {list(all_cfgs)}")
+        raise ValueError(f"Config '{args.cfg}' not in configs.yaml. Available: {list(all_cfgs)}")
     cfg = all_cfgs[args.cfg]
     env_map: list[str] = cfg["env1_map"]
     is_slippery: bool = bool(cfg.get("is_slippery", False))
 
-    out_dir = Path(args.output_dir) if args.output_dir else _SCRIPT_DIR / "outputs" / f"{args.cfg}_seed{args.seed}"
+    out_dir = Path(args.output_dir) if args.output_dir else _SCRIPT_DIR / "outputs" / args.cfg / str(args.seed) / "source"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     _set_seeds(args.seed)
