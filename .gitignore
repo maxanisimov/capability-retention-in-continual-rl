@@ -193,4 +193,5 @@ outputs/
 results/
 plots/
 tables/
+logs/
 .DS_Store
