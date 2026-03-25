@@ -143,9 +143,11 @@ def evaluate(
         device: Device to run on
         render_mode: Rendering mode (None or 'rgb_array')
         deterministic: Whether to use deterministic actions
-        log_std: Log std parameter for continuous action spaces (None for discrete)
+        log_std: Log std parameter for continuous action spaces and non-deterministic eval (None for discrete)
     """
     assert render_mode in (None, 'rgb_array')
+    if deterministic:
+        assert log_std is None, "log_std should be None for deterministic evaluation"
     actor.eval()
     scores = []
     failures = 0
@@ -465,8 +467,8 @@ def ppo_train(
                 env=env,
                 actor=actor,
                 device=device,
-                episodes=10,
-                log_std=log_std,
+                episodes=cfg.eval_episodes,
+                deterministic=True, # NOTE: eval always uses deterministic policy
             ) # type: ignore
             deterministic_total_reward = None
             if cfg.early_stop_deterministic_total_reward_threshold is not None:
@@ -476,7 +478,6 @@ def ppo_train(
                     device=device,
                     episodes=cfg.early_stop_deterministic_eval_episodes,
                     deterministic=True,
-                    log_std=log_std,
                 ) # type: ignore
 
             # Reset the environment after evaluation since evaluation episodes ended.
@@ -528,7 +529,7 @@ def ppo_train(
 
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
         # Final checks and evaluation
-        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes, log_std=log_std) # type: ignore
+        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes, deterministic=True) # type: ignore
         final_msg = f"Final evaluation over {cfg.eval_episodes} episodes: mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         final_msg += f" | failure_rate={failure_rate:.2f}"
         if use_pgd:
