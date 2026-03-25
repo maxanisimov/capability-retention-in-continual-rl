@@ -60,17 +60,23 @@ for p in (str(_SCRIPT_DIR), str(_SCRIPT_DIR.parent), str(_PROJECT_ROOT)):
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Downstream adaptation experiment")
     p.add_argument("--cfg", default="standard_4x4", help="Config key in configs.yaml")
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--source-dir", type=str, default=None,
                    help="Directory with source_policy.pt / source_critic.pt / source_training_data.pt. "
                         "Defaults to outputs/<cfg>/<seed>/source")
     p.add_argument("--output-dir", type=str, default=None,
                    help="Where to save results. Defaults to outputs/<cfg>/<seed>/downstream")
-    p.add_argument("--total-timesteps", type=int, default=50_000)
+    p.add_argument(
+        "--total-timesteps", type=int, default=50_000, help="Max total timesteps for downstream adaptation"
+    )
     p.add_argument("--ent-coef", type=float, default=0.1)
     p.add_argument("--ewc-lambda", type=float, default=5_000.0)
     p.add_argument("--rashomon-n-iters", type=int, default=5_000)
-    p.add_argument("--eval-episodes", type=int, default=100)
+    p.add_argument(
+        "--eval-episodes", type=int, default=1, 
+        help="Number of eval episodes for policy metrics calculation. " \
+        "Default is 1 because FrozenLake is deterministic."
+    )
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--source-mode", type=str, default="safe", choices=["original", "safe"],
@@ -388,6 +394,7 @@ def main() -> None:
         ent_coef=args.ent_coef,
         early_stop=True,
         early_stop_reward_threshold=1.0,
+        eval_episodes=args.eval_episodes,
     )
     safe_actor, _ = ppo_train( # type: ignore
         env=env2,
@@ -409,6 +416,7 @@ def main() -> None:
         ent_coef=args.ent_coef,
         early_stop=True,
         early_stop_reward_threshold=1.0,
+        eval_episodes=args.eval_episodes,
     )
     unsafe_actor, _ = ppo_train( # type: ignore
         env=env2,
@@ -437,6 +445,7 @@ def main() -> None:
         early_stop=True,
         early_stop_reward_threshold=1.0,
         ewc_lambda=args.ewc_lambda,
+        eval_episodes=args.eval_episodes,
     )
     ewc_actor, _ = ewc_ppo_train( # type: ignore
         env=env2,
@@ -475,23 +484,25 @@ def main() -> None:
             metrics = evaluate_policy(env_eval, actor, num_episodes=args.eval_episodes)
             env_eval.close()
 
-            # Safety accuracy on the Task-1 safety dataset
-            safety_acc, safety_passed = verify_safety_posthoc(
-                actor=actor,
-                dataset=rashomon_dataset,
-                multi_label=True,
-                min_safety_limit=1.0,
-                env_map=env1_map,
-                verbose=False,
-                aggregation='mean', # mean -> avg safety flag per state -> safety "accuracy"
-            )
+            critical_state_safety_acc = None
+            if task == 0:
+                # Critical state safety accuracy on the Task-1 safety dataset
+                critical_state_safety_acc, _ = verify_safety_posthoc(
+                    actor=actor,
+                    dataset=rashomon_dataset,
+                    multi_label=True,
+                    min_safety_limit=1.0,
+                    env_map=env1_map,
+                    verbose=False,
+                    aggregation='mean', # mean -> avg safety flag per state -> safety "accuracy"
+                )
 
             rows.append({
                 "Policy": name,
                 "Task": task + 1,
                 "Trajectory Safety Rate": metrics["avg_safety_success"],
-                "Critical State Safety Rate": safety_acc,
-                "Avg Reward": metrics["avg_reward"],
+                "Critical State Safety Rate": critical_state_safety_acc,
+                "Avg Total Reward": metrics["avg_total_reward"],
                 "Success Rate": metrics["avg_success"],
                 "Avg Steps": metrics["avg_steps"],
             })
