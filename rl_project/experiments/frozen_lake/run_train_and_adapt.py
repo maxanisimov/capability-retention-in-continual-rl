@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         description="Run train_source_policy.py then downstream_adaptation.py with logging."
     )
     parser.add_argument("--cfg", type=str, default="standard_4x4")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden", type=int, default=64)
 
     parser.add_argument("--source-total-steps", type=int, default=500_000)

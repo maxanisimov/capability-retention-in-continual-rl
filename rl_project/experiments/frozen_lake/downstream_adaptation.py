@@ -276,6 +276,9 @@ def main() -> None:
     print("\n[2/6] Building safety dataset and computing Rashomon set …")
     env1_rashomon = make_frozenlake_env(env_map=env1_map, task_num=0, is_slippery=is_slippery)
     rashomon_dataset = create_frozenlake_safety_rashomon_dataset(env1_rashomon, task_flag=0.0)
+    # Save Rashomon dataset for reproducibility/analysis
+    torch.save(rashomon_dataset, downstream_dir / "rashomon_dataset.pt")
+
     env1_rashomon.close()
     # Visualize the safety-critical state-action pairs
     safety_state_action_pairs = []
@@ -383,6 +386,9 @@ def main() -> None:
     bounded_model = interval_trainer.bounds[final_certificate_idx]
     param_bounds_l = [p.detach().cpu() for p in bounded_model.param_l]
     param_bounds_u = [p.detach().cpu() for p in bounded_model.param_u]
+
+    # Save the bounded model for potential future analysis
+    torch.save(bounded_model, downstream_dir / "bounded_model.pt") 
 
     # ── 3. SafeAdapt — PPO with Rashomon bounds ────────────────────────
     print("\n[3/6] SafeAdapt: PPO with Rashomon parameter bounds …")

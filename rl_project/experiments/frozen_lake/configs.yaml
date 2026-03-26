@@ -129,6 +129,49 @@ diagonal_8x8:
   seed: 42
   notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
 
+diagonal_16x16:
+  env1_map: [
+    "SFHHHHHHHHHHHHHH",
+    "FFFHHHHHHHHHHHHH", 
+    "HFFFHHHHHHHHHHHH", 
+    "HHFFFHHHHHHHHHHH",
+    "HHHFFFHHHHHHHHHH",
+    "HHHHFFFHHHHHHHHH",
+    "HHHHHFFFHHHHHHHH",
+    "HHHHHHFFFHHHHHHH",
+    "HHHHHHHFFFHHHHHH",
+    "HHHHHHHHFFFHHHHH",
+    "HHHHHHHHHFFFHHHH", 
+    "HHHHHHHHHHFFFHHH",
+    "HHHHHHHHHHHFFFHH",
+    "HHHHHHHHHHHHFFFH",
+    "HHHHHHHHHHHHHFFF",
+    "HHHHHHHHHHHHHHFG",
+  ]
+  env2_map: [
+    "SFFFFFFFFFFFFFFF",
+    "FHFFFFFFFFFFFFFF", 
+    "FFHFFFFFFFFFFFFF", 
+    "FFFHFFFFFFFFFFFF",
+    "FFFFHFFFFFFFFFFF",
+    "FFFFFHFFFFFFFFFF",
+    "FFFFFFHFFFFFFFFF",
+    "FFFFFFFHFFFFFFFF",
+    "FFFFFFFFHFFFFFFF",
+    "FFFFFFFFFHFFFFFF",
+    "FFFFFFFFFFHFFFFF",
+    "FFFFFFFFFFFHFFFF",
+    "FFFFFFFFFFFFHFFF",
+    "FFFFFFFFFFFFFHFF",
+    "FFFFFFFFFFFFFFHF",
+    "FFFFFFFFFFFFFFFG",
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
+
 standard_8x8:
   env1_map: ["SFFFFFFF", "FFFFFFFF", "FFFHFFFF", "HHHHFFFF", "FFFHFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFFFFG"]
   env2_map: ["SFFFFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFHHHH", "FFFFFFHF", "FFFFFFFF", "FFFFFHFF", "FFFFFFFG"]

@@ -16,6 +16,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -81,11 +82,11 @@ def _validate_columns(df: pd.DataFrame, path_hint: str) -> None:
     required_cols = {
         "Policy",
         "Task",
-        "Avg Reward",
+        "Avg Total Reward",
+        # "Avg Reward",
         "Success Rate",
         "Trajectory Safety Rate",
         "Critical State Safety Rate",
-        # "Safety Certified",
         "Avg Steps",
         "seed",
     }
@@ -98,7 +99,8 @@ def _validate_columns(df: pd.DataFrame, path_hint: str) -> None:
 def main() -> None:
     args = parse_args()
     base_dir = args.base_dir.resolve()
-    output_dir = args.output_dir.resolve()
+    output_dir = base_dir / "aggregated"
+    os.makedirs(output_dir, exist_ok=True)
     cfg_name = args.base_dir.name
 
     if not base_dir.exists():
@@ -127,17 +129,14 @@ def main() -> None:
         )
 
     all_df = pd.concat(frames, ignore_index=True)
-
-    # Convert booleans to numeric so mean/std make sense across seeds.
-    # all_df["Safety Certified"] = all_df["Safety Certified"].astype(float)
+    all_df = all_df.rename(columns={'Avg Reward': 'Avg Total Reward'})  # In case of old naming
 
     group_cols = ["Policy", "Task"]
     metric_cols = [
-        "Avg Reward",
+        "Avg Total Reward",
         "Success Rate",
         "Trajectory Safety Rate",
         "Critical State Safety Rate",
-        # "Safety Certified",
         "Avg Steps",
     ]
 
@@ -159,11 +158,17 @@ def main() -> None:
     summary.to_csv(summary_path, index=False)
 
     # Per-task LaTeX tables
-    latex_cols = ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Reward"]
-    latex_idx_order = ['Source', 'UnsafeAdapt', 'EWC', 'SafeAdapt']
+    env_name = 'FrozenLake'
+    latex_cols_dct = {
+        1: ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Total Reward"], # source taks metrics 
+        2: ["Avg Total Reward", "Success Rate"], # downstream task metrics
+    }
+    latex_policy_order = ['Source', 'UnsafeAdapt', 'EWC', 'SafeAdapt']
     for task in sorted(all_df["Task"].unique()):
+        latex_cols = latex_cols_dct.get(task, ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Total Reward"])
         task_means = means[means["Task"] == task].drop(columns=["Task"])
         task_stds = stds[stds["Task"] == task].drop(columns=["Task"])
+        # task_name = 'source' if task == 1 else 'downstream'
 
         # Build "mean ± std" table for LaTeX
         task_summary = task_means[["Policy"]].copy()
@@ -173,14 +178,21 @@ def main() -> None:
                 + r" $\pm$ "
                 + task_stds[col].values.astype(str)
             )
+        task_summary = task_summary.set_index("Policy").reindex(latex_policy_order).reset_index()
 
-        latex_path = output_dir / f"downstream_task{task}_table.tex"
+        # Make sure the style is what you need:
+        task_summary["Policy"] = task_summary["Policy"].replace("SafeAdapt", r"\textsc{SafeAdapt} (ours)")
+        latex_path = output_dir / f"task{task}_table.tex"
+        analysis_type = 'stability' if task == 1 else 'plasticity'
+        label = f"tab:{env_name}_{cfg_name}_task{task}"
+        caption_tail = f" {analysis_type} analysis: Task {task} metrics across {num_seeds} seeds (mean" + r" $\pm$ " + "std)"
         task_summary.to_latex(
             latex_path,
             index=False,
             escape=False,
-            caption=f"FrozenLake ({cfg_name}): Task {task} metrics across {num_seeds} (mean" + r" $\pm$ " + "std)",
-            label=f"tab:downstream_task{task}",
+            caption=env_name + r"(\texttt{" + cfg_name.replace('_', r'\_') + r"})" + caption_tail,
+            label=label,
+            column_format='lccc'
         )
         print(f"LaTeX table     : {latex_path}")
 

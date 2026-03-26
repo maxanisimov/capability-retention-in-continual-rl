@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-
+from torch.utils.data import TensorDataset
 
 # =============================================================================
 # Reproducibility
@@ -171,6 +171,99 @@ def make_frozenlake_env(
 # =============================================================================
 # Safety-dataset helpers
 # =============================================================================
+def create_frozenlake_safety_rashomon_dataset(env, task_flag: float = 0.0):
+    """
+    Create a TensorDataset containing only safety-critical states and their safe actions.
+
+    - X: one-hot observations (optionally with final task-flag dimension)
+    - Y: multi-hot vectors of length n_actions, with 1s for safe actions
+    """
+    desc = env.unwrapped.desc
+    grid = [
+        "".join(ch.decode() if isinstance(ch, (bytes, bytearray)) else str(ch) for ch in row)
+        for row in desc
+    ]
+    nrows, ncols = len(grid), len(grid[0])
+    n_states = nrows * ncols
+    n_actions = 4  # FrozenLake: Left, Down, Right, Up
+
+    # Infer observation size from env wrapper
+    if hasattr(env.observation_space, "shape") and len(env.observation_space.shape) > 0:
+        obs_dim_local = int(env.observation_space.shape[0])
+    elif hasattr(env.observation_space, "n"):
+        obs_dim_local = int(env.observation_space.n)
+    else:
+        raise ValueError("Cannot infer observation dimension from env.observation_space.")
+
+    if obs_dim_local not in (n_states, n_states + 1):
+        raise ValueError(f"Unsupported obs_dim={obs_dim_local}. Expected {n_states} or {n_states + 1}.")
+
+    def state_to_rc(s: int):
+        return s // ncols, s % ncols
+
+    def rc_to_state(r: int, c: int):
+        return r * ncols + c
+
+    action_deltas = {
+        0: (0, -1),  # Left
+        1: (1, 0),   # Down
+        2: (0, 1),   # Right
+        3: (-1, 0),  # Up
+    }
+
+    # Identify hole states
+    hole_states = set()
+    for r in range(nrows):
+        for c in range(ncols):
+            if grid[r][c] == "H":
+                hole_states.add(rc_to_state(r, c))
+
+    obs_list = []
+    label_list = []
+
+    for s in range(n_states):
+        r, c = state_to_rc(s)
+        cell = grid[r][c]
+
+        # Skip terminal/non-traversable states
+        if cell in ("H", "G"):
+            continue
+
+        safe_actions = []
+        for a, (dr, dc) in action_deltas.items():
+            nr, nc = r + dr, c + dc
+            hits_wall = (nr < 0 or nr >= nrows or nc < 0 or nc >= ncols)
+
+            if hits_wall:
+                # In FrozenLake, wall-hit keeps agent in place (safe)
+                safe_actions.append(a)
+            else:
+                ns = rc_to_state(nr, nc)
+                if ns not in hole_states:
+                    safe_actions.append(a)
+
+        # Keep only safety-critical states (at least one unsafe action exists)
+        if len(safe_actions) == n_actions:
+            continue
+
+        obs = np.zeros(obs_dim_local, dtype=np.float32)
+        obs[s] = 1.0
+        if obs_dim_local == n_states + 1:
+            obs[-1] = float(task_flag)
+
+        multi_hot = np.zeros(n_actions, dtype=np.float32)
+        for a in safe_actions:
+            multi_hot[a] = 1.0
+        obs_list.append(obs)
+        label_list.append(multi_hot)
+
+    if len(obs_list) == 0:
+        raise RuntimeError("No safety-critical states found; dataset is empty.")
+
+    obs_tensor = torch.tensor(np.asarray(obs_list), dtype=torch.float32)
+    label_tensor = torch.tensor(np.asarray(label_list), dtype=torch.float32)
+    return TensorDataset(obs_tensor, label_tensor)
+
 
 def get_all_unsafe_state_action_pairs(
     env_map: list[str],
@@ -546,7 +639,7 @@ def evaluate_policy(
     """Roll out *actor* in *env* for *num_episodes* and return metrics.
 
     Returns:
-        Dict with keys ``avg_reward``, ``avg_success``, ``avg_safety_success``,
+        Dict with keys ``avg_total_reward``, ``avg_success``, ``avg_safety_success``,
         ``avg_steps``.
     """
     total_reward = 0.0
@@ -579,7 +672,7 @@ def evaluate_policy(
 
     n = num_episodes
     return {
-        "avg_reward": total_reward / n,
+        "avg_total_reward": total_reward / n,
         "avg_success": total_success / n,
         "avg_safety_success": total_safety_success / n,
         "avg_steps": total_steps / n,
@@ -599,7 +692,7 @@ def verify_safety_posthoc(
     aggregation: str = 'min', # 'min' or 'mean'
     verbose: bool = True,
 ) -> tuple[float, bool]:
-    """Check the SafeAdapt actor's safety on the safety dataset.
+    """Check the SafeAdapt actor's safety in the dataset of safety-critical states.
 
     Args:
         actor: The trained SafeAdapt actor.
