@@ -138,13 +138,11 @@ def main() -> None:
         str(args.hidden),
         "--device",
         args.device,
-        "--source-mode",
-        args.source_mode,
     ]
 
     print("=" * 80)
     print("FrozenLake pipeline: train_source_policy -> downstream_adaptation")
-    print(f"Config: {args.cfg}, Seed: {args.seed}, Source mode: {args.source_mode}")
+    print(f"Config: {args.cfg}, Seed: {args.seed}")
     print(f"Run dir: {run_dir}")
     print(f"  Source:     {source_output_dir}")
     print(f"  Downstream: {downstream_output_dir}")

@@ -1,0 +1,3 @@
+[submodule "rl_external/safety-gridworlds-gymnasium"]
+	path = rl_external/safety-gridworlds-gymnasium
+	url = https://github.com/nightly/safety-gridworlds-gymnasium.git

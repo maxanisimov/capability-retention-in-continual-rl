@@ -775,3 +775,185 @@ def extract_position_action_pairs(
             if a.item() != -1:
                 pairs.append((pos, a.item()))
     return pairs
+
+def finetune_policy(
+    policy: torch.nn.Module,
+    dataset,
+    env: gym.Env,
+    required_accuracy: float = 1.0,
+    overlap_mode: str = "safety",
+    lr: float = 1e-2,
+    max_epochs: int = 3000,
+    seed: int = 42,
+    verbose: bool = True,
+):
+    """
+    Finetune policy on a combined dataset of safety constraints and trajectory actions.
+
+    Builds a unified allowed-action mask by merging:
+    (1) The safety dataset: multi-hot targets indicating which actions are safe per state.
+    (2) The policy's own deterministic trajectory: for visited states not in the safety
+        dataset, the policy's current argmax action is preserved as the only allowed action.
+
+    Then finetunes with a single objective: maximize log-probability of allowed actions.
+
+    Args:
+        policy: The neural network policy to finetune.
+        dataset: ``TensorDataset(states, multi_hot_actions)``.  The actions tensor is a
+            multi-hot float tensor of shape ``(N, n_actions)`` with 1 for valid actions
+            and 0 otherwise.
+        env: The environment used to roll out the policy's trajectory.
+        required_accuracy: Minimum fraction of states where argmax is an allowed action.
+        overlap_mode: How to handle states that appear both in the safety dataset and on
+            the trajectory. ``"safety"`` keeps all safe actions from the dataset.
+            ``"policy"`` restricts to only the policy's trajectory action.
+        lr: Learning rate.
+        max_epochs: Maximum training epochs.
+        seed: Random seed.
+        verbose: Print progress.
+
+    Returns:
+        dict with ``policy``, ``final_accuracy``, ``target_accuracy``,
+        ``epochs_run``, ``reached_target``, and the ``combined_dataset``.
+    """
+    if required_accuracy > 1.0:
+        required_accuracy = required_accuracy / 100.0
+    required_accuracy = float(required_accuracy)
+
+    if overlap_mode not in ("safety", "policy"):
+        raise ValueError(f"overlap_mode must be 'safety' or 'policy', got '{overlap_mode}'")
+
+    if not hasattr(dataset, "tensors") or len(dataset.tensors) < 2:
+        raise ValueError("Expected a TensorDataset-like object with tensors (X, Y).")
+
+    X, Y = dataset.tensors
+    device = next(policy.parameters()).device
+    X = X.to(device)
+    Y = Y.to(device)
+
+    torch.manual_seed(seed)
+
+    # Infer action dimension
+    policy.eval()
+    with torch.no_grad():
+        n_actions = policy(X[:1]).shape[-1]
+
+    # --- Step 1: Build allowed-action mask from safety dataset ---
+    # Y is multi-hot: shape (N, n_actions) with 1s for valid actions
+    state_to_allowed: dict[tuple, set] = {}
+    for i in range(X.shape[0]):
+        key = tuple(X[i].detach().cpu().tolist())
+        if key not in state_to_allowed:
+            state_to_allowed[key] = set()
+        valid_actions = torch.where(Y[i] > 0)[0].tolist()
+        state_to_allowed[key].update(valid_actions)
+
+    # --- Step 2: Roll out policy trajectory and merge ---
+    dataset_keys = set(state_to_allowed.keys())
+    obs, _ = env.reset(seed=seed)
+    done = False
+    with torch.no_grad():
+        while not done:
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action = int(policy(obs_t).argmax(dim=1).item())
+            key = tuple(obs_t.squeeze(0).cpu().tolist())
+            if key not in dataset_keys:
+                # State only on trajectory: preserve the policy's action
+                state_to_allowed[key] = {action}
+            elif overlap_mode == "policy":
+                # State in both: restrict to only the policy's action
+                state_to_allowed[key] = {action}
+            # overlap_mode == "safety": keep the dataset's allowed actions unchanged
+            obs, _, term, trunc, _ = env.step(action)
+            done = term or trunc
+
+    # --- Step 3: Build combined tensors ---
+    keys = list(state_to_allowed.keys())
+    combined_states = torch.tensor(keys, dtype=X.dtype, device=device)
+    allowed_mask = torch.zeros(len(keys), n_actions, dtype=torch.bool, device=device)
+    for i, key in enumerate(keys):
+        for a in state_to_allowed[key]:
+            allowed_mask[i, a] = True
+
+    n_total = combined_states.shape[0]
+    if verbose:
+        n_safety = X.shape[0]
+        n_combined = n_total
+        print(f"\n--- Finetuning policy ---")
+        print(f"  Safety dataset states: {n_safety}")
+        print(f"  Combined dataset states (safety + trajectory): {n_combined}")
+
+    # --- Early exit check ---
+    with torch.no_grad():
+        logits0 = policy(combined_states)
+        preds0 = logits0.argmax(dim=1)
+        init_acc = float(
+            allowed_mask[torch.arange(n_total, device=device), preds0].float().mean().item()
+        )
+
+    if init_acc >= required_accuracy:
+        if verbose:
+            print(f"  Already satisfies target | acc={init_acc:.3f} (target={required_accuracy:.3f})")
+        return {
+            "policy": policy,
+            "final_accuracy": init_acc,
+            "target_accuracy": required_accuracy,
+            "epochs_run": 0,
+            "reached_target": True,
+            "combined_dataset": TensorDataset(combined_states, allowed_mask.float()),
+        }
+
+    # --- Finetune ---
+    optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
+    policy.train()
+    reached = False
+    epoch = 0
+
+    for epoch in range(1, max_epochs + 1):
+        logits = policy(combined_states)
+        safe_logits = logits.masked_fill(~allowed_mask, -1e9)
+        log_p_allowed = torch.logsumexp(safe_logits, dim=1) - torch.logsumexp(logits, dim=1)
+        loss = -log_p_allowed.mean()
+
+        preds = logits.argmax(dim=1)
+        acc = allowed_mask[torch.arange(n_total, device=device), preds].float().mean()
+        acc_v = float(acc.item())
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if verbose and (epoch % 100 == 0 or acc_v >= required_accuracy):
+            print(f"  Epoch {epoch:4d} | loss={loss.item():.6f} | acc={acc_v:.3f}")
+
+        if acc_v >= required_accuracy:
+            reached = True
+            break
+
+    # --- Final evaluation ---
+    policy.eval()
+    with torch.no_grad():
+        logits = policy(combined_states)
+        preds = logits.argmax(dim=1)
+        final_acc = float(
+            allowed_mask[torch.arange(n_total, device=device), preds].float().mean().item()
+        )
+
+    if verbose:
+        print(f"  Final | acc={final_acc:.3f} (target={required_accuracy:.3f}) | reached={reached}")
+        print("--- Finetuning complete ---\n")
+
+    if not reached:
+        raise RuntimeError(
+            "Could not satisfy constraints within max_epochs. "
+            "Try larger max_epochs or lower lr."
+        )
+
+    return {
+        "policy": policy,
+        "final_accuracy": final_acc,
+        "target_accuracy": required_accuracy,
+        "epochs_run": epoch,
+        "reached_target": reached,
+        "combined_dataset": TensorDataset(combined_states, allowed_mask.float()),
+    }

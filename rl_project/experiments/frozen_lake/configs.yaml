@@ -102,6 +102,29 @@ diagonal_4x4:
   seed: 42
   notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
 
+diagonal_6x6:
+  env1_map: [
+    "SFHHHH", 
+    "FFFHHH", 
+    "HFFFHH",
+    "HFFFHH",
+    "HHHFFF",
+    "HHHHFG",
+  ]
+  env2_map: [
+    "SFFFFF", 
+    "FHFFFF", 
+    "FFHFFF", 
+    "FFFHFF",
+    "FFFFHF",
+    "FFFFFG",
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
+
 diagonal_8x8:
   env1_map: [
     "SFHHHHHH",
@@ -122,6 +145,41 @@ diagonal_8x8:
     "FFFFFHFF",
     "FFFFFFHF",
     "FFFFFFFG",
+  ]
+  is_slippery: false
+  max_steps: 100
+  source_max_train_timesteps: 500000
+  seed: 42
+  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
+
+diagonal_12x12:
+  env1_map: [
+    "SFHHHHHHHHHH",
+    "FFFHHHHHHHHH", 
+    "HFFFHHHHHHHH", 
+    "HHFFFHHHHHHH",
+    "HHHFFFHHHHHH",
+    "HHHHFFFHHHHH",
+    "HHHHHFFFHHHH",
+    "HHHHHHFFFHHH",
+    "HHHHHHHFFFHH",
+    "HHHHHHHHFFFH",
+    "HHHHHHHHHFFF",
+    "HHHHHHHHHHFG",
+  ]
+  env2_map: [
+    "SFFFFFFFFFFF",
+    "FHFFFFFFFFFF", 
+    "FFHFFFFFFFFF", 
+    "FFFHFFFFFFFF",
+    "FFFFHFFFFFFF",
+    "FFFFFHFFFFFF",
+    "FFFFFFHFFFFF",
+    "FFFFFFFHFFFF",
+    "FFFFFFFFHFFF",
+    "FFFFFFFFFHFF",
+    "FFFFFFFFFFHF",
+    "FFFFFFFFFFFG",
   ]
   is_slippery: false
   max_steps: 100
@@ -168,15 +226,6 @@ diagonal_16x16:
   ]
   is_slippery: false
   max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
+  source_max_train_timesteps: 1000000
+  # seed: 42
   notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
-
-standard_8x8:
-  env1_map: ["SFFFFFFF", "FFFFFFFF", "FFFHFFFF", "HHHHFFFF", "FFFHFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFFFFG"]
-  env2_map: ["SFFFFFFF", "FHFFFFFF", "FFFFFFFF", "FFFFHHHH", "FFFFFFHF", "FFFFFFFF", "FFFFFHFF", "FFFFFFFG"]
-  is_slippery: false
-  max_steps: 200
-  source_max_train_timesteps: 500000
-  seed: 42
-  notes: "Larger 8x8 grid testing scalability to bigger state spaces."

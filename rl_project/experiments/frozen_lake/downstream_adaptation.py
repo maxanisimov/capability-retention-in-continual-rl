@@ -3,12 +3,13 @@ Downstream adaptation experiment for FrozenLake.
 
 Steps:
   1. Load the source policy, critic, and training data.
-  2. Build a safety (Rashomon) specification dataset from Task 1.
-  3. Compute the Rashomon set with sound safety surrogate.
-  4. SafeAdapt  — adapt to Task 2 using Rashomon parameter bounds (PGD).
-  5. UnsafeAdapt — adapt to Task 2 without any bounds.
-  6. EWC         — adapt to Task 2 using Elastic Weight Consolidation.
-  7. Evaluate all policies in Task 1 and Task 2; save trajectory plots and a
+  2. Build a safety Rashomon dataset from Task 1 and compute safety bounds.
+  3. Build a trajectory Rashomon dataset from Task 1 and compute performance bounds.
+  4. SafeAdapt  — adapt to Task 2 using safety Rashomon bounds.
+  5. PerfAdapt  — adapt to Task 2 using trajectory Rashomon bounds.
+  6. UnsafeAdapt — adapt to Task 2 without any bounds.
+  7. EWC         — adapt to Task 2 using Elastic Weight Consolidation.
+  8. Evaluate all policies in Task 1 and Task 2; save trajectory plots and a
      summary table.
 
 Usage:
@@ -24,7 +25,6 @@ import os
 import random
 import sys
 from pathlib import Path
-import gymnasium
 import numpy as np
 import pandas as pd
 import torch
@@ -79,9 +79,17 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument("--source-mode", type=str, default="safe", choices=["original", "safe"],
-                   help="'original': use source policy as-is; "
-                        "'safe': finetune source to be safe in all critical states while preserving trajectory")
+    p.add_argument(
+        "--source-mode",
+        type=str,
+        default="safe",
+        choices=["original", "safe"],
+        help=(
+            "'original': use source policy as-is for safety-based adaptation; "
+            "'safe': finetune source to be safe in critical states before safety-based adaptation "
+            "(PerfAdapt always uses trajectory Rashomon bounds)."
+        ),
+    )
     return p.parse_args()
 
 
@@ -205,6 +213,137 @@ def create_frozenlake_safety_rashomon_dataset(env, task_flag: float = 0.0):
     label_tensor = torch.tensor(np.asarray(label_list), dtype=torch.float32)
     return TensorDataset(obs_tensor, label_tensor)
 
+
+def create_source_trajectory_rashomon_dataset(
+    actor: torch.nn.Module,
+    env,
+    seed: int,
+    n_actions: int,
+) -> tuple[TensorDataset, list[tuple[int, int]]]:
+    """Roll out actor on Task 1 and build a one-action-per-state Rashomon dataset."""
+    actor.eval()
+
+    obs, _ = env.reset(seed=seed)
+    done = False
+
+    obs_list: list[np.ndarray] = []
+    label_list: list[np.ndarray] = []
+    state_action_pairs: list[tuple[int, int]] = []
+
+    while not done:
+        obs_np = np.asarray(obs, dtype=np.float32).copy()
+        obs_list.append(obs_np)
+
+        with torch.no_grad():
+            logits = actor(torch.from_numpy(obs_np).unsqueeze(0))
+            action = int(torch.argmax(logits, dim=1).item())
+
+        action_mask = np.zeros(n_actions, dtype=np.float32)
+        action_mask[action] = 1.0
+        label_list.append(action_mask)
+
+        state_idx = int(np.argmax(obs_np[:-1])) if obs_np.shape[0] > 1 else int(np.argmax(obs_np))
+        state_action_pairs.append((state_idx, action))
+
+        obs, _, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+
+    if not obs_list:
+        raise RuntimeError("Source trajectory is empty; cannot build Rashomon dataset.")
+
+    obs_tensor = torch.tensor(np.asarray(obs_list), dtype=torch.float32)
+    label_tensor = torch.tensor(np.asarray(label_list), dtype=torch.float32)
+    return TensorDataset(obs_tensor, label_tensor), state_action_pairs
+
+
+def dataset_to_state_action_pairs(dataset: TensorDataset) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    for obs, label in dataset:
+        state_obs = obs[:-1] if obs.shape[0] > 1 else obs
+        state_idx = int(state_obs.argmax().item())
+        valid_actions = torch.where(label > 0)[0].tolist()
+        for action in valid_actions:
+            pairs.append((state_idx, action))
+    return pairs
+
+
+def compute_rashomon_bounds(
+    *,
+    actor: torch.nn.Module,
+    rashomon_dataset: TensorDataset,
+    seed: int,
+    rashomon_n_iters: int,
+    dataset_name: str,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], object]:
+    """Compute Rashomon bounds for a given multi-label dataset."""
+    n_safe_per_state = rashomon_dataset.tensors[1].sum(dim=1).tolist()
+    max_safe_actions_per_state = max(n_safe_per_state) if n_safe_per_state else 0
+    min_surrogate_threshold = max_safe_actions_per_state / (1 + max_safe_actions_per_state)
+    rashomon_samples = [rashomon_dataset[i] for i in range(len(rashomon_dataset))]
+
+    print(f"  [{dataset_name}] Rashomon states: {len(n_safe_per_state)}")
+    print(f"  [{dataset_name}] Surrogate threshold: {min_surrogate_threshold:.6f}")
+
+    actor.eval()
+    inverse_temp_start = 10
+    with torch.no_grad():
+        all_obs = rashomon_dataset.tensors[0]
+        safe_mask = rashomon_dataset.tensors[1]
+        logits = actor(all_obs)
+        safe_prob_mass = None
+        for inverse_temp in range(inverse_temp_start, 1001):
+            probs = torch.softmax(logits * inverse_temp, dim=1)
+            safe_prob_mass = (probs * safe_mask).sum(dim=1)
+            if safe_prob_mass.min().item() >= min_surrogate_threshold:
+                break
+        else:
+            worst_idx = int(safe_prob_mass.argmin().item())  # type: ignore
+            raise ValueError(
+                f"[{dataset_name}] Cannot find inverse_temp <= 1000 satisfying surrogate threshold. "
+                f"Worst sample {rashomon_samples[worst_idx]}: "
+                f"safe-action softmax mass = {safe_prob_mass[worst_idx].item():.6f} < {min_surrogate_threshold:.6f}"  # type: ignore
+            )
+
+    print(f"  [{dataset_name}] Smallest inverse_temp: {inverse_temp:.0f}")
+    print(f"  [{dataset_name}] Min safe-action softmax mass at T={inverse_temp:.0f}: {safe_prob_mass.min().item():.6f}")
+
+    min_hard_specification = 1.0
+    _set_seeds(seed)
+    interval_trainer = IntervalTrainer(
+        model=actor,
+        min_acc_limit=min_surrogate_threshold,
+        seed=seed,
+        n_iters=rashomon_n_iters,
+        min_acc_increment=0,
+        T=inverse_temp,
+        checkpoint=100,
+    )
+    interval_trainer.compute_rashomon_set(
+        dataset=rashomon_dataset,
+        multi_label=True,
+        aggregation="min",  # type: ignore
+    )
+
+    final_certificate_idx = -1
+    if interval_trainer.certificates[-1] < min_hard_specification:
+        final_certificate_lst = [
+            i for i, cert in enumerate(interval_trainer.certificates) if cert >= min_hard_specification
+        ]
+        if len(final_certificate_lst) == 0:
+            raise ValueError(
+                f"[{dataset_name}] No Rashomon certificate satisfies the hard specification ({min_hard_specification}). "
+                f"Best certificate: {max(interval_trainer.certificates):.4f}"
+            )
+        final_certificate_idx = final_certificate_lst[-1]
+
+    cert_hard = interval_trainer.certificates[final_certificate_idx]
+    print(f"  [{dataset_name}] Certified hard specification: {cert_hard:.4f}")
+
+    bounded_model = interval_trainer.bounds[final_certificate_idx]
+    param_bounds_l = [p.detach().cpu() for p in bounded_model.param_l]
+    param_bounds_u = [p.detach().cpu() for p in bounded_model.param_u]
+    return param_bounds_l, param_bounds_u, bounded_model
+
 # ── Main ────────────────────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
@@ -234,13 +373,21 @@ def main() -> None:
     env_tmp.close()
 
     # ── Paths ───────────────────────────────────────────────────────────
-    out_dir = Path(args.source_dir) if args.source_dir else (
-        _SCRIPT_DIR / "outputs" / args.cfg / str(args.seed)
-    )
-    source_dir = out_dir / "source"
-    downstream_dir = out_dir / "downstream"
+    if args.source_dir:
+        source_path = Path(args.source_dir)
+        if (source_path / "source_policy.pt").exists():
+            source_dir = source_path
+            run_dir = source_path.parent
+        else:
+            run_dir = source_path
+            source_dir = run_dir / "source"
+    else:
+        run_dir = _SCRIPT_DIR / "outputs" / args.cfg / str(args.seed)
+        source_dir = run_dir / "source"
+
+    downstream_dir = Path(args.output_dir) if args.output_dir else (run_dir / "downstream")
     downstream_dir.mkdir(parents=True, exist_ok=True)
-    plots_dir = out_dir / "plots"
+    plots_dir = run_dir / "plots" if args.output_dir is None else (downstream_dir / "plots")
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -249,7 +396,7 @@ def main() -> None:
     print(f"Config         : {args.cfg}")
     print(f"Seed           : {args.seed}")
     print(f"Source dir     : {source_dir}")
-    print(f"Output dir     : {out_dir}")
+    print(f"Run dir        : {run_dir}")
     print(f"Downstream dir : {downstream_dir}")
     print(f"Timesteps      : {args.total_timesteps}")
     print(f"EWC lambda     : {args.ewc_lambda}")
@@ -258,7 +405,7 @@ def main() -> None:
     print("=" * 80)
 
     # ── 1. Load source policy ───────────────────────────────────────────
-    print("\n[1/6] Loading source policy, critic, and training data …")
+    print("\n[1/8] Loading source policy, critic, and training data …")
     source_actor = _make_actor(obs_dim, n_actions, hidden=args.hidden)
     source_actor.load_state_dict(
         torch.load(source_dir / "source_policy.pt", map_location="cpu")
@@ -272,126 +419,73 @@ def main() -> None:
     )
     print(f"  Source training data: {len(source_training_data['states'])} transitions")
 
-    # ── 2. Build safety specification & Rashomon set ────────────────────
-    print("\n[2/6] Building safety dataset and computing Rashomon set …")
-    env1_rashomon = make_frozenlake_env(env_map=env1_map, task_num=0, is_slippery=is_slippery)
-    rashomon_dataset = create_frozenlake_safety_rashomon_dataset(env1_rashomon, task_flag=0.0)
-    # Save Rashomon dataset for reproducibility/analysis
-    torch.save(rashomon_dataset, downstream_dir / "rashomon_dataset.pt")
+    # Keep an untouched copy of the source actor for trajectory-based PerfAdapt.
+    source_actor_for_perf = copy.deepcopy(source_actor).cpu()
 
-    env1_rashomon.close()
-    # Visualize the safety-critical state-action pairs
-    safety_state_action_pairs = []
-    for obs, label in rashomon_dataset:
-        state_idx = obs[:-1].argmax().item()  # get state index from one-hot (ignore task flag)
-        safe_actions = torch.where(label > 0)[0].tolist()
-        for a in safe_actions:
-            safety_state_action_pairs.append((state_idx, a))
-    env_plot = make_frozenlake_env(env_map=env1_map, task_num=0, is_slippery=is_slippery, render_mode="rgb_array")
+    # ── 2. Build safety Rashomon dataset and bounds ─────────────────────
+    print("\n[2/8] Building safety Rashomon dataset and bounds …")
+    env1_safety = make_env(task=0)
+    safety_rashomon_dataset = create_frozenlake_safety_rashomon_dataset(env1_safety, task_flag=0.0)
+    env1_safety.close()
+    torch.save(safety_rashomon_dataset, downstream_dir / "rashomon_dataset_safety.pt")
+    # Backward-compatible artifact name.
+    torch.save(safety_rashomon_dataset, downstream_dir / "rashomon_dataset.pt")
+
+    safety_state_action_pairs = dataset_to_state_action_pairs(safety_rashomon_dataset)
+    env_plot = make_env(task=0, render_mode="rgb_array")
     _ = plot_state_action_pairs(
         env=env_plot,
         state_action_pairs=safety_state_action_pairs,
         arrow_color="teal",
-        title="Rashomon state-action pairs (Task 1)",
+        title="Rashomon state-action pairs (safety-critical states, Task 1)",
         save_path=str(plots_dir / "rashomon_state_action_pairs.png"),
     )
     env_plot.close()
 
-    ############################################################################################################
-    if args.source_mode == "safe":
-        # Fine-tune the source policy to be safe in all critical states while preserving the learned trajectory
-        print("  Finetuning source policy for safety …")
-        finetuning_result_dct = finetune_policy(
-            policy=source_actor,
-            dataset=rashomon_dataset,
-            env=make_frozenlake_env(env_map=env1_map, task_num=0, is_slippery=is_slippery),
-            overlap_mode="policy",
-            required_accuracy=1.0,
-        )
-        source_actor = finetuning_result_dct['policy']
-        if not finetuning_result_dct['reached_target']:
-            raise ValueError(
-                f"Safety finetuning did not reach required accuracy. "
-                f"Final accuracy: {finetuning_result_dct['final_accuracy']:.4f}, "
-                f"required: {finetuning_result_dct['target_accuracy']:.4f}"
-            )
-    else:
-        print("  Using original source policy (no safety finetuning)")
-
-    ############################################################################################################
-
-    n_safe_per_state = rashomon_dataset.tensors[1].sum(dim=1).tolist()
-    max_safe_actions_per_state = max(n_safe_per_state) if n_safe_per_state else 0
-    print(f"  Total safety-critical states: {len(n_safe_per_state)}")
-    min_surrogate_threshold = max_safe_actions_per_state / (1 + max_safe_actions_per_state)
-
-    safety_critical_states = [rashomon_dataset[i, :] for i in range(rashomon_dataset.tensors[0].shape[0])]
-
-    # Find the smallest inverse_temp (>= 10) for which softmax mass on safe actions exceeds the surrogate threshold
-    source_actor.eval()
-    inverse_temp_start = 10
-    with torch.no_grad():
-        all_obs = rashomon_dataset.tensors[0]           # (N, obs_dim)
-        safe_mask = rashomon_dataset.tensors[1]         # (N, N_ACTIONS) multi-hot
-        logits = source_actor(all_obs)                  # (N, N_ACTIONS)
-        safe_prob_mass = None
-        for inverse_temp in range(inverse_temp_start, 1001):
-            probs = torch.softmax(logits * inverse_temp, dim=1)
-            safe_prob_mass = (probs * safe_mask).sum(dim=1)
-            if safe_prob_mass.min().item() >= min_surrogate_threshold:
-                break
-        else:
-            worst_idx = int(safe_prob_mass.argmin().item()) # type: ignore
-            raise ValueError(
-                f"Cannot find inverse_temp <= 1000 satisfying surrogate threshold. "
-                f"Worst state {safety_critical_states[worst_idx]}: "
-                f"safe-action softmax mass = {safe_prob_mass[worst_idx].item():.6f} < {min_surrogate_threshold:.6f}" # type: ignore
-            )
-    print(f"  Smallest inverse_temp satisfying surrogate threshold: {inverse_temp:.0f}")
-    print(f"  Min safe-action softmax mass at T={inverse_temp:.0f}: {safe_prob_mass.min().item():.6f}")
-
-    print(f"  Safety-critical states: {len(safety_critical_states)}")
-    print(f"  Surrogate threshold: {min_surrogate_threshold:.6f}")
-
-    min_hard_specification = 1.0
-    _set_seeds(args.seed)
-    interval_trainer = IntervalTrainer(
-        model=source_actor,
-        min_acc_limit=min_surrogate_threshold,
+    safe_param_bounds_l, safe_param_bounds_u, safe_bounded_model = compute_rashomon_bounds(
+        actor=source_actor,
+        rashomon_dataset=safety_rashomon_dataset,
         seed=args.seed,
-        n_iters=5_000, # args.rashomon_n_iters, # type: ignore
-        min_acc_increment=0,
-        T=inverse_temp,
-        checkpoint=100, # TODO: save a checkpointed bound every checkpoint iterations # type: ignore
+        rashomon_n_iters=args.rashomon_n_iters,
+        dataset_name="Safety",
     )
-    interval_trainer.compute_rashomon_set(
-        dataset=rashomon_dataset, multi_label=True, aggregation='min' # type: ignore
+    torch.save(safe_bounded_model, downstream_dir / "bounded_model_safety.pt")
+    # Backward-compatible artifact name.
+    torch.save(safe_bounded_model, downstream_dir / "bounded_model.pt")
+
+    # ── 3. Build trajectory Rashomon dataset and bounds (PerfAdapt) ─────
+    print("\n[3/8] Building trajectory Rashomon dataset and bounds (PerfAdapt) …")
+    env1_perf = make_env(task=0)
+    perf_rashomon_dataset, perf_state_action_pairs = create_source_trajectory_rashomon_dataset(
+        actor=source_actor_for_perf,
+        env=env1_perf,
+        seed=args.seed,
+        n_actions=n_actions,
     )
-    final_certificate_idx = -1  # default: use last (largest) bounds
-    if interval_trainer.certificates[-1] < min_hard_specification:
-        # Last bounds don't satisfy spec — find the largest that does
-        final_certificate_lst = [
-            i for i, cert in enumerate(interval_trainer.certificates) if cert >= min_hard_specification
-        ]
-        if len(final_certificate_lst) == 0:
-            raise ValueError(
-                f"No Rashomon certificate satisfies the hard specification ({min_hard_specification}). "
-                f"Best certificate: {max(interval_trainer.certificates):.4f}"
-            )
-        # Pick the last (largest bounds) among those that satisfy the spec
-        final_certificate_idx = final_certificate_lst[-1]
-    cert_hard = interval_trainer.certificates[final_certificate_idx]
-    print(f"  Certified hard specification: {cert_hard:.4f}")
+    env1_perf.close()
+    torch.save(perf_rashomon_dataset, downstream_dir / "rashomon_dataset_performance.pt")
 
-    bounded_model = interval_trainer.bounds[final_certificate_idx]
-    param_bounds_l = [p.detach().cpu() for p in bounded_model.param_l]
-    param_bounds_u = [p.detach().cpu() for p in bounded_model.param_u]
+    env_plot = make_env(task=0, render_mode="rgb_array")
+    _ = plot_state_action_pairs(
+        env=env_plot,
+        state_action_pairs=perf_state_action_pairs,
+        arrow_color="orange",
+        title="Rashomon state-action pairs (source trajectory, Task 1)",
+        save_path=str(plots_dir / "rashomon_state_action_pairs_performance.png"),
+    )
+    env_plot.close()
 
-    # Save the bounded model for potential future analysis
-    torch.save(bounded_model, downstream_dir / "bounded_model.pt") 
+    perf_param_bounds_l, perf_param_bounds_u, perf_bounded_model = compute_rashomon_bounds(
+        actor=source_actor_for_perf,
+        rashomon_dataset=perf_rashomon_dataset,
+        seed=args.seed,
+        rashomon_n_iters=args.rashomon_n_iters,
+        dataset_name="Perf",
+    )
+    torch.save(perf_bounded_model, downstream_dir / "bounded_model_performance.pt")
 
-    # ── 3. SafeAdapt — PPO with Rashomon bounds ────────────────────────
-    print("\n[3/6] SafeAdapt: PPO with Rashomon parameter bounds …")
+    # ── 4. SafeAdapt — PPO with safety Rashomon bounds ──────────────────
+    print("\n[4/8] SafeAdapt: PPO with safety Rashomon bounds …")
     _set_seeds(args.seed)
     env2 = make_env(task=1)
     safe_cfg = PPOConfig(
@@ -407,13 +501,35 @@ def main() -> None:
         cfg=safe_cfg,
         actor_warm_start=copy.deepcopy(source_actor),
         critic_warm_start=copy.deepcopy(source_critic),
-        actor_param_bounds_l=param_bounds_l,
-        actor_param_bounds_u=param_bounds_u,
+        actor_param_bounds_l=safe_param_bounds_l,
+        actor_param_bounds_u=safe_param_bounds_u,
     )
     env2.close()
 
-    # ── 4. UnsafeAdapt — PPO without bounds ─────────────────────────────
-    print("\n[4/6] UnsafeAdapt: PPO without any bounds …")
+    # ── 5. PerfAdapt — PPO with trajectory Rashomon bounds ──────────────
+    print("\n[5/8] PerfAdapt: PPO with trajectory Rashomon bounds …")
+    _set_seeds(args.seed)
+    env2 = make_env(task=1)
+    perf_cfg = PPOConfig(
+        seed=args.seed,
+        total_timesteps=args.total_timesteps,
+        ent_coef=args.ent_coef,
+        early_stop=True,
+        early_stop_reward_threshold=1.0,
+        eval_episodes=args.eval_episodes,
+    )
+    perf_actor, _ = ppo_train( # type: ignore
+        env=env2,
+        cfg=perf_cfg,
+        actor_warm_start=copy.deepcopy(source_actor_for_perf),
+        critic_warm_start=copy.deepcopy(source_critic),
+        actor_param_bounds_l=perf_param_bounds_l,
+        actor_param_bounds_u=perf_param_bounds_u,
+    )
+    env2.close()
+
+    # ── 6. UnsafeAdapt — PPO without bounds ─────────────────────────────
+    print("\n[6/8] UnsafeAdapt: PPO without any bounds …")
     _set_seeds(args.seed)
     env2 = make_env(task=1)
     unsafe_cfg = PPOConfig(
@@ -432,8 +548,8 @@ def main() -> None:
     )
     env2.close()
 
-    # ── 5. EWC — PPO with EWC regularisation ───────────────────────────
-    print("\n[5/6] EWC: Computing Fisher information and training …")
+    # ── 7. EWC — PPO with EWC regularisation ────────────────────────────
+    print("\n[7/8] EWC: Computing Fisher information and training …")
     _set_seeds(args.seed)
     ewc_state = compute_ewc_state(
         actor=copy.deepcopy(source_actor),
@@ -462,22 +578,19 @@ def main() -> None:
     )
     env2.close()
 
-    # ── 6. Evaluate all policies ────────────────────────────────────────
-    print("\n[6/6] Evaluating all policies …")
+    # ── 8. Evaluate all policies ────────────────────────────────────────
+    print("\n[8/8] Evaluating all policies …")
 
     # Ensure all actors are on CPU (ppo_train may leave them on CUDA)
     safe_actor.cpu()
+    perf_actor.cpu()
     unsafe_actor.cpu()
     ewc_actor.cpu()
-
-    # source_actor = _make_actor(obs_dim, n_actions, hidden=args.hidden)
-    # source_actor.load_state_dict(
-    #     torch.load(source_dir / "source_policy.pt", map_location="cpu")
-    # )
 
     policies = {
         "Source":      source_actor,
         "SafeAdapt":   safe_actor,
+        "PerfAdapt":   perf_actor,
         "UnsafeAdapt": unsafe_actor,
         "EWC":         ewc_actor,
     }
@@ -491,11 +604,12 @@ def main() -> None:
             env_eval.close()
 
             critical_state_safety_acc = None
+            perf_rashomon_rate = None
             if task == 0:
                 # Critical state safety accuracy on the Task-1 safety dataset
                 critical_state_safety_acc, _ = verify_safety_posthoc(
                     actor=actor,
-                    dataset=rashomon_dataset,
+                    dataset=safety_rashomon_dataset,
                     multi_label=True,
                     min_safety_limit=1.0,
                     env_map=env1_map,
@@ -520,12 +634,13 @@ def main() -> None:
     print(df.to_string(index=False))
 
     # Save table
-    csv_path = out_dir / "results_table.csv"
+    csv_path = downstream_dir / "results_table.csv"
     df.to_csv(csv_path, index=False)
     print(f"\nTable saved to {csv_path}")
 
     # ── Save policy networks ───────────────────────────────────────────
     torch.save(safe_actor.state_dict(), downstream_dir / "safeadapt_actor.pt")
+    torch.save(perf_actor.state_dict(), downstream_dir / "perfadapt_actor.pt")
     torch.save(unsafe_actor.state_dict(), downstream_dir / "unsafeadapt_actor.pt")
     torch.save(ewc_actor.state_dict(), downstream_dir / "ewc_actor.pt")
     print("\nPolicy networks saved to downstream directory.")
