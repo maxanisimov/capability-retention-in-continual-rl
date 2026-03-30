@@ -4,14 +4,14 @@ Taxi Utilities for Safe Continual Learning Experiments
 
 This module provides all helper functions for the Taxi SafeAdapt demo:
 
-- **Environment setup**: Gymnasium wrappers for one-hot observation encoding,
+- **Environment setup**: Gymnasium wrappers for decoded-vector observations,
   safety flags (illegal pickup/dropoff detection) and initial-state
   distribution control, plus a convenience factory ``make_taxi_env``.
-- **State encoding / decoding**: ``one_hot_encode_state``,
+- **State encoding / decoding**: ``vector_encode_state``,
   ``observation_to_state``, ``decode_taxi_state``, ``encode_taxi_state``.
 - **Safety-dataset creation**: three dataset builders
   (``create_safe_optimal_policy_dataset``, ``create_safe_training_dataset``,
-  ``generate_sufficient_safe_state_action_dataset``) and the helper
+  ``generate_sufficient_safe_state_action_dataset``) and the helpers
   ``get_all_unsafe_state_action_pairs``.
 - **Safety-actor training**: ``train_safety_actor`` trains a reference model
   whose parameters define the centre of the certified safe region.
@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+from torch.utils.data import TensorDataset
 
 
 # =============================================================================
@@ -51,6 +52,32 @@ NUM_PASS_LOCS = 5       # 0-3 = at a location, 4 = in taxi
 NUM_DEST = 4
 NUM_TAXI_STATES = NUM_ROWS * NUM_COLS * NUM_PASS_LOCS * NUM_DEST  # 500
 NUM_ACTIONS = 6
+
+
+def _validate_taxi_grid_location(
+    taxi_loc: tuple[int, int],
+    *,
+    arg_name: str = "initial_taxi_loc",
+) -> tuple[int, int]:
+    """Validate and normalize a taxi grid location."""
+    if not isinstance(taxi_loc, (tuple, list)) or len(taxi_loc) != 2:
+        raise ValueError(f"{arg_name} must be a (row, col) pair, got {taxi_loc!r}")
+
+    row_raw, col_raw = taxi_loc
+    if not isinstance(row_raw, (int, np.integer)) or not isinstance(col_raw, (int, np.integer)):
+        raise TypeError(
+            f"{arg_name} row/col must be integers, got types "
+            f"({type(row_raw).__name__}, {type(col_raw).__name__})"
+        )
+
+    row, col = int(row_raw), int(col_raw)
+    if not (0 <= row < NUM_ROWS and 0 <= col < NUM_COLS):
+        raise ValueError(
+            f"{arg_name} must be within Taxi grid bounds "
+            f"(row in [0, {NUM_ROWS - 1}], col in [0, {NUM_COLS - 1}]), "
+            f"got ({row}, {col})"
+        )
+    return row, col
 
 
 # =============================================================================
@@ -94,52 +121,91 @@ def decode_taxi_state(state: int) -> tuple[int, int, int, int]:
     return taxi_row, taxi_col, pass_loc, dest_idx
 
 
+def decode_observation(obs: int) -> list[int]:
+    """Decode Taxi-v3 integer observation into [taxi_row, taxi_col, passenger, destination]."""
+    taxi_row = obs // 100
+    taxi_col = (obs % 100) // 20
+    passenger = (obs % 20) // 4
+    destination = obs % 4
+    return [taxi_row, taxi_col, passenger, destination]
+
+
+def vector_encode_state(
+    state: int,
+    task_num: int | float = 0,  # kept for API compatibility
+) -> np.ndarray:
+    """Convert a discrete Taxi state index to decoded vector representation.
+
+    The output format is ``[taxi_row, taxi_col, passenger_loc, destination]``.
+    """
+    taxi_row, taxi_col, pass_loc, dest_idx = decode_taxi_state(state)
+    _ = task_num  # currently unused in the vector representation
+    return np.array([taxi_row, taxi_col, pass_loc, dest_idx], dtype=np.float32)
+
+
 def one_hot_encode_state(
     state: int,
     num_states: int = NUM_TAXI_STATES,
     task_num: int | float = 0,
 ) -> np.ndarray:
-    """Convert a discrete state to a one-hot vector with a task indicator appended.
+    """Backward-compatible alias to vector observation encoding.
 
-    Returns:
-        np.ndarray of shape ``(num_states + 1,)`` with dtype float32.
+    NOTE: despite its legacy name, this now returns the decoded 4D vector
+    representation. ``num_states`` and ``task_num`` are accepted only for API
+    compatibility with existing call sites.
     """
-    encoded = np.zeros(num_states + 1, dtype=np.float32)
-    encoded[state] = 1.0
-    encoded[-1] = np.float32(task_num)
-    return encoded
+    _ = num_states
+    return vector_encode_state(state, task_num=task_num)
 
 
 def observation_to_state(observation: np.ndarray | torch.Tensor) -> int:
-    """Convert a one-hot observation (with task indicator) to a discrete state index.
+    """Convert an observation vector back to a discrete Taxi state index.
 
-    The last element of *observation* is the task indicator and is ignored.
+    Supports:
+    - current decoded-vector format ``[taxi_row, taxi_col, passenger, destination]``
+    - legacy one-hot format (for backward compatibility)
     """
     if isinstance(observation, torch.Tensor):
-        return int(torch.argmax(observation[:-1]).item())
-    return int(np.argmax(observation[:-1]))
+        obs = observation.detach().cpu().numpy()
+    else:
+        obs = np.asarray(observation)
+    obs = obs.astype(np.float32).reshape(-1)
+
+    # Legacy compatibility: one-hot state(+task) vectors.
+    if obs.size >= NUM_TAXI_STATES:
+        return int(np.argmax(obs[:NUM_TAXI_STATES]))
+
+    if obs.size < 4:
+        raise ValueError(
+            f"Observation must have at least 4 values for decoded Taxi vector. Got shape={obs.shape}."
+        )
+
+    taxi_row = int(np.clip(round(float(obs[0])), 0, NUM_ROWS - 1))
+    taxi_col = int(np.clip(round(float(obs[1])), 0, NUM_COLS - 1))
+    pass_loc = int(np.clip(round(float(obs[2])), 0, NUM_PASS_LOCS - 1))
+    dest_idx = int(np.clip(round(float(obs[3])), 0, NUM_DEST - 1))
+    return encode_taxi_state(taxi_row, taxi_col, pass_loc, dest_idx)
 
 
 # =============================================================================
 # Gymnasium wrappers
 # =============================================================================
 
-class OneHotWrapper(gym.ObservationWrapper):
-    """Wrap Taxi's discrete state into a one-hot vector + task indicator."""
+class DecodedObservationWrapper(gym.ObservationWrapper):
+    """Wrap Taxi's discrete state into decoded vector [row, col, passenger, destination]."""
 
     def __init__(self, env: gym.Env, task_num: int):
         super().__init__(env)
-        n = env.observation_space.n  # type: ignore[union-attr]
-        low = np.zeros(n + 1, dtype=np.float32)
-        high = np.ones(n + 1, dtype=np.float32)
-        high[-1] = np.inf  # task indicator is unbounded above
-        self.observation_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
-        self.task_num = task_num
+        _ = task_num  # kept for API compatibility
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=np.array([NUM_ROWS - 1, NUM_COLS - 1, NUM_PASS_LOCS - 1, NUM_DEST - 1], dtype=np.int32),
+            shape=(4,),
+            dtype=np.int32,
+        )
 
     def observation(self, obs: int) -> np.ndarray:
-        return one_hot_encode_state(
-            obs, self.env.observation_space.n, self.task_num,  # type: ignore[union-attr]
-        )
+        return np.asarray(decode_observation(int(obs)), dtype=np.int32)
 
 
 class TaxiSafetyWrapper(gym.Wrapper):
@@ -154,6 +220,7 @@ class TaxiSafetyWrapper(gym.Wrapper):
 
     def step(self, action: int):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        # Reward of -10 is given by Taxi-v3 for illegal pickup/dropoff actions.
         info["safe"] = not (action in (4, 5) and reward == -10)
         return obs, reward, terminated, truncated, info
 
@@ -162,39 +229,43 @@ class FixedRouteTaxiWrapper(gym.Wrapper):
     """Constrain initial passenger and destination locations.
 
     On each ``reset`` the wrapper overrides the sampled initial state so that
-    the passenger starts at one of *passenger_locs* and the destination is one
-    of *dest_locs* (with passenger != destination).  The taxi position is
-    uniformly random across the 5x5 grid.
+    the passenger starts at *passenger_loc* and the destination is
+    *dest_loc*. The taxi position is fixed to *initial_taxi_loc*.
 
     Args:
         env: Base Taxi-v3 environment (must have a discrete state ``s``).
-        passenger_locs: Allowed passenger-start location indices (0-3).
-        dest_locs: Allowed destination location indices (0-3).
+        passenger_loc: Fixed passenger-start location index (0-3).
+        dest_loc: Fixed destination location index (0-3).
+        initial_taxi_loc: Fixed initial taxi location ``(row, col)``.
     """
 
     def __init__(
         self,
         env: gym.Env,
-        passenger_locs: list[int],
-        dest_locs: list[int],
+        passenger_loc: int,
+        dest_loc: int,
+        initial_taxi_loc: tuple[int, int] = (2, 3),
     ):
         super().__init__(env)
-        self.passenger_locs = passenger_locs
-        self.dest_locs = dest_locs
+        self.passenger_loc = int(passenger_loc)
+        self.dest_loc = int(dest_loc)
+        self.initial_taxi_loc = _validate_taxi_grid_location(initial_taxi_loc)
+        if self.passenger_loc == self.dest_loc:
+            raise ValueError(
+                "passenger_loc and dest_loc must be different for Taxi-v3 route constraints."
+            )
+        if not (0 <= self.passenger_loc < NUM_DEST):
+            raise ValueError(f"passenger_loc must be in [0, {NUM_DEST - 1}], got {self.passenger_loc}")
+        if not (0 <= self.dest_loc < NUM_DEST):
+            raise ValueError(f"dest_loc must be in [0, {NUM_DEST - 1}], got {self.dest_loc}")
 
     def reset(self, *, seed: int | None = None, **kwargs: Any):
         # Let the base env handle seeding and internal bookkeeping.
-        obs, info = self.env.reset(seed=seed, **kwargs)
+        _obs, info = self.env.reset(seed=seed, **kwargs)
 
-        rng = self.env.unwrapped.np_random
-        taxi_row = int(rng.integers(0, NUM_ROWS))
-        taxi_col = int(rng.integers(0, NUM_COLS))
-        pass_loc = int(rng.choice(self.passenger_locs))
-        dest_candidates = [d for d in self.dest_locs if d != pass_loc]
-        if not dest_candidates:
-            # Fallback when sets overlap and only one element remains.
-            dest_candidates = [d for d in range(NUM_DEST) if d != pass_loc]
-        dest_idx = int(rng.choice(dest_candidates))
+        taxi_row, taxi_col = self.initial_taxi_loc
+        pass_loc = int(self.passenger_loc)
+        dest_idx = int(self.dest_loc)
 
         state = encode_taxi_state(taxi_row, taxi_col, pass_loc, dest_idx)
         self.env.unwrapped.s = state
@@ -207,28 +278,43 @@ class FixedRouteTaxiWrapper(gym.Wrapper):
 
 def make_taxi_env(
     task_num: int,
-    passenger_locs: list[int] | None = None,
-    dest_locs: list[int] | None = None,
+    passenger_loc: int | None = None,
+    dest_loc: int | None = None,
+    initial_taxi_loc: tuple[int, int] = (2, 3),
     render_mode: str | None = None,
+    is_rainy: bool = False,
+    fickle_passenger: bool = False,
 ) -> gym.Env:
-    """Create a Taxi-v3 env wrapped with FixedRoute + OneHot + Safety wrappers.
+    """Create a Taxi-v3 env wrapped with FixedRoute + decoded-observation + Safety wrappers.
 
     Args:
-        task_num: Integer task indicator appended to the observation.
-        passenger_locs: If given (together with *dest_locs*), wrap with
+        task_num: Kept for API compatibility (not used in decoded-vector observations).
+        passenger_loc: If given (together with *dest_loc*), wrap with
             :class:`FixedRouteTaxiWrapper` to constrain initial states.
-        dest_locs: See *passenger_locs*.
+        dest_loc: See *passenger_loc*.
+        initial_taxi_loc: Fixed taxi start location ``(row, col)`` used when
+            route constraints are enabled.
         render_mode: Gymnasium render mode (``None``, ``'human'``, ``'rgb_array'``).
+        is_rainy: Taxi-v3 stochastic transition flag (False = deterministic).
+        fickle_passenger: Taxi-v3 destination-switch flag.
 
     Returns:
         A wrapped Gymnasium environment.
     """
-    env = gym.make("Taxi-v3", render_mode=render_mode)
-    if passenger_locs is not None and dest_locs is not None:
+    env = gym.make(
+        "Taxi-v3",
+        render_mode=render_mode,
+        is_rainy=is_rainy,
+        fickle_passenger=fickle_passenger,
+    )
+    if passenger_loc is not None and dest_loc is not None:
         env = FixedRouteTaxiWrapper(
-            env, passenger_locs=passenger_locs, dest_locs=dest_locs,
+            env,
+            passenger_loc=passenger_loc,
+            dest_loc=dest_loc,
+            initial_taxi_loc=initial_taxi_loc,
         )
-    env = OneHotWrapper(env, task_num=task_num)
+    env = DecodedObservationWrapper(env, task_num=task_num)
     env = TaxiSafetyWrapper(env)
     return env
 
@@ -237,10 +323,58 @@ def make_taxi_env(
 # Safety-dataset helpers
 # =============================================================================
 
+def get_safe_actions_for_state_index(state_index: int) -> list[int]:
+    """Return the list of safe actions for a Taxi-v3 state index.
+
+    Safety definition:
+    - Movement actions (0..3) are always safe.
+    - Pickup (4) is safe iff passenger is waiting at the taxi location.
+    - Dropoff (5) is safe iff passenger is in the taxi and the taxi is at the
+      current state's destination location.
+    """
+    taxi_row, taxi_col, pass_loc, dest_idx = decode_taxi_state(state_index)
+    taxi_loc = (taxi_row, taxi_col)
+    dest_loc = TAXI_LOCS[dest_idx]
+
+    safe_actions = [0, 1, 2, 3]  # move actions are always safe
+
+    pickup_safe = (pass_loc != 4) and (taxi_loc == TAXI_LOCS[pass_loc])
+    dropoff_safe = (pass_loc == 4) and (taxi_loc == dest_loc)
+
+    if pickup_safe:
+        safe_actions.append(4)
+    if dropoff_safe:
+        safe_actions.append(5)
+
+    return safe_actions
+
+
+def _enumerate_candidate_states(
+    passenger_loc: int | None = None,
+    dest_loc: int | None = None,
+) -> list[int]:
+    """Enumerate task-relevant states under optional route constraints.
+
+    Route constraints control initial states only, but during episodes the
+    passenger may be dropped at any named location. Therefore, when constraints
+    are provided, we still enumerate all passenger-location values (0..4) while
+    restricting destination to `dest_loc`.
+    """
+    if passenger_loc is None or dest_loc is None:
+        return list(range(NUM_TAXI_STATES))
+
+    states: list[int] = []
+    for row in range(NUM_ROWS):
+        for col in range(NUM_COLS):
+            for pass_loc in range(NUM_PASS_LOCS):
+                states.append(encode_taxi_state(row, col, pass_loc, dest_loc))
+    return states
+
+
 def get_all_unsafe_state_action_pairs(
     task_num: int = 0,
-    passenger_locs: list[int] | None = None,
-    dest_locs: list[int] | None = None,
+    passenger_loc: int | None = None,
+    dest_loc: int | None = None,
     state_repr: str = "observation",
 ) -> list[tuple]:
     """Return every ``(state, action)`` pair that is an illegal pickup/dropoff.
@@ -251,69 +385,92 @@ def get_all_unsafe_state_action_pairs(
     * **Pickup** is illegal when the passenger is already in the taxi
       (``pass_loc == 4``) **or** the taxi is not at the passenger's location.
     * **Dropoff** is illegal when the passenger is **not** in the taxi
-      (``pass_loc != 4``) **or** the taxi is not at any of the four special
-      locations (R, G, Y, B).
+      (``pass_loc != 4``) **or** the taxi is not at the destination for that
+      state.
 
-    If *passenger_locs* and *dest_locs* are provided, only states reachable
+    If *passenger_loc* and *dest_loc* are provided, only states reachable
     under that route constraint are enumerated.  Otherwise all 500 states are
     checked.
 
     Args:
-        task_num: Task indicator for the one-hot encoding.
-        passenger_locs: Allowed initial passenger locations (for filtering).
-        dest_locs: Allowed destination locations (for filtering).
-        state_repr: ``'observation'`` → one-hot ndarray, ``'state_index'`` → int.
+        task_num: Unused placeholder kept for API compatibility.
+        passenger_loc: Fixed initial passenger location (for filtering).
+        dest_loc: Fixed destination location (for filtering).
+        state_repr: ``'observation'`` → decoded-vector ndarray, ``'state_index'`` → int.
 
     Returns:
         List of ``(state, action)`` tuples.
     """
     assert state_repr in ("observation", "state_index")
 
-    # Determine reachable states
-    reachable: list[int] = []
-    if passenger_locs is not None and dest_locs is not None:
-        for row in range(NUM_ROWS):
-            for col in range(NUM_COLS):
-                for dest in dest_locs:
-                    # Before pickup: passenger at one of the allowed locations
-                    for ploc in passenger_locs:
-                        if ploc != dest:
-                            reachable.append(
-                                encode_taxi_state(row, col, ploc, dest),
-                            )
-                    # After pickup: passenger in taxi
-                    reachable.append(encode_taxi_state(row, col, 4, dest))
-    else:
-        reachable = list(range(NUM_TAXI_STATES))
+    # Determine task-relevant candidate states.
+    reachable = _enumerate_candidate_states(
+        passenger_loc=passenger_loc, dest_loc=dest_loc,
+    )
 
     unsafe_pairs: list[tuple] = []
     for s in reachable:
-        taxi_row, taxi_col, pass_loc, dest_idx = decode_taxi_state(s)
-        taxi_loc = (taxi_row, taxi_col)
+        safe_actions = set(get_safe_actions_for_state_index(s))
+        unsafe_actions = [a for a in (4, 5) if a not in safe_actions]
 
         if state_repr == "observation":
             state_vec: Any = one_hot_encode_state(s, NUM_TAXI_STATES, task_num)
         else:
             state_vec = s
 
-        # Pickup illegal when: pass already in taxi OR taxi not at passenger
-        pickup_unsafe = (pass_loc == 4) or (taxi_loc != TAXI_LOCS[pass_loc])
-        # Dropoff illegal when: pass not in taxi OR taxi not at any location
-        dropoff_unsafe = (pass_loc != 4) or (taxi_loc not in TAXI_LOCS)
-
-        if pickup_unsafe:
+        for action in unsafe_actions:
             if state_repr == "observation":
-                unsafe_pairs.append((state_vec.copy(), 4))
+                unsafe_pairs.append((state_vec.copy(), action))
             else:
-                unsafe_pairs.append((state_vec, 4))
-
-        if dropoff_unsafe:
-            if state_repr == "observation":
-                unsafe_pairs.append((state_vec.copy(), 5))
-            else:
-                unsafe_pairs.append((state_vec, 5))
+                unsafe_pairs.append((state_vec, action))
 
     return unsafe_pairs
+
+
+def create_taxi_safety_rashomon_dataset(
+    task_num: int = 0,
+    passenger_loc: int | None = None,
+    dest_loc: int | None = None,
+) -> TensorDataset:
+    """Create a multi-label safety dataset for Taxi Rashomon certification.
+
+    Safety labels follow Taxi legality:
+    - actions 0..3 are always safe,
+    - pickup (4) is safe only at passenger location when passenger not in taxi,
+    - dropoff (5) is safe only when passenger is in taxi and taxi is at destination.
+
+    Returns:
+        TensorDataset(X, Y) where:
+        - X: decoded observations, shape (N, 4)
+        - Y: multi-hot safe-action vectors, shape (N, 6)
+    """
+    candidate_states = _enumerate_candidate_states(
+        passenger_loc=passenger_loc, dest_loc=dest_loc,
+    )
+
+    obs_list: list[np.ndarray] = []
+    label_list: list[np.ndarray] = []
+    for s in candidate_states:
+        safe_actions = get_safe_actions_for_state_index(s)
+        if len(safe_actions) == NUM_ACTIONS:
+            # Keep only safety-critical states.
+            continue
+
+        obs = one_hot_encode_state(s, NUM_TAXI_STATES, task_num)
+        multi_hot = np.zeros(NUM_ACTIONS, dtype=np.float32)
+        for a in safe_actions:
+            multi_hot[a] = 1.0
+
+        obs_list.append(obs)
+        label_list.append(multi_hot)
+
+    if len(obs_list) == 0:
+        raise RuntimeError("No safety-critical states found for Taxi dataset.")
+
+    return TensorDataset(
+        torch.tensor(np.asarray(obs_list), dtype=torch.float32),
+        torch.tensor(np.asarray(label_list), dtype=torch.float32),
+    )
 
 
 def create_safe_optimal_policy_dataset(
@@ -398,8 +555,8 @@ def generate_sufficient_safe_state_action_dataset(
     are all actions **not** in the unsafe set.
 
     Returns:
-        ``TensorDataset(states, safe_actions)`` where ``safe_actions`` is
-        padded with ``-1`` to ``NUM_ACTIONS`` columns.
+        ``TensorDataset(states, safe_actions_multi_hot)`` where labels are
+        multi-hot vectors of length ``NUM_ACTIONS``.
     """
     print("\nCreating 'Sufficient Safety Data' dataset...")
     all_actions = set(range(NUM_ACTIONS))
@@ -412,11 +569,13 @@ def generate_sufficient_safe_state_action_dataset(
     safe_by_state = {k: all_actions - v for k, v in unsafe_by_state.items()}
 
     states_t = torch.FloatTensor(list(safe_by_state.keys()))
-    padded = [
-        list(sa) + [-1] * (NUM_ACTIONS - len(sa))
-        for sa in safe_by_state.values()
-    ]
-    actions_t = torch.LongTensor(padded)
+    labels = []
+    for safe_actions in safe_by_state.values():
+        y = np.zeros(NUM_ACTIONS, dtype=np.float32)
+        for action in safe_actions:
+            y[action] = 1.0
+        labels.append(y)
+    actions_t = torch.FloatTensor(np.asarray(labels))
 
     ds = torch.utils.data.TensorDataset(states_t, actions_t)
     print(f"  Generated safe actions for {len(ds)} states with unsafe actions")
@@ -428,8 +587,8 @@ def build_all_safety_datasets(
     actor: torch.nn.Module,
     task_num: int,
     training_data: dict,
-    passenger_locs: list[int] | None = None,
-    dest_locs: list[int] | None = None,
+    passenger_loc: int | None = None,
+    dest_loc: int | None = None,
     num_rollouts: int = 100,
     seed: int = 42,
 ) -> dict[str, torch.utils.data.TensorDataset]:
@@ -444,8 +603,8 @@ def build_all_safety_datasets(
     ds_training = create_safe_training_dataset(training_data)
     unsafe_pairs = get_all_unsafe_state_action_pairs(
         task_num=task_num,
-        passenger_locs=passenger_locs,
-        dest_locs=dest_locs,
+        passenger_loc=passenger_loc,
+        dest_loc=dest_loc,
     )
     ds_sufficient = generate_sufficient_safe_state_action_dataset(unsafe_pairs, env)
 
@@ -479,8 +638,8 @@ def train_safety_actor(
     Args:
         base_actor: The actor to clone and fine-tune.
         dataset: ``TensorDataset(states, actions)``.  For multi-label datasets
-            the actions tensor has shape ``(N, max_actions)`` and is padded
-            with ``-1``.
+            the actions tensor is a multi-hot float tensor of shape
+            ``(N, n_actions)`` with 1 for valid actions and 0 otherwise.
         multi_label: Whether the dataset contains multiple valid actions per
             state.
         lr: Learning rate.
@@ -513,23 +672,12 @@ def train_safety_actor(
             logits = safety_actor(batch_states)
 
             if multi_label:
-                valid_mask = batch_actions != -1
-                target_dist = torch.zeros_like(logits)
-                for i in range(batch_actions.shape[1]):
-                    col = batch_actions[:, i].clamp(min=0).unsqueeze(1)
-                    col_valid = valid_mask[:, i].float().unsqueeze(1)
-                    target_dist.scatter_(1, col, col_valid)
-                target_dist = target_dist / target_dist.sum(
-                    dim=1, keepdim=True,
-                ).clamp(min=1e-8)
+                target_dist = batch_actions / batch_actions.sum(dim=1, keepdim=True).clamp(min=1e-8)
                 log_probs = F.log_softmax(logits, dim=1)
                 loss = -(target_dist * log_probs).sum(dim=1).mean()
 
                 predicted = logits.argmax(dim=1)
-                pred_exp = predicted.unsqueeze(1).expand_as(batch_actions)
-                epoch_correct += (
-                    ((pred_exp == batch_actions) & valid_mask).any(dim=1).sum().item()
-                )
+                epoch_correct += batch_actions[torch.arange(batch_actions.size(0)), predicted].sum().item()
             else:
                 loss = F.cross_entropy(logits, batch_actions)
                 epoch_correct += (
@@ -561,11 +709,7 @@ def train_safety_actor(
         all_logits = safety_actor(all_states)
         all_preds = all_logits.argmax(dim=1)
         if multi_label:
-            vm = all_actions != -1
-            pe = all_preds.unsqueeze(1).expand_as(all_actions)
-            final_acc = (
-                ((pe == all_actions) & vm).any(dim=1).float().mean().item()
-            )
+            final_acc = all_actions[torch.arange(all_actions.size(0)), all_preds].float().mean().item()
         else:
             final_acc = (all_preds == all_actions).float().mean().item()
 
@@ -660,10 +804,16 @@ def verify_safety_accuracy(
 
     if multi_label:
         valid_actions = dataset.tensors[1]
-        valid_mask = valid_actions != -1
-        preds_exp = preds.unsqueeze(1).expand_as(valid_actions)
-        correct = ((preds_exp == valid_actions) & valid_mask).any(dim=1)
-        accuracy = correct.float().mean().item()
+        if valid_actions.ndim != 2:
+            raise ValueError(
+                "Multi-label dataset must provide 2D labels. "
+                f"Got shape={tuple(valid_actions.shape)}."
+            )
+
+        # Multi-hot vectors (N, n_actions), 1 for safe action.
+        idx = torch.arange(valid_actions.shape[0])
+        accuracy = (valid_actions[idx, preds] > 0).float().mean().item()
+        correct = valid_actions[idx, preds] > 0
     else:
         accuracy = (preds == dataset.tensors[1]).float().mean().item()
 
@@ -683,7 +833,10 @@ def verify_safety_accuracy(
                     state_idx,
                 )
                 p = preds[i].item()
-                va = valid_actions[i][valid_actions[i] != -1].tolist()
+                if torch.is_floating_point(valid_actions):
+                    va = torch.where(valid_actions[i] > 0)[0].tolist()
+                else:
+                    va = valid_actions[i][valid_actions[i] != -1].tolist()
                 print(
                     f"  state={state_idx}"
                     f" (taxi=({taxi_row},{taxi_col}),"

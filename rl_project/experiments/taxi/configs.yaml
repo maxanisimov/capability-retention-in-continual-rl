@@ -1,0 +1,35 @@
+different_dest:
+  task1_passenger_loc: 0          # R
+  task1_dest_loc: 1               # G
+  task2_passenger_loc: 0          # R
+  task2_dest_loc: 2               # Y
+  is_rainy: false                 # keep deterministic
+  fickle_passenger: false         # keep deterministic
+  source_total_timesteps: 500000
+  downstream_total_timesteps: 400000
+  eval_episodes: 1
+  notes: "The same passenger location (R), but different destinations (G vs Y)."
+
+different_passenger_locs:
+  task1_passenger_loc: 0          # R
+  task1_dest_loc: 1               # G
+  task2_passenger_loc: 2          # Y
+  task2_dest_loc: 1               # G
+  is_rainy: false
+  fickle_passenger: false
+  source_total_timesteps: 500000
+  downstream_total_timesteps: 400000
+  eval_episodes: 1
+  notes: "The same destinations (G), but different passenger locations (R vs Y)."
+
+swapped_locations:
+  task1_passenger_loc: 0          # R
+  task1_dest_loc: 1               # G
+  task2_passenger_loc: 1          # G
+  task2_dest_loc: 0               # R
+  is_rainy: false
+  fickle_passenger: false
+  source_total_timesteps: 500000
+  downstream_total_timesteps: 200000
+  eval_episodes: 100
+  notes: "Task 1 fixed route R->G, Task 2 fixed route G->R."
