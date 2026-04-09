@@ -45,17 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden", type=int, default=64)
 
-    parser.add_argument("--source-total-steps", type=int, default=500_000)
+    parser.add_argument("--source-total-steps", type=int, default=1_000_000) # NOTE: this is MAX number of training steps # used 500_000 before; 1_000_000 for diagonal_6x6 and seed 5
     parser.add_argument("--downstream-total-timesteps", type=int, default=50_000)
 
     parser.add_argument("--ent-coef", type=float, default=0.1)
     parser.add_argument("--ewc-lambda", type=float, default=5_000.0)
     parser.add_argument("--rashomon-n-iters", type=int, default=5_000)
-    parser.add_argument("--eval-episodes", type=int, default=100)
+    parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--source-mode", type=str, default="safe", choices=["original", "safe"],
-                        help="'original': use source policy as-is; "
-                             "'safe': finetune for safety before adaptation")
 
     parser.add_argument(
         "--python-bin",

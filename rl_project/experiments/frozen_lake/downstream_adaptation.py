@@ -45,7 +45,6 @@ from frozenlake_utils import (
 from rl_project.utils.gymnasium_utils import plot_episode, plot_state_action_pairs
 from rl_project.utils.ppo_utils import PPOConfig, ppo_train
 from rl_project.utils.ewc_ppo import EWCPPOConfig, ewc_ppo_train, compute_ewc_state
-from rl_project.experiments_neurips.frozenlake_safety import finetune_policy
 from src.trainer.IntervalTrainer import IntervalTrainer
 
 # ── path setup ──────────────────────────────────────────────────────────────
@@ -430,6 +429,8 @@ def main() -> None:
     torch.save(safety_rashomon_dataset, downstream_dir / "rashomon_dataset_safety.pt")
     # Backward-compatible artifact name.
     torch.save(safety_rashomon_dataset, downstream_dir / "rashomon_dataset.pt")
+
+    # TODO: add PerfAdapt that simply shows all possible optimal trajectories
 
     safety_state_action_pairs = dataset_to_state_action_pairs(safety_rashomon_dataset)
     env_plot = make_env(task=0, render_mode="rgb_array")
