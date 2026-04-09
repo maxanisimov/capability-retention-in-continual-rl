@@ -194,4 +194,5 @@ results/
 plots/
 tables/
 logs/
+notebooks/
 .DS_Store
