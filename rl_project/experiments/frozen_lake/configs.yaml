@@ -1,231 +1,131 @@
 standard_4x4:
-  env1_map: [
-    "SFFF", 
-    "FHFH", 
-    "FFFH", 
-    "HFFG"
-  ]
-  env2_map: [
-    "SHFF", 
-    "FFFH", 
-    "FHFF", 
-    "HFFG"
-  ]
+  env1_map:
+    - "SFFF"
+    - "FHFH"
+    - "FFFH"
+    - "HFFG"
+  env2_map:
+    - "SHFF"
+    - "FFFH"
+    - "FHFF"
+    - "HFFG"
   is_slippery: false
-  max_steps: 100 # max number of steps per episode in the environment
-  source_max_train_timesteps: 500000
-  seed: 42
+  train:
+    source_total_timesteps: 500000
+    downstream_total_timesteps: 50000
+    hidden: 64
+    ent_coef: 0.1
+    ewc_lambda: 5000.0
+    rashomon_n_iters: 5000
+    eval_episodes: 1
+    device: cpu
+    source_mode: safe
   notes: "Classic 4x4 FrozenLake. Standard hole positions shift between tasks."
 
 standard_4x4_v2:
-  env1_map: [
-    "SFFF", 
-    "FHFH", 
-    "FFFH", 
-    "HFFG"
-  ]
-  env2_map: [
-    "SFFF", 
-    "HFFH", 
-    "FHFF", 
-    "HFFG"
-  ]
+  env1_map:
+    - "SFFF"
+    - "FHFH"
+    - "FFFH"
+    - "HFFG"
+  env2_map:
+    - "SFFF"
+    - "HFFH"
+    - "FHFF"
+    - "HFFG"
   is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
+  train:
+    source_total_timesteps: 500000
+    downstream_total_timesteps: 50000
+    hidden: 64
+    ent_coef: 0.1
+    ewc_lambda: 5000.0
+    rashomon_n_iters: 5000
+    eval_episodes: 1
+    device: cpu
+    source_mode: safe
   notes: "Classic 4x4 FrozenLake. Standard hole positions shift between tasks."
 
-standard_4x4_v3:
-  env1_map: [
-    "SFFF", 
-    "FHFH", 
-    "FFFH", 
-    "HFFG"
-  ]
-  env2_map: [
-    "SFFF", 
-    "FHHF", 
-    "FHHF", 
-    "FFFG"
-  ]
-  is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
-  notes: "Classic 4x4 FrozenLake with big hole in the centre."
-
-standard_4x4_v4:
-  env1_map: [
-    "SFFF", 
-    "FHFH", 
-    "FFFH", 
-    "HFFG"
-  ]
-  env2_map: [
-    "SFFH", 
-    "FHFF", 
-    "FFHF", 
-    "HFFG"
-  ]
-  is_slippery: false
-  source_max_train_timesteps: 500000
-  seed: 42
-  notes: "Classic 4x4 FrozenLake with holes in the corners and on the diagonal."
-
-
-bottleneck_4x4:
-  env1_map: ["SFFF", "FHFF", "FHFF", "FFFG"]
-  env2_map: ["SFFH", "FFHF", "FFFF", "FFFG"]
-  is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
-  notes: "Holes create bottleneck passages, testing adaptation in constrained spaces."
-
 diagonal_4x4:
-  env1_map: [
-    "SFHH", 
-    "FFFH", 
-    "HFFF",
-    "HFFG"
-  ]
-  env2_map: [
-    "SFFF", 
-    "FHFF", 
-    "FFHF", 
-    "FFFG"
-  ]
+  env1_map:
+    - "SFHH"
+    - "FFFH"
+    - "HFFF"
+    - "HFFG"
+  env2_map:
+    - "SFFF"
+    - "FHFF"
+    - "FFHF"
+    - "FFFG"
   is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
+  train:
+    source_total_timesteps: 500000
+    downstream_total_timesteps: 50000
+    hidden: 64
+    ent_coef: 0.1
+    ewc_lambda: 5000.0
+    rashomon_n_iters: 5000
+    eval_episodes: 1
+    device: cpu
+    source_mode: safe
   notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
 
 diagonal_6x6:
-  env1_map: [
-    "SFHHHH", 
-    "FFFHHH", 
-    "HFFFHH",
-    "HFFFHH",
-    "HHHFFF",
-    "HHHHFG",
-  ]
-  env2_map: [
-    "SFFFFF", 
-    "FHFFFF", 
-    "FFHFFF", 
-    "FFFHFF",
-    "FFFFHF",
-    "FFFFFG",
-  ]
+  env1_map:
+    - "SFHHHH"
+    - "FFFHHH"
+    - "HFFFHH"
+    - "HFFFHH"
+    - "HHHFFF"
+    - "HHHHFG"
+  env2_map:
+    - "SFFFFF"
+    - "FHFFFF"
+    - "FFHFFF"
+    - "FFFHFF"
+    - "FFFFHF"
+    - "FFFFFG"
   is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
+  train:
+    source_total_timesteps: 500000
+    downstream_total_timesteps: 50000
+    hidden: 64
+    ent_coef: 0.1
+    ewc_lambda: 5000.0
+    rashomon_n_iters: 5000
+    eval_episodes: 1
+    device: cpu
+    source_mode: safe
   notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
 
 diagonal_8x8:
-  env1_map: [
-    "SFHHHHHH",
-    "FFFHHHHH", 
-    "HFFFHHHH", 
-    "HHFFFHHH",
-    "HHHFFFHH",
-    "HHHHFFFH",
-    "HHHHHFFF",
-    "HHHHHHFG",
-  ]
-  env2_map: [
-    "SFFFFFFF",
-    "FHFFFFFF", 
-    "FFHFFFFF", 
-    "FFFHFFFF",
-    "FFFFHFFF",
-    "FFFFFHFF",
-    "FFFFFFHF",
-    "FFFFFFFG",
-  ]
+  env1_map:
+    - "SFHHHHHH"
+    - "FFFHHHHH"
+    - "HFFFHHHH"
+    - "HHFFFHHH"
+    - "HHHFFFHH"
+    - "HHHHFFFH"
+    - "HHHHHFFF"
+    - "HHHHHHFG"
+  env2_map:
+    - "SFFFFFFF"
+    - "FHFFFFFF"
+    - "FFHFFFFF"
+    - "FFFHFFFF"
+    - "FFFFHFFF"
+    - "FFFFFHFF"
+    - "FFFFFFHF"
+    - "FFFFFFFG"
   is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
-  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
-
-diagonal_12x12:
-  env1_map: [
-    "SFHHHHHHHHHH",
-    "FFFHHHHHHHHH", 
-    "HFFFHHHHHHHH", 
-    "HHFFFHHHHHHH",
-    "HHHFFFHHHHHH",
-    "HHHHFFFHHHHH",
-    "HHHHHFFFHHHH",
-    "HHHHHHFFFHHH",
-    "HHHHHHHFFFHH",
-    "HHHHHHHHFFFH",
-    "HHHHHHHHHFFF",
-    "HHHHHHHHHHFG",
-  ]
-  env2_map: [
-    "SFFFFFFFFFFF",
-    "FHFFFFFFFFFF", 
-    "FFHFFFFFFFFF", 
-    "FFFHFFFFFFFF",
-    "FFFFHFFFFFFF",
-    "FFFFFHFFFFFF",
-    "FFFFFFHFFFFF",
-    "FFFFFFFHFFFF",
-    "FFFFFFFFHFFF",
-    "FFFFFFFFFHFF",
-    "FFFFFFFFFFHF",
-    "FFFFFFFFFFFG",
-  ]
-  is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 500000
-  seed: 42
-  notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."
-
-diagonal_16x16:
-  env1_map: [
-    "SFHHHHHHHHHHHHHH",
-    "FFFHHHHHHHHHHHHH", 
-    "HFFFHHHHHHHHHHHH", 
-    "HHFFFHHHHHHHHHHH",
-    "HHHFFFHHHHHHHHHH",
-    "HHHHFFFHHHHHHHHH",
-    "HHHHHFFFHHHHHHHH",
-    "HHHHHHFFFHHHHHHH",
-    "HHHHHHHFFFHHHHHH",
-    "HHHHHHHHFFFHHHHH",
-    "HHHHHHHHHFFFHHHH", 
-    "HHHHHHHHHHFFFHHH",
-    "HHHHHHHHHHHFFFHH",
-    "HHHHHHHHHHHHFFFH",
-    "HHHHHHHHHHHHHFFF",
-    "HHHHHHHHHHHHHHFG",
-  ]
-  env2_map: [
-    "SFFFFFFFFFFFFFFF",
-    "FHFFFFFFFFFFFFFF", 
-    "FFHFFFFFFFFFFFFF", 
-    "FFFHFFFFFFFFFFFF",
-    "FFFFHFFFFFFFFFFF",
-    "FFFFFHFFFFFFFFFF",
-    "FFFFFFHFFFFFFFFF",
-    "FFFFFFFHFFFFFFFF",
-    "FFFFFFFFHFFFFFFF",
-    "FFFFFFFFFHFFFFFF",
-    "FFFFFFFFFFHFFFFF",
-    "FFFFFFFFFFFHFFFF",
-    "FFFFFFFFFFFFHFFF",
-    "FFFFFFFFFFFFFHFF",
-    "FFFFFFFFFFFFFFHF",
-    "FFFFFFFFFFFFFFFG",
-  ]
-  is_slippery: false
-  max_steps: 100
-  source_max_train_timesteps: 1000000
-  # seed: 42
+  train:
+    source_total_timesteps: 500000
+    downstream_total_timesteps: 50000
+    hidden: 64
+    ent_coef: 0.1
+    ewc_lambda: 5000.0
+    rashomon_n_iters: 5000
+    eval_episodes: 1
+    device: cpu
+    source_mode: safe
   notes: "Diagonal safe trajectory in Task 1 which becomes dangerous in Task 2."

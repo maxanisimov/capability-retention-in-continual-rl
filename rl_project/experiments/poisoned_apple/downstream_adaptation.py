@@ -98,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         help="Where to save downstream outputs (default: <run_dir>/downstream)",
     )
     p.add_argument(
+        "--plots-dir",
+        type=str,
+        default=None,
+        help="Directory for plots (default: outputs/<cfg>/<seed>/plots).",
+    )
+    p.add_argument(
         "--total-timesteps",
         type=int,
         default=None,
@@ -489,6 +495,7 @@ def _evaluate_policy_on_task(
 
 def _plot_policy_trajectories(
     *,
+    cfg_name: str,
     cfg: dict[str, Any],
     policies: dict[str, torch.nn.Module],
     seed: int,
@@ -509,7 +516,7 @@ def _plot_policy_trajectories(
                     actor=actor,
                     num_episodes=1,
                     env_name=f"Task_{task_id}",
-                    cfg_name=cfg,
+                    cfg_name=cfg_name,
                     actor_name=policy_name,
                     save_dir=str(save_dir),
                 )
@@ -564,8 +571,10 @@ def main() -> None:
         source_dir = run_dir / "source"
 
     downstream_dir = Path(args.output_dir) if args.output_dir else (run_dir / "downstream")
+    if args.output_dir is not None and args.source_dir is None:
+        run_dir = downstream_dir.parent
     downstream_dir.mkdir(parents=True, exist_ok=True)
-    plots_dir = run_dir / "plots" if args.output_dir is None else (downstream_dir / "plots")
+    plots_dir = Path(args.plots_dir) if args.plots_dir else (run_dir / "plots")
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -576,6 +585,7 @@ def main() -> None:
     print(f"Source dir     : {source_dir}")
     print(f"Run dir        : {run_dir}")
     print(f"Downstream dir : {downstream_dir}")
+    print(f"Plots dir      : {plots_dir}")
     print(f"Timesteps      : {total_timesteps}")
     print(f"Eval episodes  : {eval_episodes}")
     if task2_early_stop_reward_threshold is not None:
@@ -785,14 +795,19 @@ def main() -> None:
             )
 
     results_df = pd.DataFrame(rows)
-    results_path = downstream_dir / "results_table.csv"
+    results_path = run_dir / "results_table.csv"
     results_df.to_csv(results_path, index=False)
+    legacy_results_path = downstream_dir / "results_table.csv"
+    if legacy_results_path != results_path:
+        results_df.to_csv(legacy_results_path, index=False)
 
     print("\n" + "=" * 80)
     print("RESULTS")
     print("=" * 80)
     print(results_df.to_string(index=False))
     print(f"\nTable saved to {results_path}")
+    if legacy_results_path != results_path:
+        print(f"Backward-compatible copy: {legacy_results_path}")
 
     # 7) Save artifacts
     print("\n[7/7] Saving checkpoints, summary, and plots ...")
@@ -830,6 +845,7 @@ def main() -> None:
 
     if args.save_plots:
         _plot_policy_trajectories(
+            cfg_name=args.cfg,
             cfg=cfg,
             policies=policies,
             seed=seed,

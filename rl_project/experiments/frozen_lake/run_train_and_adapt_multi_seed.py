@@ -64,8 +64,7 @@ def _available_cpu_ids() -> list[int]:
 def _child_env() -> dict[str, str]:
     env = dict(os.environ)
 
-    # Keep each run single-threaded at the BLAS/OpenMP layer so we do not
-    # oversubscribe cores when running multiple seeds in parallel.
+    # Keep each run single-threaded to avoid oversubscription.
     for key in (
         "OMP_NUM_THREADS",
         "MKL_NUM_THREADS",
@@ -80,7 +79,7 @@ def _child_env() -> dict[str, str]:
 
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("SDL_AUDIODRIVER", "dummy")
-    env.setdefault("ALSA_CONFIG_PATH", "/dev/null")
+    env.setdefault("ALSA_CONFIG_PATH", os.devnull)
     return env
 
 
@@ -110,7 +109,7 @@ def _prepare_parallelism(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run poisoned_apple/run_train_and_adapt.py for multiple seeds in parallel "
+            "Run frozen_lake/run_train_and_adapt.py for multiple seeds in parallel "
             "without CPU oversubscription (single-threaded workers + optional core pinning)."
         ),
     )
@@ -205,7 +204,7 @@ def main() -> int:
 
     if args.dry_run:
         print("=" * 90)
-        print("PoisonedApple multi-seed runner (dry run)")
+        print("FrozenLake multi-seed runner (dry run)")
         print(f"Config: {args.cfg}")
         print(f"Seeds: {seeds}")
         print(f"Run script: {run_script}")
@@ -240,7 +239,7 @@ def main() -> int:
     results: list[tuple[int, int, Path]] = []
 
     print("=" * 90)
-    print("PoisonedApple multi-seed runner")
+    print("FrozenLake multi-seed runner")
     print(f"Config: {args.cfg}")
     print(f"Seeds: {seeds}")
     print(f"Run script: {run_script}")
@@ -270,10 +269,7 @@ def main() -> int:
                 ]
                 cmd.extend(forwarded)
 
-                if core_id is not None:
-                    launch_cmd = ["taskset", "-c", str(core_id)] + cmd
-                else:
-                    launch_cmd = cmd
+                launch_cmd = ["taskset", "-c", str(core_id), *cmd] if core_id is not None else cmd
 
                 print(
                     f"[start] seed={seed} "
@@ -294,7 +290,7 @@ def main() -> int:
                         process=process,
                         log_file=log_path,
                         stream=stream,
-                    ),
+                    )
                 )
 
             time.sleep(max(0.1, args.poll_interval))
@@ -307,23 +303,25 @@ def main() -> int:
                     continue
 
                 job.stream.close()
+                results.append((job.seed, return_code, job.log_file))
                 if job.core_id is not None:
                     core_pool.append(job.core_id)
-                results.append((job.seed, return_code, job.log_file))
+
                 status = "ok" if return_code == 0 else "fail"
                 print(f"[{status}] seed={job.seed} rc={return_code} log={job.log_file}")
 
             running = still_running
 
     except KeyboardInterrupt:
-        print("\nInterrupted. Terminating active runs...")
+        print("\nInterrupted; terminating child processes...")
         for job in running:
             job.process.terminate()
         for job in running:
             try:
-                job.process.wait(timeout=10)
+                job.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 job.process.kill()
+        for job in running:
             job.stream.close()
         return 130
 
@@ -331,7 +329,7 @@ def main() -> int:
     succeeded = [seed for seed, rc, _ in results if rc == 0]
 
     print("=" * 90)
-    print("PoisonedApple multi-seed summary")
+    print("FrozenLake multi-seed summary")
     print(f"Config: {args.cfg}")
     print(f"Seeds requested: {len(seeds)}")
     print(f"Succeeded: {len(succeeded)}")

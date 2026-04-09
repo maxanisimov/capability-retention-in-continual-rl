@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
 """Aggregate FrozenLake downstream results across seeds.
 
-Expected per-seed file structure:
-  outputs/standard_4x4/<seed>/downstream/results_table.csv
+Expected per-seed file structure (final layout):
+  outputs/<cfg>/<seed>/results_table.csv
+
+Backward-compatible locations are also supported:
+  outputs/<cfg>/<seed>/downstream/results_table.csv
 
 This script reads all available seed tables, aligns rows by (Policy, Task), and
 computes mean/std across seeds for each metric cell.
 
 Examples:
   python aggregate_downstream_results.py
-  python aggregate_downstream_results.py --seeds 42 43 44
+  python aggregate_downstream_results.py --seeds 0 1 2 3 4 5 6 7 8 9
   python aggregate_downstream_results.py --base-dir outputs/standard_4x4 --output-dir outputs/standard_4x4/aggregated
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
 
+FROZEN_LAKE_DIR = Path(__file__).resolve().parent.parent
+
 
 def parse_args() -> argparse.Namespace:
-    script_dir = Path(__file__).resolve().parent
-    default_base = script_dir / "outputs" / "standard_4x4_v2"
+    default_base = FROZEN_LAKE_DIR / "outputs" / "standard_4x4"
     default_out = default_base / "aggregated"
 
     parser = argparse.ArgumentParser(description="Aggregate downstream results across seeds.")
@@ -33,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--base-dir",
         type=Path,
         default=default_base,
-        help="Directory containing seed folders (default: outputs/standard_4x4).",
+        help="Directory containing numeric seed folders (default: outputs/standard_4x4).",
     )
     parser.add_argument(
         "--seeds",
@@ -46,13 +49,13 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=default_out,
-        help="Directory for aggregated outputs.",
+        help="Directory for aggregated outputs (default: <base-dir>/aggregated).",
     )
     return parser.parse_args()
 
 
 def _discover_seeds(base_dir: Path, explicit_seeds: list[int] | None) -> list[int]:
-    if explicit_seeds is not None and len(explicit_seeds) > 0:
+    if explicit_seeds:
         return sorted(set(explicit_seeds))
 
     seeds: list[int] = []
@@ -63,9 +66,13 @@ def _discover_seeds(base_dir: Path, explicit_seeds: list[int] | None) -> list[in
 
 
 def _candidate_result_paths(seed_dir: Path) -> Iterable[Path]:
-    # Support both possible names to be resilient to user naming.
+    # Final layout first.
     yield seed_dir / "results_table.csv"
     yield seed_dir / "results.table.csv"
+
+    # Backward-compatible layouts.
+    yield seed_dir / "downstream" / "results_table.csv"
+    yield seed_dir / "downstream" / "results.table.csv"
 
 
 def _load_seed_table(base_dir: Path, seed: int) -> pd.DataFrame | None:
@@ -83,7 +90,6 @@ def _validate_columns(df: pd.DataFrame, path_hint: str) -> None:
         "Policy",
         "Task",
         "Avg Total Reward",
-        # "Avg Reward",
         "Success Rate",
         "Trajectory Safety Rate",
         "Critical State Safety Rate",
@@ -99,9 +105,9 @@ def _validate_columns(df: pd.DataFrame, path_hint: str) -> None:
 def main() -> None:
     args = parse_args()
     base_dir = args.base_dir.resolve()
-    output_dir = base_dir / "aggregated"
-    os.makedirs(output_dir, exist_ok=True)
-    cfg_name = args.base_dir.name
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cfg_name = base_dir.name
 
     if not base_dir.exists():
         raise FileNotFoundError(f"Base directory does not exist: {base_dir}")
@@ -129,7 +135,7 @@ def main() -> None:
         )
 
     all_df = pd.concat(frames, ignore_index=True)
-    all_df = all_df.rename(columns={'Avg Reward': 'Avg Total Reward'})  # In case of old naming
+    all_df = all_df.rename(columns={"Avg Reward": "Avg Total Reward"})
 
     group_cols = ["Policy", "Task"]
     metric_cols = [
@@ -148,7 +154,6 @@ def main() -> None:
     for col in metric_cols:
         summary[col] = means[col].map(lambda x: f"{x:.2f}") + " +- " + stds[col].map(lambda x: f"{x:.2f}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     mean_path = output_dir / "downstream_aggregated_mean.csv"
     std_path = output_dir / "downstream_aggregated_std.csv"
     summary_path = output_dir / "downstream_aggregated_mean_std.csv"
@@ -157,20 +162,22 @@ def main() -> None:
     stds.to_csv(std_path, index=False)
     summary.to_csv(summary_path, index=False)
 
-    # Per-task LaTeX tables
-    env_name = 'FrozenLake'
+    # Per-task LaTeX tables.
+    env_name = "FrozenLake"
     latex_cols_dct = {
-        1: ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Total Reward"], # source taks metrics 
-        2: ["Avg Total Reward", "Success Rate"], # downstream task metrics
+        1: ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Total Reward"],
+        2: ["Avg Total Reward", "Success Rate"],
     }
-    latex_policy_order = ['Source', 'UnsafeAdapt', 'EWC', 'SafeAdapt']
+    latex_policy_order = ["Source", "UnsafeAdapt", "EWC", "SafeAdapt"]
+
     for task in sorted(all_df["Task"].unique()):
-        latex_cols = latex_cols_dct.get(task, ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Total Reward"])
+        latex_cols = latex_cols_dct.get(
+            task,
+            ["Critical State Safety Rate", "Trajectory Safety Rate", "Avg Total Reward"],
+        )
         task_means = means[means["Task"] == task].drop(columns=["Task"])
         task_stds = stds[stds["Task"] == task].drop(columns=["Task"])
-        # task_name = 'source' if task == 1 else 'downstream'
 
-        # Build "mean ± std" table for LaTeX
         task_summary = task_means[["Policy"]].copy()
         for col in latex_cols:
             task_summary[col] = (
@@ -179,20 +186,25 @@ def main() -> None:
                 + task_stds[col].values.astype(str)
             )
         task_summary = task_summary.set_index("Policy").reindex(latex_policy_order).reset_index()
-
-        # Make sure the style is what you need:
         task_summary["Policy"] = task_summary["Policy"].replace("SafeAdapt", r"\textsc{SafeAdapt} (ours)")
+
         latex_path = output_dir / f"task{task}_table.tex"
-        analysis_type = 'stability' if task == 1 else 'plasticity'
+        analysis_type = "stability" if task == 1 else "plasticity"
         label = f"tab:{env_name}_{cfg_name}_task{task}"
-        caption_tail = f" {analysis_type} analysis: Task {task} metrics across {num_seeds} seeds (mean" + r" $\pm$ " + "std)"
+        caption_tail = (
+            f" {analysis_type} analysis: Task {task} metrics across {num_seeds} seeds (mean"
+            + r" $\pm$ "
+            + "std)"
+        )
+
+        column_format = "l" + "c" * len(latex_cols)
         task_summary.to_latex(
             latex_path,
             index=False,
             escape=False,
-            caption=env_name + r"(\texttt{" + cfg_name.replace('_', r'\_') + r"})" + caption_tail,
+            caption=env_name + r"(\texttt{" + cfg_name.replace("_", r"\_") + r"})" + caption_tail,
             label=label,
-            column_format='lccc'
+            column_format=column_format,
         )
         print(f"LaTeX table     : {latex_path}")
 
@@ -202,6 +214,7 @@ def main() -> None:
     print("DOWNSTREAM RESULTS AGGREGATION")
     print("=" * 80)
     print(f"Base dir        : {base_dir}")
+    print(f"Output dir      : {output_dir}")
     print(f"Requested seeds : {seeds}")
     print(f"Used seeds      : {used_seeds}")
     if missing_seeds:

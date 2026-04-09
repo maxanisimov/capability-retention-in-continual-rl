@@ -124,6 +124,12 @@ def main() -> None:
     parser.add_argument("--total-steps", type=int, default=500_000, help="Max PPO timesteps.")
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--output-dir", type=str, default=None, help="Where to save outputs (default: outputs/<cfg>/<seed>/source).")
+    parser.add_argument(
+        "--plots-dir",
+        type=str,
+        default=None,
+        help="Directory for plots (default: outputs/<cfg>/<seed>/plots).",
+    )
     args = parser.parse_args()
 
     # ── load config ──
@@ -137,6 +143,11 @@ def main() -> None:
 
     out_dir = Path(args.output_dir) if args.output_dir else _SCRIPT_DIR / "outputs" / args.cfg / str(args.seed) / "source"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.plots_dir:
+        plots_dir = Path(args.plots_dir)
+    else:
+        plots_dir = (out_dir.parent / "plots") if out_dir.name == "source" else (out_dir / "plots")
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
     _set_seeds(args.seed)
 
@@ -186,16 +197,19 @@ def main() -> None:
             )
 
     # Plot the learned policy
+    render_env = make_frozenlake_env(
+        env_map, task_num=0, is_slippery=is_slippery, render_mode='rgb_array'
+    )
     plot_episode(
-        env=make_frozenlake_env(
-            env_map, task_num=0, is_slippery=is_slippery, render_mode='rgb_array'
-        ),
+        env=render_env,
         actor=actor.cpu(),
         seed=args.seed,
-        save_path=str(out_dir / "source_policy_trajectory.png"),
+        save_path=str(plots_dir / "source_policy_trajectory.png"),
         figsize_per_frame=(3.0, 3.0),
         title='Source Policy Trajectory (Task 1)'
     )
+    render_env.close()
+    plt.close("all")
 
     # # Plot policy arrows on top of the environment frame
     # plot_policy_arrows(actor, env_map, is_slippery, save_path=str(out_dir / "source_policy_arrows.png"))

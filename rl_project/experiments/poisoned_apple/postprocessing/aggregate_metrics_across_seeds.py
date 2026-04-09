@@ -11,6 +11,7 @@ import pandas as pd
 
 
 DEFAULT_POLICIES = ["Source", "UnsafeAdapt", "EWC", "SafeAdapt"]
+POISONED_APPLE_DIR = Path(__file__).resolve().parent.parent
 
 
 def _escape_latex_text(text: object) -> str:
@@ -76,6 +77,13 @@ def _discover_seed_dirs(cfg_root: Path) -> list[int]:
         if child.is_dir() and child.name.isdigit():
             seeds.append(int(child.name))
     return seeds
+
+
+def _candidate_result_paths(seed_dir: Path) -> list[Path]:
+    return [
+        seed_dir / "results_table.csv",
+        seed_dir / "downstream" / "results_table.csv",
+    ]
 
 
 def _safe_float(x: object) -> float:
@@ -213,7 +221,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Aggregate PoisonedApple metrics across seeds for a config. "
-            "Reads downstream/results_table.csv per seed and writes CSV + LaTeX tables."
+            "Reads results_table.csv per seed and writes CSV + LaTeX tables."
         )
     )
     parser.add_argument("--cfg", required=True, type=str, help="Configuration name, e.g. simple_6x6")
@@ -221,7 +229,7 @@ def parse_args() -> argparse.Namespace:
         "--outputs-root",
         type=str,
         default=None,
-        help="Root outputs dir (default: <this_folder>/outputs)",
+        help="Root outputs dir (default: <poisoned_apple>/outputs)",
     )
     parser.add_argument(
         "--seeds",
@@ -249,7 +257,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=str,
         default=None,
-        help="Where tables are written (default: <outputs-root>/<cfg>/aggregated_metrics)",
+        help="Where tables are written (default: <outputs-root>/<cfg>/aggregated)",
     )
     parser.add_argument(
         "--environment-name",
@@ -288,8 +296,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    script_dir = Path(__file__).resolve().parent
-    outputs_root = Path(args.outputs_root) if args.outputs_root else script_dir / "outputs"
+    outputs_root = Path(args.outputs_root) if args.outputs_root else POISONED_APPLE_DIR / "outputs"
     cfg_root = outputs_root / args.cfg
     policies = [p.strip() for p in args.policies.split(",") if p.strip()]
     if not policies:
@@ -305,9 +312,11 @@ def main() -> None:
     rows: list[dict[str, object]] = []
     missing_files: list[Path] = []
     for seed in seeds:
-        results_path = cfg_root / str(seed) / "downstream" / "results_table.csv"
-        if not results_path.exists():
-            missing_files.append(results_path)
+        seed_dir = cfg_root / str(seed)
+        result_candidates = _candidate_result_paths(seed_dir)
+        results_path = next((path for path in result_candidates if path.exists()), None)
+        if results_path is None:
+            missing_files.append(result_candidates[0])
             continue
 
         seed_df = pd.read_csv(results_path)
@@ -350,7 +359,7 @@ def main() -> None:
 
     if not rows:
         raise RuntimeError(
-            "No rows loaded from downstream results_table.csv files. "
+            "No rows loaded from results_table.csv files. "
             "Check --cfg, --outputs-root, and --seeds."
         )
 
@@ -380,7 +389,7 @@ def main() -> None:
         ],
     )
 
-    output_dir = Path(args.output_dir) if args.output_dir else cfg_root / "aggregated_metrics"
+    output_dir = Path(args.output_dir) if args.output_dir else cfg_root / "aggregated"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     per_seed_csv = output_dir / "per_seed_metrics.csv"

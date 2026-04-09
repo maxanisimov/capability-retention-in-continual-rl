@@ -20,6 +20,7 @@ ACTION_DELTAS = {
     2: (0, 1),   # Right
     3: (-1, 0),  # Up
 }
+FROZEN_LAKE_DIR = Path(__file__).resolve().parent.parent
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,7 +33,13 @@ def parse_args() -> argparse.Namespace:
         "--outputs-root",
         type=Path,
         default=None,
-        help="Path to FrozenLake outputs root (default: <this_folder>/outputs).",
+        help="Path to FrozenLake outputs root (default: <frozen_lake>/outputs).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory where plots are written (default: outputs/<cfg>/<seed>/rashomon_logit_bounds).",
     )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--dpi", type=int, default=300)
@@ -283,21 +290,29 @@ def plot_worst_case_probs(
 
 def main() -> None:
     args = parse_args()
-    script_dir = Path(__file__).resolve().parent
-    outputs_root = args.outputs_root or (script_dir / "outputs")
+    outputs_root = args.outputs_root or (FROZEN_LAKE_DIR / "outputs")
+    run_dir = outputs_root / args.cfg / str(args.seed)
 
-    downstream_dir = outputs_root / args.cfg / str(args.seed) / "downstream"
-    plots_dir = outputs_root / args.cfg / str(args.seed) / "plots" / "rashomon_logit_bounds"
+    plots_dir = args.output_dir if args.output_dir else (run_dir / "rashomon_logit_bounds")
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    bounded_model_path = downstream_dir / "bounded_model.pt"
-    rashomon_dataset_path = downstream_dir / "rashomon_dataset.pt"
-    configs_path = script_dir / "configs.yaml"
+    bounded_model_candidates = [
+        run_dir / "bounded_model.pt",
+        run_dir / "downstream" / "bounded_model.pt",
+    ]
+    rashomon_dataset_candidates = [
+        run_dir / "rashomon_dataset.pt",
+        run_dir / "downstream" / "rashomon_dataset.pt",
+    ]
+    configs_path = FROZEN_LAKE_DIR / "configs.yaml"
 
-    if not bounded_model_path.exists():
-        raise FileNotFoundError(f"Missing bounded_model: {bounded_model_path}")
-    if not rashomon_dataset_path.exists():
-        raise FileNotFoundError(f"Missing rashomon_dataset: {rashomon_dataset_path}")
+    bounded_model_path = next((p for p in bounded_model_candidates if p.exists()), None)
+    rashomon_dataset_path = next((p for p in rashomon_dataset_candidates if p.exists()), None)
+
+    if bounded_model_path is None:
+        raise FileNotFoundError(f"Missing bounded_model. Checked: {bounded_model_candidates}")
+    if rashomon_dataset_path is None:
+        raise FileNotFoundError(f"Missing rashomon_dataset. Checked: {rashomon_dataset_candidates}")
     if not configs_path.exists():
         raise FileNotFoundError(f"Missing configs.yaml: {configs_path}")
 
@@ -371,6 +386,8 @@ def main() -> None:
         show=args.show,
     )
 
+    print(f"Loaded bounded_model from: {bounded_model_path}")
+    print(f"Loaded rashomon_dataset from: {rashomon_dataset_path}")
     print(f"Saved plots to: {plots_dir}")
 
 

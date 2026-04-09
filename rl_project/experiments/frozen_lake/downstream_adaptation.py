@@ -6,7 +6,7 @@ Steps:
   2. Build a safety Rashomon dataset from Task 1 and compute safety bounds.
   3. Build a trajectory Rashomon dataset from Task 1 and compute performance bounds.
   4. SafeAdapt  — adapt to Task 2 using safety Rashomon bounds.
-  5. PerfAdapt  — adapt to Task 2 using trajectory Rashomon bounds.
+  5. PerfAdapt  — adapt to Task 2 using trajectory Rashomon bounds (currently disabled).
   6. UnsafeAdapt — adapt to Task 2 without any bounds.
   7. EWC         — adapt to Task 2 using Elastic Weight Consolidation.
   8. Evaluate all policies in Task 1 and Task 2; save trajectory plots and a
@@ -66,6 +66,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", type=str, default=None,
                    help="Where to save results. Defaults to outputs/<cfg>/<seed>/downstream")
     p.add_argument(
+        "--plots-dir",
+        type=str,
+        default=None,
+        help="Directory for plots. Defaults to outputs/<cfg>/<seed>/plots.",
+    )
+    p.add_argument(
         "--total-timesteps", type=int, default=50_000, help="Max total timesteps for downstream adaptation"
     )
     p.add_argument("--ent-coef", type=float, default=0.1)
@@ -78,17 +84,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument(
-        "--source-mode",
-        type=str,
-        default="safe",
-        choices=["original", "safe"],
-        help=(
-            "'original': use source policy as-is for safety-based adaptation; "
-            "'safe': finetune source to be safe in critical states before safety-based adaptation "
-            "(PerfAdapt always uses trajectory Rashomon bounds)."
-        ),
-    )
     return p.parse_args()
 
 
@@ -315,7 +310,7 @@ def compute_rashomon_bounds(
         n_iters=rashomon_n_iters,
         min_acc_increment=0,
         T=inverse_temp,
-        checkpoint=100,
+        checkpoint=100, # type: ignore
     )
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
@@ -386,7 +381,7 @@ def main() -> None:
 
     downstream_dir = Path(args.output_dir) if args.output_dir else (run_dir / "downstream")
     downstream_dir.mkdir(parents=True, exist_ok=True)
-    plots_dir = run_dir / "plots" if args.output_dir is None else (downstream_dir / "plots")
+    plots_dir = Path(args.plots_dir) if args.plots_dir else run_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -397,10 +392,10 @@ def main() -> None:
     print(f"Source dir     : {source_dir}")
     print(f"Run dir        : {run_dir}")
     print(f"Downstream dir : {downstream_dir}")
+    print(f"Plots dir      : {plots_dir}")
     print(f"Timesteps      : {args.total_timesteps}")
     print(f"EWC lambda     : {args.ewc_lambda}")
     print(f"Eval episodes  : {args.eval_episodes}")
-    print(f"Source mode    : {args.source_mode}")
     print("=" * 80)
 
     # ── 1. Load source policy ───────────────────────────────────────────
@@ -418,8 +413,8 @@ def main() -> None:
     )
     print(f"  Source training data: {len(source_training_data['states'])} transitions")
 
-    # Keep an untouched copy of the source actor for trajectory-based PerfAdapt.
-    source_actor_for_perf = copy.deepcopy(source_actor).cpu()
+    # # Keep an untouched copy of the source actor for trajectory-based PerfAdapt.
+    # source_actor_for_perf = copy.deepcopy(source_actor).cpu()
 
     # ── 2. Build safety Rashomon dataset and bounds ─────────────────────
     print("\n[2/8] Building safety Rashomon dataset and bounds …")
@@ -429,8 +424,6 @@ def main() -> None:
     torch.save(safety_rashomon_dataset, downstream_dir / "rashomon_dataset_safety.pt")
     # Backward-compatible artifact name.
     torch.save(safety_rashomon_dataset, downstream_dir / "rashomon_dataset.pt")
-
-    # TODO: add PerfAdapt that simply shows all possible optimal trajectories
 
     safety_state_action_pairs = dataset_to_state_action_pairs(safety_rashomon_dataset)
     env_plot = make_env(task=0, render_mode="rgb_array")
@@ -454,36 +447,36 @@ def main() -> None:
     # Backward-compatible artifact name.
     torch.save(safe_bounded_model, downstream_dir / "bounded_model.pt")
 
-    # ── 3. Build trajectory Rashomon dataset and bounds (PerfAdapt) ─────
-    print("\n[3/8] Building trajectory Rashomon dataset and bounds (PerfAdapt) …")
-    env1_perf = make_env(task=0)
-    perf_rashomon_dataset, perf_state_action_pairs = create_source_trajectory_rashomon_dataset(
-        actor=source_actor_for_perf,
-        env=env1_perf,
-        seed=args.seed,
-        n_actions=n_actions,
-    )
-    env1_perf.close()
-    torch.save(perf_rashomon_dataset, downstream_dir / "rashomon_dataset_performance.pt")
+    # # ── 3. Build trajectory Rashomon dataset and bounds (PerfAdapt) ─────
+    # print("\n[3/8] Building trajectory Rashomon dataset and bounds (PerfAdapt) …")
+    # env1_perf = make_env(task=0)
+    # perf_rashomon_dataset, perf_state_action_pairs = create_source_trajectory_rashomon_dataset(
+    #     actor=source_actor_for_perf,
+    #     env=env1_perf,
+    #     seed=args.seed,
+    #     n_actions=n_actions,
+    # )
+    # env1_perf.close()
+    # torch.save(perf_rashomon_dataset, downstream_dir / "rashomon_dataset_performance.pt")
 
-    env_plot = make_env(task=0, render_mode="rgb_array")
-    _ = plot_state_action_pairs(
-        env=env_plot,
-        state_action_pairs=perf_state_action_pairs,
-        arrow_color="orange",
-        title="Rashomon state-action pairs (source trajectory, Task 1)",
-        save_path=str(plots_dir / "rashomon_state_action_pairs_performance.png"),
-    )
-    env_plot.close()
+    # env_plot = make_env(task=0, render_mode="rgb_array")
+    # _ = plot_state_action_pairs(
+    #     env=env_plot,
+    #     state_action_pairs=perf_state_action_pairs,
+    #     arrow_color="orange",
+    #     title="Rashomon state-action pairs (source trajectory, Task 1)",
+    #     save_path=str(plots_dir / "rashomon_state_action_pairs_performance.png"),
+    # )
+    # env_plot.close()
 
-    perf_param_bounds_l, perf_param_bounds_u, perf_bounded_model = compute_rashomon_bounds(
-        actor=source_actor_for_perf,
-        rashomon_dataset=perf_rashomon_dataset,
-        seed=args.seed,
-        rashomon_n_iters=args.rashomon_n_iters,
-        dataset_name="Perf",
-    )
-    torch.save(perf_bounded_model, downstream_dir / "bounded_model_performance.pt")
+    # perf_param_bounds_l, perf_param_bounds_u, perf_bounded_model = compute_rashomon_bounds(
+    #     actor=source_actor_for_perf,
+    #     rashomon_dataset=perf_rashomon_dataset,
+    #     seed=args.seed,
+    #     rashomon_n_iters=args.rashomon_n_iters,
+    #     dataset_name="Perf",
+    # )
+    # torch.save(perf_bounded_model, downstream_dir / "bounded_model_performance.pt")
 
     # ── 4. SafeAdapt — PPO with safety Rashomon bounds ──────────────────
     print("\n[4/8] SafeAdapt: PPO with safety Rashomon bounds …")
@@ -507,27 +500,27 @@ def main() -> None:
     )
     env2.close()
 
-    # ── 5. PerfAdapt — PPO with trajectory Rashomon bounds ──────────────
-    print("\n[5/8] PerfAdapt: PPO with trajectory Rashomon bounds …")
-    _set_seeds(args.seed)
-    env2 = make_env(task=1)
-    perf_cfg = PPOConfig(
-        seed=args.seed,
-        total_timesteps=args.total_timesteps,
-        ent_coef=args.ent_coef,
-        early_stop=True,
-        early_stop_reward_threshold=1.0,
-        eval_episodes=args.eval_episodes,
-    )
-    perf_actor, _ = ppo_train( # type: ignore
-        env=env2,
-        cfg=perf_cfg,
-        actor_warm_start=copy.deepcopy(source_actor_for_perf),
-        critic_warm_start=copy.deepcopy(source_critic),
-        actor_param_bounds_l=perf_param_bounds_l,
-        actor_param_bounds_u=perf_param_bounds_u,
-    )
-    env2.close()
+    # # ── 5. PerfAdapt — PPO with trajectory Rashomon bounds ──────────────
+    # print("\n[5/8] PerfAdapt: PPO with trajectory Rashomon bounds …")
+    # _set_seeds(args.seed)
+    # env2 = make_env(task=1)
+    # perf_cfg = PPOConfig(
+    #     seed=args.seed,
+    #     total_timesteps=args.total_timesteps,
+    #     ent_coef=args.ent_coef,
+    #     early_stop=True,
+    #     early_stop_reward_threshold=1.0,
+    #     eval_episodes=args.eval_episodes,
+    # )
+    # perf_actor, _ = ppo_train( # type: ignore
+    #     env=env2,
+    #     cfg=perf_cfg,
+    #     actor_warm_start=copy.deepcopy(source_actor_for_perf),
+    #     critic_warm_start=copy.deepcopy(source_critic),
+    #     actor_param_bounds_l=perf_param_bounds_l,
+    #     actor_param_bounds_u=perf_param_bounds_u,
+    # )
+    # env2.close()
 
     # ── 6. UnsafeAdapt — PPO without bounds ─────────────────────────────
     print("\n[6/8] UnsafeAdapt: PPO without any bounds …")
@@ -584,14 +577,14 @@ def main() -> None:
 
     # Ensure all actors are on CPU (ppo_train may leave them on CUDA)
     safe_actor.cpu()
-    perf_actor.cpu()
+    # perf_actor.cpu()
     unsafe_actor.cpu()
     ewc_actor.cpu()
 
     policies = {
         "Source":      source_actor,
         "SafeAdapt":   safe_actor,
-        "PerfAdapt":   perf_actor,
+        # "PerfAdapt":   perf_actor,
         "UnsafeAdapt": unsafe_actor,
         "EWC":         ewc_actor,
     }
@@ -634,14 +627,20 @@ def main() -> None:
     print("=" * 80)
     print(df.to_string(index=False))
 
-    # Save table
-    csv_path = downstream_dir / "results_table.csv"
+    # Save table at run root (requested pipeline location) and keep a
+    # downstream copy for backward compatibility with older tooling.
+    csv_path = run_dir / "results_table.csv"
     df.to_csv(csv_path, index=False)
+    legacy_csv_path = downstream_dir / "results_table.csv"
+    if legacy_csv_path != csv_path:
+        df.to_csv(legacy_csv_path, index=False)
     print(f"\nTable saved to {csv_path}")
+    if legacy_csv_path != csv_path:
+        print(f"Compatibility copy saved to {legacy_csv_path}")
 
     # ── Save policy networks ───────────────────────────────────────────
     torch.save(safe_actor.state_dict(), downstream_dir / "safeadapt_actor.pt")
-    torch.save(perf_actor.state_dict(), downstream_dir / "perfadapt_actor.pt")
+    # torch.save(perf_actor.state_dict(), downstream_dir / "perfadapt_actor.pt")
     torch.save(unsafe_actor.state_dict(), downstream_dir / "unsafeadapt_actor.pt")
     torch.save(ewc_actor.state_dict(), downstream_dir / "ewc_actor.pt")
     print("\nPolicy networks saved to downstream directory.")

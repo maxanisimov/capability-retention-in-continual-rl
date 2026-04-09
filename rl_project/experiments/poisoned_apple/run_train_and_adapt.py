@@ -7,6 +7,9 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 # Suppress ALSA warnings from pygame/gymnasium on headless servers
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -49,10 +52,17 @@ def parse_args() -> argparse.Namespace:
 
     # Source-stage controls
     parser.add_argument(
-        "--source-total-steps",
+        "--source-total-timesteps",
         type=int,
         default=None,
-        help="Override source PPO total steps (default: from config).",
+        help="Override source PPO total timesteps (default: from config).",
+    )
+    parser.add_argument(
+        "--source-total-steps",
+        dest="source_total_steps_legacy",
+        type=int,
+        default=None,
+        help="Deprecated alias for --source-total-timesteps.",
     )
     parser.add_argument(
         "--source-eval-episodes",
@@ -83,10 +93,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override downstream evaluation episodes (default: from config).",
     )
-    parser.add_argument("--ent-coef", type=float, default=0.01)
-    parser.add_argument("--ewc-lambda", type=float, default=5_000.0)
-    parser.add_argument("--ewc-fisher-sample-size", type=int, default=1_000)
-    parser.add_argument("--rashomon-n-iters", type=int, default=20_000)
+    parser.add_argument("--ent-coef", type=float, default=None)
+    parser.add_argument("--ewc-lambda", type=float, default=None)
+    parser.add_argument("--ewc-fisher-sample-size", type=int, default=None)
+    parser.add_argument("--rashomon-n-iters", type=int, default=None)
     parser.add_argument(
         "--save-plots",
         action=argparse.BooleanOptionalAction,
@@ -95,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Shared overrides
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--min-safety-accuracy", type=float, default=None)
 
     parser.add_argument(
@@ -126,6 +136,29 @@ def _maybe_add(cmd: list[str], key: str, value: object | None) -> None:
     cmd.extend([key, str(value)])
 
 
+def _load_cfg(script_dir: Path, cfg_name: str) -> dict[str, Any]:
+    config_path = script_dir / "configs.yaml"
+    with config_path.open("r", encoding="utf-8") as f:
+        all_cfgs = yaml.safe_load(f)
+
+    if not isinstance(all_cfgs, dict):
+        raise ValueError(f"Expected mapping in {config_path}, got {type(all_cfgs).__name__}.")
+    if cfg_name not in all_cfgs:
+        available = sorted(all_cfgs.keys())
+        raise KeyError(f"Config '{cfg_name}' not found in {config_path}. Available: {available}")
+
+    cfg = all_cfgs[cfg_name]
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Config '{cfg_name}' must be a mapping.")
+    return cfg
+
+
+def _resolve(cli_value: Any, cfg: dict[str, Any], key: str, fallback: Any) -> Any:
+    if cli_value is not None:
+        return cli_value
+    return cfg.get(key, fallback)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -133,12 +166,58 @@ def main() -> None:
     train_script = script_dir / "train_source_policy.py"
     downstream_script = script_dir / "downstream_adaptation.py"
 
+    cfg = _load_cfg(script_dir=script_dir, cfg_name=args.cfg)
+
+    if (
+        args.source_total_timesteps is not None
+        and args.source_total_steps_legacy is not None
+        and args.source_total_timesteps != args.source_total_steps_legacy
+    ):
+        raise ValueError(
+            "Both --source-total-timesteps and deprecated --source-total-steps were provided "
+            "with different values. Please provide only one value."
+        )
+
+    source_cli_value = args.source_total_timesteps
+    if source_cli_value is None and args.source_total_steps_legacy is not None:
+        source_cli_value = args.source_total_steps_legacy
+        print(
+            "WARNING: --source-total-steps is deprecated; use --source-total-timesteps instead.",
+            file=sys.stderr,
+        )
+
+    source_total_timesteps = int(_resolve(source_cli_value, cfg, "source_total_timesteps", 50_000))
+    downstream_total_timesteps = int(
+        _resolve(
+            args.downstream_total_timesteps,
+            cfg,
+            "downstream_total_timesteps",
+            source_total_timesteps,
+        )
+    )
+    source_eval_episodes = int(_resolve(args.source_eval_episodes, cfg, "eval_episodes", 100))
+    downstream_eval_episodes = int(_resolve(args.downstream_eval_episodes, cfg, "eval_episodes", 100))
+    ent_coef = float(_resolve(args.ent_coef, cfg, "ppo_ent_coef", 0.01))
+    ewc_lambda = float(_resolve(args.ewc_lambda, cfg, "ewc_lambda", 5_000.0))
+    ewc_fisher_sample_size = int(_resolve(args.ewc_fisher_sample_size, cfg, "ewc_fisher_sample_size", 1_000))
+    rashomon_n_iters = int(_resolve(args.rashomon_n_iters, cfg, "rashomon_n_iters", 20_000))
+    device = str(_resolve(args.device, cfg, "device", "cpu"))
+
+    min_safety_accuracy = args.min_safety_accuracy
+    if min_safety_accuracy is None and "min_safety_accuracy" in cfg:
+        min_safety_accuracy = float(cfg["min_safety_accuracy"])
+
     output_root = Path(args.output_root) if args.output_root else script_dir / "outputs"
     logs_root = Path(args.logs_root) if args.logs_root else script_dir / "logs"
 
     run_dir = output_root / args.cfg / str(args.seed)
     source_output_dir = run_dir / "source"
     downstream_output_dir = run_dir / "downstream"
+    plots_dir = run_dir / "plots"
+
+    source_output_dir.mkdir(parents=True, exist_ok=True)
+    downstream_output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_logs_dir = logs_root / args.cfg / str(args.seed) / run_id
@@ -153,16 +232,20 @@ def main() -> None:
         "--seed",
         str(args.seed),
         "--device",
-        args.device,
+        device,
         "--output-dir",
         str(source_output_dir),
+        "--plots-dir",
+        str(plots_dir),
+        "--total-steps",
+        str(source_total_timesteps),
+        "--eval-episodes",
+        str(source_eval_episodes),
     ]
-    _maybe_add(train_cmd, "--total-steps", args.source_total_steps)
-    _maybe_add(train_cmd, "--eval-episodes", args.source_eval_episodes)
     _maybe_add(train_cmd, "--bc-epochs", args.bc_epochs)
     _maybe_add(train_cmd, "--bc-lr", args.bc_lr)
     _maybe_add(train_cmd, "--bc-batch-size", args.bc_batch_size)
-    _maybe_add(train_cmd, "--min-safety-accuracy", args.min_safety_accuracy)
+    _maybe_add(train_cmd, "--min-safety-accuracy", min_safety_accuracy)
     train_cmd.append("--safety-finetuning" if args.source_safety_finetuning else "--no-safety-finetuning")
 
     downstream_cmd = [
@@ -173,23 +256,27 @@ def main() -> None:
         "--seed",
         str(args.seed),
         "--source-dir",
-        str(run_dir),
+        str(source_output_dir),
         "--output-dir",
         str(downstream_output_dir),
+        "--plots-dir",
+        str(plots_dir),
         "--ent-coef",
-        str(args.ent_coef),
+        str(ent_coef),
         "--ewc-lambda",
-        str(args.ewc_lambda),
+        str(ewc_lambda),
         "--ewc-fisher-sample-size",
-        str(args.ewc_fisher_sample_size),
+        str(ewc_fisher_sample_size),
         "--rashomon-n-iters",
-        str(args.rashomon_n_iters),
+        str(rashomon_n_iters),
         "--device",
-        args.device,
+        device,
+        "--total-timesteps",
+        str(downstream_total_timesteps),
+        "--eval-episodes",
+        str(downstream_eval_episodes),
     ]
-    _maybe_add(downstream_cmd, "--total-timesteps", args.downstream_total_timesteps)
-    _maybe_add(downstream_cmd, "--eval-episodes", args.downstream_eval_episodes)
-    _maybe_add(downstream_cmd, "--min-safety-accuracy", args.min_safety_accuracy)
+    _maybe_add(downstream_cmd, "--min-safety-accuracy", min_safety_accuracy)
     downstream_cmd.append("--save-plots" if args.save_plots else "--no-save-plots")
 
     print("=" * 80)
@@ -198,7 +285,20 @@ def main() -> None:
     print(f"Run dir: {run_dir}")
     print(f"  Source:     {source_output_dir}")
     print(f"  Downstream: {downstream_output_dir}")
+    print(f"  Plots:      {plots_dir}")
     print(f"Logs dir: {run_logs_dir}")
+    print("-" * 80)
+    print(f"source_total_timesteps     : {source_total_timesteps}")
+    print(f"downstream_total_timesteps : {downstream_total_timesteps}")
+    print(f"source_eval_episodes       : {source_eval_episodes}")
+    print(f"downstream_eval_episodes   : {downstream_eval_episodes}")
+    print(f"ent_coef                   : {ent_coef}")
+    print(f"ewc_lambda                 : {ewc_lambda}")
+    print(f"ewc_fisher_sample_size     : {ewc_fisher_sample_size}")
+    print(f"rashomon_n_iters           : {rashomon_n_iters}")
+    print(f"device                     : {device}")
+    if min_safety_accuracy is not None:
+        print(f"min_safety_accuracy        : {min_safety_accuracy}")
     print("=" * 80)
 
     run_and_log(train_cmd, train_log)

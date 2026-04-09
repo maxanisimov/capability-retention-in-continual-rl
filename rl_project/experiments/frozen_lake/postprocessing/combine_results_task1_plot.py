@@ -19,24 +19,30 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+FROZEN_LAKE_DIR = Path(__file__).resolve().parent.parent
+
 
 def parse_args() -> argparse.Namespace:
-    script_dir = Path(__file__).resolve().parent
-    default_input = script_dir / "outputs" / "combined_task1_table.tex"
-    default_output = script_dir / "outputs" / "combined_task1_summary_plot.png"
+    default_outputs_dir = FROZEN_LAKE_DIR / "outputs"
 
     parser = argparse.ArgumentParser(description="Plot summary from combined Task-1 LaTeX table.")
     parser.add_argument(
+        "--outputs-dir",
+        type=Path,
+        default=default_outputs_dir,
+        help="Path to FrozenLake outputs directory.",
+    )
+    parser.add_argument(
         "--input-tex",
         type=Path,
-        default=default_input,
-        help="Path to combined_task1_table.tex",
+        default=None,
+        help="Path to combined_task1_table.tex (default: <outputs-dir>/combined_task1_table.tex).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=default_output,
-        help="Path to save output plot (.png/.pdf/.svg)",
+        default=None,
+        help="Path to save output plot (.png/.pdf/.svg). Default: <outputs-dir>/combined_task1_summary_plot.png",
     )
     return parser.parse_args()
 
@@ -195,8 +201,9 @@ def make_plot(df: pd.DataFrame, output_path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    input_tex = args.input_tex.resolve()
-    output = args.output.resolve()
+    outputs_dir = args.outputs_dir.resolve()
+    input_tex = (args.input_tex if args.input_tex else (outputs_dir / "combined_task1_table.tex")).resolve()
+    output = (args.output if args.output else (outputs_dir / "combined_task1_summary_plot.png")).resolve()
 
     if not input_tex.exists():
         raise FileNotFoundError(f"Input LaTeX table does not exist: {input_tex}")

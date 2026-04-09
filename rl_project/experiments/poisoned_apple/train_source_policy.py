@@ -456,6 +456,12 @@ def main() -> None:
         default=None,
         help="Where to save outputs (default: outputs/<cfg>/<seed>/source).",
     )
+    parser.add_argument(
+        "--plots-dir",
+        type=str,
+        default=None,
+        help="Directory for plots (default: outputs/<cfg>/<seed>/plots).",
+    )
     args = parser.parse_args()
 
     cfg_path = _SCRIPT_DIR / "configs.yaml"
@@ -490,6 +496,12 @@ def main() -> None:
         else (_SCRIPT_DIR / "outputs" / args.cfg / str(seed) / "source")
     )
     out_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = (
+        Path(args.plots_dir)
+        if args.plots_dir is not None
+        else (out_dir.parent / "plots")
+    )
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
     _set_seeds(seed)
 
@@ -504,6 +516,7 @@ def main() -> None:
     print(f"  Append task id:    {append_task_id}")
     print(f"  Safety finetuning: {args.safety_finetuning}")
     print(f"  Output dir:        {out_dir}")
+    print(f"  Plots dir:         {plots_dir}")
 
     # ── Step 1: train source policy on Task 1 ─────────────────────────────
     print("\n[1/4] Training source PPO policy on Task 1 ...")
@@ -631,7 +644,7 @@ def main() -> None:
             env_name="Task_1",
             cfg_name=args.cfg,
             actor_name="source_policy",
-            save_dir=str(out_dir),
+            save_dir=str(plots_dir),
         )
     except ModuleNotFoundError as exc:
         print(f"  Skipping trajectory plot (missing optional dependency): {exc}")
