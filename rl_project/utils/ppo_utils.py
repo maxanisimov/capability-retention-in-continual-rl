@@ -204,6 +204,94 @@ def evaluate(
     failure_rate = failures / episodes
     return avg_total_reward, std_total_reward, failure_rate
 
+
+def _extract_action_mask(info: dict | None, n_actions: int) -> np.ndarray:
+    """Return a binary action mask from env info (1 = valid action)."""
+    if info is None:
+        return np.ones(n_actions, dtype=np.float32)
+    raw_mask = info.get("action_mask", None)
+    if raw_mask is None:
+        return np.ones(n_actions, dtype=np.float32)
+    mask = np.asarray(raw_mask, dtype=np.float32).reshape(-1)
+    if mask.shape[0] != n_actions:
+        raise ValueError(
+            f"Expected action_mask with {n_actions} entries, got shape {mask.shape}.",
+        )
+    mask = (mask > 0).astype(np.float32)
+    if mask.sum() <= 0:
+        raise ValueError("action_mask has no valid actions (all zeros).")
+    return mask
+
+
+def _apply_action_mask_to_logits(
+        logits: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+    """Mask invalid-action logits so Categorical never samples them."""
+    if action_mask.ndim == 1:
+        action_mask = action_mask.unsqueeze(0)
+    valid = action_mask > 0.5
+    # Large negative value instead of -inf to avoid inf/nan issues in some ops.
+    invalid_logit = torch.full_like(logits, -1e9)
+    return torch.where(valid, logits, invalid_logit)
+
+
+def evaluate_masked(
+        env: gym.Env,
+        actor: nn.Sequential,
+        episodes: int = 10,
+        seed: int = 2025,
+        device: str | torch.device = "cpu",
+        deterministic: bool = True,
+    ) -> tuple[float, float, float]:
+    """Evaluate a discrete policy while respecting info['action_mask']."""
+    actor.eval()
+    scores = []
+    failures = 0
+
+    if not isinstance(env.action_space, gym.spaces.Discrete):
+        raise ValueError("evaluate_masked only supports Discrete action spaces.")
+    n_actions = int(env.action_space.n)
+
+    for episode_num in range(episodes):
+        obs, info = env.reset(seed=seed * episode_num)
+        action_mask = _extract_action_mask(info, n_actions)
+        episodic_reward = 0.0
+        done = False
+        while not done:
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            mask_t = torch.tensor(action_mask, dtype=torch.float32, device=device).unsqueeze(0)
+            with torch.no_grad():
+                logits = actor(obs_t)
+                masked_logits = _apply_action_mask_to_logits(logits, mask_t)
+                if deterministic:
+                    action = int(torch.argmax(masked_logits, dim=-1).item())
+                else:
+                    dist = torch.distributions.Categorical(logits=masked_logits)
+                    action = int(dist.sample().item())
+
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            episodic_reward += reward # type: ignore
+
+            is_safe = info.get("safe", None)
+            if is_safe is None:
+                cost = info.get("cost", 0)
+                is_safe = (cost == 0)
+            if not is_safe:
+                failures += 1
+
+            if not done:
+                action_mask = _extract_action_mask(info, n_actions)
+
+        scores.append(episodic_reward)
+
+    actor.train()
+    avg_total_reward = float(np.mean(scores))
+    std_total_reward = float(np.std(scores))
+    failure_rate = failures / episodes
+    return avg_total_reward, std_total_reward, failure_rate
+
 def ppo_train(
     env: gym.Env, cfg: PPOConfig, 
     actor_warm_start: nn.Sequential | None = None,
@@ -554,3 +642,319 @@ def ppo_train(
             return actor, critic, log_std
         else:
             return actor, critic
+
+
+def ppo_train_maskable(
+    env: gym.Env,
+    cfg: PPOConfig,
+    actor_warm_start: nn.Sequential | None = None,
+    critic_warm_start: nn.Sequential | None = None,
+    actor_param_bounds_l: list[torch.Tensor] | None = None,
+    actor_param_bounds_u: list[torch.Tensor] | None = None,
+    return_training_data: bool = False,
+):
+    """
+    Train PPO for discrete actions with invalid-action masking.
+
+    This function reads ``info['action_mask']`` from the environment, where:
+      - ``1`` means action is valid/executable
+      - ``0`` means action is invalid and must not be sampled
+
+    If an action mask is missing from ``info``, a full-valid mask is used.
+    """
+    set_seed(env, cfg.seed)
+    if (
+        cfg.early_stop_deterministic_total_reward_threshold is not None
+        and cfg.early_stop_deterministic_eval_episodes <= 0
+    ):
+        raise ValueError(
+            "early_stop_deterministic_eval_episodes must be > 0 when "
+            "early_stop_deterministic_total_reward_threshold is set.",
+        )
+
+    if not isinstance(env.action_space, gym.spaces.Discrete):
+        raise ValueError(
+            "ppo_train_maskable only supports Discrete action spaces.",
+        )
+
+    obs_dim = (
+        env.observation_space.shape[0]
+        if isinstance(env.observation_space, gym.spaces.Box)
+        else env.observation_space.n # type: ignore
+    )
+    n_actions = int(env.action_space.n)
+
+    actor, critic, _ = make_actor_critic(
+        obs_dim=obs_dim,
+        n_actions=n_actions,
+        actor_warm_start=actor_warm_start,
+        critic_warm_start=critic_warm_start,
+        continuous_actions=False,
+    )
+    device = torch.device(cfg.device)
+    actor.to(device)
+    critic.to(device)
+
+    use_pgd = (actor_param_bounds_l is not None and actor_param_bounds_u is not None)
+    print("Use PGD:", use_pgd)
+    bounds_l = None
+    bounds_u = None
+    if use_pgd:
+        bounds_l = [bound.to(device) for bound in actor_param_bounds_l] # type: ignore
+        bounds_u = [bound.to(device) for bound in actor_param_bounds_u] # type: ignore
+        print("Using projected gradient descent with parameter bounds")
+        with torch.no_grad():
+            for param, lb, ub in zip(actor.parameters(), bounds_l, bounds_u):
+                param.data.clamp_(lb, ub)
+
+    optimizer = torch.optim.Adam(
+        [
+            {"params": actor.parameters(), "lr": cfg.lr},
+            {"params": critic.parameters(), "lr": cfg.lr},
+        ],
+    )
+
+    obs, info = env.reset(seed=cfg.seed)
+    current_action_mask = _extract_action_mask(info, n_actions)
+    global_step = 0
+    start_time = time.time()
+    pgd_projections = 0
+
+    if return_training_data:
+        training_data = {
+            "states": [],
+            "actions": [],
+            "terminated": [],
+            "truncated": [],
+            "safe": [],
+        }
+
+    while global_step < cfg.total_timesteps:
+        obs_buf = np.zeros((cfg.rollout_steps, obs_dim), dtype=np.float32)
+        act_buf = np.zeros((cfg.rollout_steps,), dtype=np.int64)
+        logp_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
+        rew_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
+        done_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
+        val_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
+        mask_buf = np.zeros((cfg.rollout_steps, n_actions), dtype=np.float32)
+
+        for t in range(cfg.rollout_steps):
+            obs_buf[t] = obs
+            mask_buf[t] = current_action_mask
+
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            mask_t = torch.tensor(
+                current_action_mask,
+                dtype=torch.float32,
+                device=device,
+            ).unsqueeze(0)
+            with torch.no_grad():
+                value = critic(obs_t).squeeze(-1)
+                logits = actor(obs_t)
+                masked_logits = _apply_action_mask_to_logits(logits, mask_t)
+                dist = torch.distributions.Categorical(logits=masked_logits)
+                action = dist.sample()
+                logp = dist.log_prob(action)
+                act = int(action.item())
+
+            next_obs, reward, terminated, truncated, step_info = env.step(act)
+            done = terminated or truncated
+
+            if return_training_data:
+                training_data["states"].append(obs.copy()) # type: ignore
+                training_data["actions"].append(act) # type: ignore
+                training_data["terminated"].append(float(terminated)) # type: ignore
+                training_data["truncated"].append(float(truncated)) # type: ignore
+                is_safe = step_info.get("safe", None)
+                if is_safe is None:
+                    cost = step_info.get("cost", 0)
+                    is_safe = 1.0 if cost == 0 else 0.0
+                training_data["safe"].append(float(is_safe)) # type: ignore
+
+            act_buf[t] = act
+            logp_buf[t] = float(logp.item())
+            rew_buf[t] = float(reward)
+            done_buf[t] = float(done)
+            val_buf[t] = float(value.item())
+
+            global_step += 1
+            if done:
+                obs, reset_info = env.reset()
+                current_action_mask = _extract_action_mask(reset_info, n_actions)
+            else:
+                obs = next_obs
+                current_action_mask = _extract_action_mask(step_info, n_actions)
+
+            if global_step >= cfg.total_timesteps:
+                obs_buf = obs_buf[:t + 1]
+                act_buf = act_buf[:t + 1]
+                logp_buf = logp_buf[:t + 1]
+                rew_buf = rew_buf[:t + 1]
+                done_buf = done_buf[:t + 1]
+                val_buf = val_buf[:t + 1]
+                mask_buf = mask_buf[:t + 1]
+                break
+
+        with torch.no_grad():
+            last_val = critic(
+                torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0),
+            ).item()
+
+        T = len(rew_buf)
+        adv_buf = np.zeros_like(rew_buf)
+        last_gae = 0.0
+        for t in reversed(range(T)):
+            next_nonterminal = 1.0 - done_buf[t]
+            next_value = last_val if t == T - 1 else val_buf[t + 1]
+            delta = rew_buf[t] + cfg.gamma * next_value * next_nonterminal - val_buf[t]
+            last_gae = delta + cfg.gamma * cfg.gae_lambda * next_nonterminal * last_gae
+            adv_buf[t] = last_gae
+        ret_buf = adv_buf + val_buf
+
+        adv_t = torch.tensor(adv_buf, dtype=torch.float32, device=device)
+        adv_t = (adv_t - adv_t.mean()) / (adv_t.std(unbiased=False) + 1e-8)
+
+        obs_t = torch.tensor(obs_buf, dtype=torch.float32, device=device)
+        act_t = torch.tensor(act_buf, dtype=torch.int64, device=device)
+        old_logp_t = torch.tensor(logp_buf, dtype=torch.float32, device=device)
+        ret_t = torch.tensor(ret_buf, dtype=torch.float32, device=device)
+        mask_t = torch.tensor(mask_buf, dtype=torch.float32, device=device)
+
+        batch_size = T
+        idxs = np.arange(batch_size)
+        for _ in range(cfg.update_epochs):
+            np.random.shuffle(idxs)
+            for start in range(0, batch_size, cfg.minibatch_size):
+                end = start + cfg.minibatch_size
+                mb_idx = idxs[start:end]
+                mb_obs = obs_t[mb_idx]
+                mb_act = act_t[mb_idx]
+                mb_old_logp = old_logp_t[mb_idx]
+                mb_adv = adv_t[mb_idx]
+                mb_ret = ret_t[mb_idx]
+                mb_mask = mask_t[mb_idx]
+
+                logits = actor(mb_obs)
+                masked_logits = _apply_action_mask_to_logits(logits, mb_mask)
+                dist = torch.distributions.Categorical(logits=masked_logits)
+                new_logp = dist.log_prob(mb_act)
+                entropy = dist.entropy().mean()
+
+                ratio = torch.exp(new_logp - mb_old_logp)
+                pg_loss1 = -mb_adv * ratio
+                pg_loss2 = -mb_adv * torch.clamp(
+                    ratio, 1.0 - cfg.clip_coef, 1.0 + cfg.clip_coef,
+                )
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                v = critic(mb_obs).squeeze(-1)
+                v_loss = F.mse_loss(v, mb_ret)
+
+                loss = pg_loss + cfg.vf_coef * v_loss - cfg.ent_coef * entropy
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    list(actor.parameters()) + list(critic.parameters()),
+                    cfg.max_grad_norm,
+                )
+                optimizer.step()
+
+                if use_pgd:
+                    with torch.no_grad():
+                        for param, lb, ub in zip(actor.parameters(), bounds_l, bounds_u): # type: ignore
+                            violations = ((param.data < lb) | (param.data > ub)).sum().item()
+                            if violations > 0:
+                                pgd_projections += violations
+                            param.data.clamp_(lb, ub)
+
+        if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
+            mean_r, std_r, failure_rate = evaluate_masked(
+                env=env,
+                actor=actor,
+                device=device,
+                episodes=cfg.eval_episodes,
+                deterministic=True,
+            )
+            deterministic_total_reward = None
+            if cfg.early_stop_deterministic_total_reward_threshold is not None:
+                deterministic_total_reward, _, _ = evaluate_masked(
+                    env=env,
+                    actor=actor,
+                    device=device,
+                    episodes=cfg.early_stop_deterministic_eval_episodes,
+                    deterministic=True,
+                )
+
+            obs, info = env.reset()
+            current_action_mask = _extract_action_mask(info, n_actions)
+
+            elapsed = time.time() - start_time
+            log_msg = f"Steps={global_step} | meanR={mean_r:.1f} +/- {std_r:.1f} | elapsed={elapsed:.1f}s"
+            log_msg += f" | failure_rate={failure_rate:.2f}"
+            if deterministic_total_reward is not None:
+                log_msg += (
+                    " | det_meanR="
+                    f"{deterministic_total_reward:.2f}"
+                    f" ({cfg.early_stop_deterministic_eval_episodes} ep)"
+                )
+            if use_pgd:
+                log_msg += f" | PGD projections={pgd_projections}"
+            print(log_msg)
+
+            if cfg.early_stop and global_step >= cfg.early_stop_min_steps:
+                reward_ok = (
+                    cfg.early_stop_reward_threshold is None
+                    or mean_r >= cfg.early_stop_reward_threshold
+                )
+                failure_ok = (
+                    cfg.early_stop_failure_rate_threshold is None
+                    or failure_rate <= cfg.early_stop_failure_rate_threshold
+                )
+                det_reward_ok = (
+                    cfg.early_stop_deterministic_total_reward_threshold is None
+                    or (
+                        deterministic_total_reward is not None
+                        and deterministic_total_reward
+                        >= cfg.early_stop_deterministic_total_reward_threshold
+                    )
+                )
+                if reward_ok and failure_ok and det_reward_ok:
+                    print(
+                        f"  [Early stop] step={global_step} | "
+                        f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
+                        f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
+                        "det_meanR="
+                        f"{(deterministic_total_reward if deterministic_total_reward is not None else float('nan')):.2f} "
+                        f"(threshold={cfg.early_stop_deterministic_total_reward_threshold}, "
+                        f"episodes={cfg.early_stop_deterministic_eval_episodes})"
+                    )
+                    break
+
+    if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
+        mean_r, std_r, failure_rate = evaluate_masked(
+            env=env,
+            actor=actor,
+            device=device,
+            episodes=cfg.eval_episodes,
+            deterministic=True,
+        )
+        final_msg = (
+            f"Final evaluation over {cfg.eval_episodes} episodes: "
+            f"mean_reward={mean_r:.2f} +/- {std_r:.2f}"
+        )
+        final_msg += f" | failure_rate={failure_rate:.2f}"
+        if use_pgd:
+            final_msg += f" | Total PGD projections during training: {pgd_projections}"
+        print(final_msg)
+
+    env.close()
+
+    if return_training_data:
+        training_data["states"] = np.array(training_data["states"]) # type: ignore
+        training_data["actions"] = np.array(training_data["actions"]) # type: ignore
+        training_data["terminated"] = np.array(training_data["terminated"]) # type: ignore
+        training_data["truncated"] = np.array(training_data["truncated"]) # type: ignore
+        training_data["safe"] = np.array(training_data["safe"]) # type: ignore
+        return actor, critic, training_data # type: ignore
+    return actor, critic
