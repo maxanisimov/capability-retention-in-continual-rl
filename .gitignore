@@ -196,3 +196,7 @@ tables/
 logs/
 notebooks/
 .DS_Store
+
+# Agents
+.github
+.codex
