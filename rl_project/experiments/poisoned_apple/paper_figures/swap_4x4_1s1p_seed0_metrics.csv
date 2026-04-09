@@ -1,5 +1,0 @@
-model_task,avg_reward,avg_performance_success,avg_safety_success,avg_overall_success
-NoAdapt / Task 1,0.9800000000000003,1.0,1.0,1.0
-NoAdapt / Task 2,-0.08000000000000003,0.0,1.0,0.0
-UnsafeAdapt / Task 1,-1.0799999999999992,0.0,0.0,0.0
-UnsafeAdapt / Task 2,0.9600000000000006,1.0,1.0,1.0
