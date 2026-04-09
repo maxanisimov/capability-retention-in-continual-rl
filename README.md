@@ -8,9 +8,9 @@ This repository contains:
 - paper-facing experiment pipelines in `rl_project/experiments/`.
 
 ## What This Repo Is For
-The main public entry points are the two environment pipelines:
-- `FrozenLake` (discrete grid safety/plasticity experiments)
-- `PoisonedApple` (safety-constrained adaptation experiments)
+The main public entry points are the two safe continual RL environment pipelines:
+- `FrozenLake`
+- `PoisonedApple`
 
 Each pipeline supports:
 - single-seed runs,
