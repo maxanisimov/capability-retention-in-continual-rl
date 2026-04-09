@@ -195,6 +195,7 @@ plots/
 tables/
 logs/
 notebooks/
+notes/
 .DS_Store
 
 # Agents
