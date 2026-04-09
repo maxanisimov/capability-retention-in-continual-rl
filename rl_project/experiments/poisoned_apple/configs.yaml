@@ -1,0 +1,88 @@
+simple_5x5:
+  grid_size: 5
+  observation_type: flat
+  append_task_id: false
+  max_steps: 9
+  reward_safe: 1.0
+  reward_poison: -1.0
+  reward_step: -0.01
+  
+  task1_agent_start_pos: [0, 0]
+  task1_safe_apples: [[1, 1], [2, 2]]
+  task1_poisoned_apples: [[3, 3]]
+  task1_max_total_reward: 1.96
+
+  task2_agent_start_pos: [0, 0]
+  task2_safe_apples: [[2, 2]]
+  task2_poisoned_apples: [[1, 1], [3, 3]]
+  task2_max_total_reward: 0.96
+
+  source_total_timesteps: 20000
+  downstream_total_timesteps: 20000 # >4000 needed to be safe and performant in Env2
+  eval_episodes: 1
+  notes: "Works well, standard actor fails on Env2"
+
+simple_5x5_new:
+  grid_size: 5
+  observation_type: flat
+  append_task_id: false
+  max_steps: 9
+  reward_safe: 1.0
+  reward_poison: -1.0
+  reward_step: -0.01
+  
+  task1_agent_start_pos: [0, 0]
+  task1_safe_apples: [[2, 2]]
+  task1_poisoned_apples: [[1, 1], [3, 3]]
+  task1_max_total_reward: 0.96
+
+  task2_agent_start_pos: [0, 0]
+  task2_safe_apples: [[1, 1], [2, 2]]
+  task2_poisoned_apples: [[3, 3]]
+  task2_max_total_reward: 1.96
+
+  source_total_timesteps: 200000
+  downstream_total_timesteps: 100000 # >4000 needed to be safe and performant in Env2
+  eval_episodes: 1
+  notes: "Works well, standard actor fails on Env2"
+
+simple_6x6:
+  grid_size: 6
+  observation_type: flat
+  append_task_id: true
+  max_steps: 100
+  reward_safe: 1.0
+  reward_poison: -1.0
+  reward_step: -0.01
+
+  task1_agent_start_pos: [0, 0]
+  task1_safe_apples: [[1, 1], [2, 2]]
+  task1_poisoned_apples: [[3, 3]]
+  task1_max_total_reward: 1.96 # TODO: use this for early stopping during source training.
+
+  task2_agent_start_pos: [0, 0]
+  task2_safe_apples: [[2, 2], [3, 3]]
+  task2_poisoned_apples: [[1, 1]]
+  task2_max_total_reward: 1.94  # TODO: use this for early stopping during PPO update.
+
+  source_total_timesteps: 30000
+  downstream_total_timesteps: 20000
+  eval_episodes: 1
+
+  ppo_rollout_steps: 256
+  ppo_update_epochs: 6
+  ppo_minibatch_size: 64
+  ppo_gamma: 0.99
+  ppo_gae_lambda: 0.95
+  ppo_clip_coef: 0.2
+  ppo_ent_coef: 0.01
+  ppo_vf_coef: 0.5
+  ppo_lr: 0.0003
+  ppo_max_grad_norm: 0.5
+
+  finetune_lr: 0.002
+  finetune_epochs: 2000
+  finetune_batch_size: 64
+  min_safety_accuracy: 1.0
+
+  notes: "Simple 6x6 two-task layout for PPO source training + safety behavior cloning."
