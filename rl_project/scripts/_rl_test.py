@@ -13,12 +13,12 @@ import torch.nn as nn
 import torch.optim as optim
 
 import sys
-import os
-import torch
+from pathlib import Path
 
-project_root = os.path.abspath('/Users/ma5923/Documents/_projects/CertifiedContinualLearning')
-if project_root not in sys.path:
-    sys.path.append(project_root)
+# Resolve repository root dynamically so the script is portable across machines.
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 from src.trainer import IntervalTrainer
 

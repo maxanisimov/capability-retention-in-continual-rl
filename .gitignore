@@ -174,7 +174,6 @@ cython_debug/
 .pypirc
 
 data/
-
 notebooks/wandb/
 notebooks/MNIST/
 MNIST/
@@ -182,22 +181,27 @@ wandb/
 media/
 llm_final_results.txt
 *.out
-*.log*
+*.log
 figures/
-*.txt
-*.json
 
-# Others
-archive/
+# Experiment/runtime artifacts
 outputs/
 results/
 plots/
 tables/
 logs/
-notebooks/
-notes/
-.DS_Store
+rl_project/experiments/outputs/
 
-# Agents
-.github
+# OS/editor
+.DS_Store
 .codex
+.vscode/
+
+# Local legacy/research material not included in public release by default
+.github/
+rl_project/archive/
+rl_project/experiments/archive/
+rl_project/experiments/*/archive/
+rl_project/notebooks/
+rl_project/notes/
+rl_project/utils/archive/
