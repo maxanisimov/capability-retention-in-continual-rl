@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
             "downstream_adaptation.py with logging."
         )
     )
-    parser.add_argument("--cfg", type=str, default="simple_6x6")
+    parser.add_argument("--cfg", type=str, default="simple_5x5")
     parser.add_argument("--seed", type=int, default=0)
 
     # Source-stage controls
