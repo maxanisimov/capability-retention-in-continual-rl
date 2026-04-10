@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import torch
@@ -21,6 +20,13 @@ ACTION_DELTAS = {
     3: (-1, 0),  # Up
 }
 FROZEN_LAKE_DIR = Path(__file__).resolve().parent.parent
+PAPER_WIDTHS_IN = {
+    "one-column": 3.35,
+    "two-column": 7.0,
+}
+SAFE_COLOR = "#1b9e77"
+UNSAFE_COLOR = "#d90d02ba"
+TERMINAL_COLOR = "#808080"
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +49,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument(
+        "--paper-layout",
+        type=str,
+        choices=sorted(PAPER_WIDTHS_IN.keys()),
+        default="two-column",
+        help="Target paper layout width for figure sizing.",
+    )
+    parser.add_argument(
+        "--base-font-size",
+        type=float,
+        default=9.0,
+        help="Base font size (pt) used for all plot text.",
+    )
+    parser.add_argument(
+        "--use-tex",
+        action="store_true",
+        help="Use LaTeX text rendering (requires TeX installed).",
+    )
     parser.add_argument("--show", action="store_true")
     return parser.parse_args()
 
@@ -105,7 +129,46 @@ def compute_safe_actions(env_map: list[str]) -> dict[int, set[int] | None]:
 def format_axes_clean(ax: plt.Axes) -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.tick_params(axis="both", labelsize=7)
+    ax.tick_params(axis="both")
+
+
+def configure_paper_style(base_font_size: float, use_tex: bool = False) -> None:
+    sns.set_theme(style="whitegrid", context="paper")
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "STIXGeneral", "DejaVu Serif"],
+        "mathtext.fontset": "cm",
+        "text.usetex": use_tex,
+        "font.size": base_font_size,
+        "axes.titlesize": base_font_size + 0.5,
+        "axes.labelsize": base_font_size,
+        "axes.linewidth": 0.7,
+        "figure.titlesize": base_font_size + 2.0,
+        "xtick.labelsize": base_font_size - 0.5,
+        "ytick.labelsize": base_font_size - 0.5,
+        "legend.fontsize": base_font_size - 0.5,
+        "grid.linestyle": ":",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.35,
+        "lines.linewidth": 1.2,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "savefig.bbox": "tight",
+    })
+
+
+def compute_grid_figsize(
+    nrows: int,
+    ncols: int,
+    target_width: float,
+    min_cell_width: float = 1.1,
+    cell_height_ratio: float = 0.88,
+) -> tuple[float, float]:
+    width = max(target_width, min_cell_width * ncols)
+    cell_w = width / ncols
+    cell_h = cell_w * cell_height_ratio
+    height = max(2.5, cell_h * nrows + 0.9)
+    return width, height
 
 
 def save_figure(fig: plt.Figure, out_base: Path, dpi: int) -> None:
@@ -121,24 +184,15 @@ def plot_logit_bounds(
     cfg: str,
     seed: int,
     out_dir: Path,
+    target_width: float,
     dpi: int,
     show: bool,
 ) -> None:
     grid = [list(row) for row in env_map]
     nrows, ncols = len(grid), len(grid[0])
 
-    y_min = float(np.min(lb))
-    y_max = float(np.max(ub))
-    y_pad = max(0.1, 0.08 * (y_max - y_min))
-    y_min -= y_pad
-    y_max += y_pad
-
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=(3.0 * ncols, 2.6 * nrows),
-        squeeze=False,
-    )
+    fig_w, fig_h = compute_grid_figsize(nrows=nrows, ncols=ncols, target_width=target_width)
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), squeeze=False)
 
     for r in range(nrows):
         for c in range(ncols):
@@ -146,9 +200,9 @@ def plot_logit_bounds(
             s = r * ncols + c
             safe_set = safe_actions.get(s, None)
             if safe_set is None:
-                colors = ["gray"] * 4
+                colors = [TERMINAL_COLOR] * 4
             else:
-                colors = ["tab:green" if a in safe_set else "tab:red" for a in range(4)]
+                colors = [SAFE_COLOR if a in safe_set else UNSAFE_COLOR for a in range(4)]
 
             heights = ub[s] - lb[s]
             ax.bar(
@@ -156,44 +210,44 @@ def plot_logit_bounds(
                 heights,
                 bottom=lb[s],
                 color=colors,
-                alpha=0.35,
+                alpha=0.40,
                 edgecolor="black",
-                linewidth=0.5,
+                linewidth=0.6,
             )
             ax.scatter(
                 np.arange(4),
                 0.5 * (lb[s] + ub[s]),
                 c=colors,
-                s=18,
+                s=22,
                 zorder=3,
             )
-            # ax.set_ylim(y_min, y_max)
             ax.set_xticks(np.arange(4))
-            ax.set_xticklabels(["L", "D", "R", "U"], fontsize=7)
-            ax.set_title(f"{grid[r][c]} ({r},{c})", fontsize=8)
-            ax.axhline(0.0, color="black", linewidth=0.6, alpha=0.3)
-            ax.grid(axis="y", alpha=0.2)
+            ax.set_xticklabels(["L", "D", "R", "U"])
+            # ax.set_title(f"{grid[r][c]} ({r},{c})")
+            ax.set_title("(x, y) = ({}, {})".format(c, r))
+            ax.axhline(0.0, color="black", linewidth=0.7, alpha=0.4)
+            ax.grid(axis="y")
             format_axes_clean(ax)
 
     legend_handles = [
-        Patch(facecolor="tab:green", edgecolor="tab:green", label="Safe", alpha=0.5),
-        Patch(facecolor="tab:red", edgecolor="tab:red", label="Unsafe", alpha=0.5),
-        Patch(facecolor="gray", edgecolor="gray", label="Terminal", alpha=0.5),
+        Patch(facecolor=SAFE_COLOR, edgecolor=SAFE_COLOR, label="Safe", alpha=0.6),
+        Patch(facecolor=UNSAFE_COLOR, edgecolor=UNSAFE_COLOR, label="Unsafe", alpha=0.6),
+        Patch(facecolor=TERMINAL_COLOR, edgecolor=TERMINAL_COLOR, label="Terminal", alpha=0.6),
     ]
     fig.legend(
         handles=legend_handles,
-        loc="upper left",
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.96),
         ncol=3,
         frameon=False,
-        fontsize=9,
     )
 
     fig.suptitle(
-        f"Logit bounds per state (Task 1) — {cfg}, seed {seed}",
-        y=0.99,
-        fontsize=12,
+        f"Logit bounds per state \n Frozen Lake — {cfg} - Task 1 - seed {seed}",
+        y=1.0
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    # fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0, 1, 1])
 
     out_base = out_dir / f"logit_bounds_task1"
     save_figure(fig, out_base, dpi)
@@ -212,6 +266,7 @@ def plot_worst_case_probs(
     seed: int,
     temperature: float,
     out_dir: Path,
+    target_width: float,
     dpi: int,
     show: bool,
 ) -> None:
@@ -229,19 +284,21 @@ def plot_worst_case_probs(
         worst_case_probs.append((state_idx, probs, safe_flags))
 
     n_plots = len(worst_case_probs)
-    ncols = 3
+    ncols = 2 if target_width <= PAPER_WIDTHS_IN["one-column"] + 0.2 else 3
     nrows = int(np.ceil(n_plots / ncols)) if n_plots > 0 else 1
 
-    fig, axes = plt.subplots(
+    fig_w, fig_h = compute_grid_figsize(
         nrows=nrows,
         ncols=ncols,
-        figsize=(4.2 * ncols, 3.2 * nrows),
-        squeeze=False,
+        target_width=target_width,
+        min_cell_width=2.15,
+        cell_height_ratio=0.78,
     )
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), squeeze=False)
 
     for idx, (state_idx, probs, safe_flags) in enumerate(worst_case_probs):
         ax = axes[idx // ncols, idx % ncols]
-        colors = ["tab:green" if flag else "tab:red" for flag in safe_flags]
+        colors = [SAFE_COLOR if flag else UNSAFE_COLOR for flag in safe_flags]
         ax.bar(
             ACTION_LABELS,
             probs,
@@ -252,34 +309,35 @@ def plot_worst_case_probs(
             width=0.55,
         )
         ax.set_ylim(-0.05, 1.05)
-        ax.set_ylabel("Probability", fontsize=8)
-        ax.set_title(f"State {state_idx}", fontsize=9)
-        ax.grid(axis="y", alpha=0.3)
+        if idx % ncols == 0:
+            ax.set_ylabel("Probability")
+        ax.set_title(f"State {state_idx}")
+        ax.grid(axis="y")
         format_axes_clean(ax)
         for i, prob in enumerate(probs):
-            ax.text(i, prob + 0.02, f"{prob:.2f}", ha="center", va="bottom", fontsize=7)
+            ax.text(i, prob + 0.02, f"{prob:.2f}", ha="center", va="bottom", fontsize=max(6.5, plt.rcParams["font.size"] - 2.0))
 
     for idx in range(n_plots, nrows * ncols):
         axes[idx // ncols, idx % ncols].set_visible(False)
 
     legend_handles = [
-        Patch(facecolor="tab:green", edgecolor="tab:green", label="Safe"),
-        Patch(facecolor="tab:red", edgecolor="tab:red", label="Unsafe"),
+        Patch(facecolor=SAFE_COLOR, edgecolor=SAFE_COLOR, label="Safe"),
+        Patch(facecolor=UNSAFE_COLOR, edgecolor=UNSAFE_COLOR, label="Unsafe"),
     ]
     fig.legend(
         handles=legend_handles,
-        loc="upper left",
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.96),
         ncol=2,
         frameon=False,
-        fontsize=9,
     )
 
     fig.suptitle(
-        f"Worst-case action probabilities (T={temperature}) — {cfg}, seed {seed}",
-        y=0.99,
-        fontsize=12,
+        f"Worst-case action probabilities in safety-critical states (softmax temp.={temperature}) \n Frozen Lake — {cfg} - Task 1 - seed {seed}",
+        y=1.0
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    # fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0, 1, 1])
 
     out_base = out_dir / f"worst_case_action_probs_task1"
     save_figure(fig, out_base, dpi)
@@ -333,24 +391,8 @@ def main() -> None:
 
     safe_actions = compute_safe_actions(env_map)
 
-    # NeurIPS-friendly styling (compact serif, light grid/lines)
-    sns.set_style("whitegrid", {"grid.linestyle": ":", "grid.linewidth": 0.5})
-    sns.set_context("paper", font_scale=1.0)
-    plt.rcParams.update({
-        "font.family": "serif",
-        "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "STIXGeneral", "DejaVu Serif"],
-        "mathtext.fontset": "cm",
-        "font.size": 8,
-        "axes.titlesize": 8,
-        "axes.labelsize": 8,
-        "axes.linewidth": 0.6,
-        "xtick.major.size": 2.5,
-        "ytick.major.size": 2.5,
-        "xtick.major.width": 0.6,
-        "ytick.major.width": 0.6,
-        "pdf.fonttype": 42,
-        "ps.fonttype": 42,
-    })
+    configure_paper_style(base_font_size=args.base_font_size, use_tex=args.use_tex)
+    target_width = PAPER_WIDTHS_IN[args.paper_layout]
 
     plot_logit_bounds(
         env_map=env_map,
@@ -360,6 +402,7 @@ def main() -> None:
         cfg=args.cfg,
         seed=args.seed,
         out_dir=plots_dir,
+        target_width=target_width,
         dpi=args.dpi,
         show=args.show,
     )
@@ -382,6 +425,7 @@ def main() -> None:
         seed=args.seed,
         temperature=args.temperature,
         out_dir=plots_dir,
+        target_width=target_width,
         dpi=args.dpi,
         show=args.show,
     )
