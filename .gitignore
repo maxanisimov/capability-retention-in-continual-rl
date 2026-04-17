@@ -176,6 +176,8 @@ cython_debug/
 data/
 notebooks/wandb/
 notebooks/MNIST/
+core/notebooks/wandb/
+core/notebooks/MNIST/
 MNIST/
 wandb/
 media/

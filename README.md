@@ -3,8 +3,9 @@
 Codebase for capability-retention experiments in continual reinforcement learning, including certified/Rashomon-set tooling and experiment pipelines.
 
 This repository contains:
-- the canonical Python package API (`certified_continual_learning/`),
-- the core certification/training code (`src/`, `abstract_gradient_training/`),
+- colleague/core reusable work under `core/`,
+- the canonical Python package API (`core/certified_continual_learning/`),
+- the core certification/training code (`core/src/`, `core/abstract_gradient_training/`),
 - reusable RL utilities (`rl_project/utils/`),
 - paper-facing experiment pipelines in `rl_project/experiments/`.
 
@@ -21,9 +22,13 @@ Each pipeline supports:
 ## Repository Structure
 ```text
 .
-├── abstract_gradient_training/        # Bounded/certified training components
-├── certified_continual_learning/      # Canonical package API layer
-├── src/                               # Legacy compatibility import path
+├── core/
+│   ├── abstract_gradient_training/    # Bounded/certified training components
+│   ├── certified_continual_learning/  # Canonical package API layer
+│   ├── src/                           # Legacy compatibility import path
+│   ├── configs/                       # Trainer/config presets
+│   ├── scripts/                       # Colleague/tutorial scripts
+│   └── notebooks/                     # Colleague/tutorial notebooks
 ├── rl_project/
 │   ├── utils/                         # PPO/EWC/env plotting helper utilities
 │   ├── experiments/
