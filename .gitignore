@@ -192,9 +192,9 @@ results/
 plots/
 tables/
 logs/
-rl_project/experiments/outputs/
-rl_project/**/archive/outputs_OLD/
-rl_project/**/notebooks/artifacts/
+experiments/pipelines/outputs/
+experiments/**/archive/outputs_OLD/
+experiments/**/notebooks/artifacts/
 
 # OS/editor
 .DS_Store
@@ -203,9 +203,9 @@ rl_project/**/notebooks/artifacts/
 
 # Local legacy/research material not included in public release by default
 .github/
-rl_project/archive/
-rl_project/experiments/archive/
-rl_project/experiments/*/archive/
-rl_project/notebooks/
-rl_project/notes/
-rl_project/utils/archive/
+experiments/archive/
+experiments/pipelines/archive/
+experiments/pipelines/*/archive/
+experiments/notebooks/
+experiments/notes/
+experiments/utils/archive/

@@ -6,8 +6,8 @@ This repository contains:
 - colleague/core reusable work under `core/`,
 - the canonical Python package API (`core/certified_continual_learning/`),
 - the core certification/training code (`core/src/`, `core/abstract_gradient_training/`),
-- reusable RL utilities (`rl_project/utils/`),
-- paper-facing experiment pipelines in `rl_project/experiments/`.
+- reusable RL utilities (`experiments/utils/`),
+- paper-facing experiment pipelines in `experiments/pipelines/`.
 
 ## What This Repo Is For
 The main public entry points are the two safe continual RL environment pipelines:
@@ -29,9 +29,9 @@ Each pipeline supports:
 │   ├── configs/                       # Trainer/config presets
 │   ├── scripts/                       # Colleague/tutorial scripts
 │   └── notebooks/                     # Colleague/tutorial notebooks
-├── rl_project/
+├── experiments/
 │   ├── utils/                         # PPO/EWC/env plotting helper utilities
-│   ├── experiments/
+│   ├── pipelines/
 │   │   ├── frozen_lake/              # FrozenLake experiment pipeline
 │   │   ├── poisoned_apple/           # PoisonedApple experiment pipeline
 │   │   ├── frozenlake_scaled/        # Scaled FrozenLake experiments
@@ -39,6 +39,7 @@ Each pipeline supports:
 │   │   ├── highway/                  # Highway parking experiments
 │   │   ├── visualisations/           # Figure/frame generation helpers
 │   │   └── README.md                 # Experiment quick-start guide
+│   ├── notebooks/                     # Research notebooks
 │   └── scripts/                       # Older exploratory scripts
 ├── pyproject.toml
 ├── requirements.txt
@@ -74,51 +75,51 @@ from src.trainer import IntervalTrainer
 ```
 
 ## Running Main Experiments
-See also: `rl_project/experiments/README.md`.
+See also: `experiments/pipelines/README.md`.
 
 ### FrozenLake
 Single seed:
 ```bash
-python rl_project/experiments/frozen_lake/run_train_and_adapt.py \
+python experiments/pipelines/frozen_lake/run_train_and_adapt.py \
   --cfg standard_4x4 --seed 0
 ```
 
 Multi-seed (`0..9` default):
 ```bash
-python rl_project/experiments/frozen_lake/run_train_and_adapt_multi_seed.py \
+python experiments/pipelines/frozen_lake/run_train_and_adapt_multi_seed.py \
   --cfg standard_4x4
 ```
 
 Postprocessing examples:
 ```bash
-python rl_project/experiments/frozen_lake/postprocessing/aggregate_downstream_results.py \
-  --base-dir rl_project/experiments/frozen_lake/outputs/standard_4x4
+python experiments/pipelines/frozen_lake/postprocessing/aggregate_downstream_results.py \
+  --base-dir experiments/pipelines/frozen_lake/outputs/standard_4x4
 ```
 
 ### PoisonedApple
 Single seed:
 ```bash
-python rl_project/experiments/poisoned_apple/run_train_and_adapt.py \
+python experiments/pipelines/poisoned_apple/run_train_and_adapt.py \
   --cfg simple_6x6 --seed 0
 ```
 
 Multi-seed (`0..9` default):
 ```bash
-python rl_project/experiments/poisoned_apple/run_train_and_adapt_multi_seed.py \
+python experiments/pipelines/poisoned_apple/run_train_and_adapt_multi_seed.py \
   --cfg simple_6x6
 ```
 
 Postprocessing example:
 ```bash
-python rl_project/experiments/poisoned_apple/postprocessing/aggregate_metrics_across_seeds.py \
+python experiments/pipelines/poisoned_apple/postprocessing/aggregate_metrics_across_seeds.py \
   --cfg simple_6x6
 ```
 
 ## Outputs / Results Locations
 Per-run artifacts are stored under:
 
-- FrozenLake: `rl_project/experiments/frozen_lake/outputs/<cfg>/<seed>/`
-- PoisonedApple: `rl_project/experiments/poisoned_apple/outputs/<cfg>/<seed>/`
+- FrozenLake: `experiments/pipelines/frozen_lake/outputs/<cfg>/<seed>/`
+- PoisonedApple: `experiments/pipelines/poisoned_apple/outputs/<cfg>/<seed>/`
 
 Typical contents:
 - `source/` (source policy artifacts)
@@ -127,8 +128,8 @@ Typical contents:
 - `results_table.csv` (run-level summary table)
 
 Logs are stored under:
-- `rl_project/experiments/<env>/logs/...`
+- `experiments/pipelines/<env>/logs/...`
 
 ## Notes
 - `archive/` directories contain older exploratory material and are not part of the main release pipeline.
-- `rl_project/scripts/` includes older prototypes; prefer the experiment entry points above for reproducibility.
+- `experiments/scripts/` includes older prototypes; prefer the experiment entry points above for reproducibility.
