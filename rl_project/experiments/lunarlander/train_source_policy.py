@@ -390,7 +390,7 @@ def _make_lunarlander_env(
     render_mode: str | None = None,
 ) -> gym.Env:
     """Create a discrete-action LunarLander env with optional dynamics/task-id shifts."""
-    from rl_project.lunarlander.tunable_lunarlander import ensure_lunarlander_v4_registered
+    from rl_project.experiments.lunarlander.tunable_lunarlander import ensure_lunarlander_v4_registered
 
     ensure_lunarlander_v4_registered()
 

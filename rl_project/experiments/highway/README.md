@@ -37,9 +37,8 @@ Notes:
 From repository root:
 
 ```bash
-python rl_project/highway/create_env.py \
+python -m rl_project.experiments.highway.create_env \
   --task-setting default \
   --task-role source \
   --rollout-steps 20
 ```
-

@@ -21,11 +21,11 @@ This folder contains large diagonal **source** environments and PPO settings tha
 
 ## Reproduce
 ```bash
-python rl_project/frozenlake_scaled/generate_source_envs.py
-python rl_project/frozenlake_scaled/generate_downstream_envs.py
-python rl_project/frozenlake_scaled/sweep_scaled_ppo.py --seed 0
-python rl_project/frozenlake_scaled/train_policy_and_plot.py --layout diagonal_30x30 --seed 0
-python rl_project/frozenlake_scaled/evaluate_post_hoc.py --layout diagonal_30x30 --seed 0 --policies both --eval-mode matching --episodes 1
+python rl_project/experiments/frozenlake_scaled/generate_source_envs.py
+python rl_project/experiments/frozenlake_scaled/generate_downstream_envs.py
+python rl_project/experiments/frozenlake_scaled/sweep_scaled_ppo.py --seed 0
+python rl_project/experiments/frozenlake_scaled/train_policy_and_plot.py --layout diagonal_30x30 --seed 0
+python rl_project/experiments/frozenlake_scaled/evaluate_post_hoc.py --layout diagonal_30x30 --seed 0 --policies both --eval-mode matching --episodes 1
 # Optional ablation: --activation relu (default is --activation tanh)
 # Optional speed-up: add --skip-plots to skip trajectory figure generation.
 ```

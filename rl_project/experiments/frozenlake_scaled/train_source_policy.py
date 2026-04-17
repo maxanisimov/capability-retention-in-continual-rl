@@ -9,7 +9,7 @@ import gymnasium as gym
 import torch
 import yaml
 
-from rl_project.frozenlake_scaled.sweep_scaled_ppo import CoordObsWrapper, DenseShapingWrapper, SafetyFlagWrapper
+from rl_project.experiments.frozenlake_scaled.sweep_scaled_ppo import CoordObsWrapper, DenseShapingWrapper, SafetyFlagWrapper
 from rl_project.utils.gymnasium_utils import plot_episode
 from rl_project.utils.ppo_utils import PPOConfig, evaluate, ppo_train
 

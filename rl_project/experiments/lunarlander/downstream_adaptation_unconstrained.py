@@ -1,4 +1,4 @@
-"""Adapt source LunarLander policy to downstream task via EWC-PPO."""
+"""Adapt source LunarLander policy to downstream task via unconstrained PPO."""
 
 from __future__ import annotations
 
@@ -10,19 +10,17 @@ from pathlib import Path
 os.environ["SDL_AUDIODRIVER"] = "dummy"
 
 import gymnasium as gym
-import numpy as np
 import torch
 import yaml
 
-from rl_project.lunarlander.train_source_policy import (
+from rl_project.experiments.lunarlander.train_source_policy import (
     _load_task_settings,
     _make_lunarlander_env,
     _plot_trajectory_grid,
     _resolve_lunarlander_dynamics,
     build_actor_critic,
 )
-from rl_project.utils.ewc_ppo import EWCPPOConfig, compute_ewc_state, ewc_ppo_train
-from rl_project.utils.ppo_utils import evaluate
+from rl_project.utils.ppo_utils import PPOConfig, evaluate, ppo_train
 
 
 def _load_yaml(path: Path) -> dict:
@@ -77,7 +75,7 @@ def neutralize_task_feature(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run downstream adaptation with EWC-PPO for LunarLander.")
+    parser = argparse.ArgumentParser(description="Run unconstrained downstream adaptation for LunarLander.")
     parser.add_argument("--task-setting", type=str, default="default")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
@@ -90,13 +88,6 @@ def main() -> None:
         "--adapt-settings-file",
         type=Path,
         default=Path(__file__).resolve().parent / "settings" / "downstream_adaptation_settings_ppo.yaml",
-        help="Shared downstream settings file with PPO/common per-setting config.",
-    )
-    parser.add_argument(
-        "--ewc-settings-file",
-        type=Path,
-        default=Path(__file__).resolve().parent / "settings" / "downstream_adaptation_settings_ewc.yaml",
-        help="EWC-specific downstream settings file.",
     )
     parser.add_argument(
         "--outputs-root",
@@ -112,7 +103,7 @@ def main() -> None:
     parser.add_argument(
         "--run-subdir",
         type=str,
-        default="downstream_ewc",
+        default="downstream_unconstrained",
         help="Subdirectory under outputs/<task_setting>/seed_<seed>/ where outputs are saved.",
     )
     parser.add_argument(
@@ -144,23 +135,6 @@ def main() -> None:
         default=100,
         help="Number of episodes for final post-training evaluation.",
     )
-    parser.add_argument(
-        "--ewc-lambda-override",
-        type=float,
-        default=None,
-        help="Optional override for EWC lambda.",
-    )
-    parser.add_argument(
-        "--fisher-sample-size",
-        type=int,
-        default=10_000,
-        help="Maximum number of source states used to estimate Fisher diagonal.",
-    )
-    parser.add_argument(
-        "--ewc-apply-to-critic",
-        action="store_true",
-        help="Also apply EWC regularization to critic parameters.",
-    )
     parser.add_argument("--env-id", type=str, default=None, help="Optional env-id override.")
     parser.add_argument("--source-gravity", type=float, default=None, help="Optional source gravity override.")
     parser.add_argument("--downstream-gravity", type=float, default=None, help="Optional downstream gravity override.")
@@ -191,42 +165,32 @@ def main() -> None:
         raise ValueError("For LunarLander, --eval-episodes-post-training must be >= 2.")
 
     adapt_settings = _load_yaml(args.adapt_settings_file)
-    ewc_settings = _load_yaml(args.ewc_settings_file)
     source_task_cfg = _load_task_settings(args.task_settings_file, args.task_setting, "source")
     downstream_task_cfg = _load_task_settings(args.task_settings_file, args.task_setting, "downstream")
 
     if args.task_setting not in adapt_settings:
         raise ValueError(f"Setting '{args.task_setting}' not found in {args.adapt_settings_file}")
-    if args.task_setting not in ewc_settings:
-        raise ValueError(f"Setting '{args.task_setting}' not found in {args.ewc_settings_file}")
 
     source_cfg = source_task_cfg
     downstream_cfg = downstream_task_cfg
     adapt_cfg = adapt_settings[args.task_setting]
-    ewc_layout_cfg = ewc_settings[args.task_setting]
 
     if not isinstance(source_cfg, dict):
         raise ValueError(f"Expected dict source config in task settings for '{args.task_setting}'.")
     if not isinstance(downstream_cfg, dict):
         raise ValueError(f"Expected dict downstream config in task settings for '{args.task_setting}'.")
     if not isinstance(adapt_cfg, dict):
-        raise ValueError(f"Expected dict adapt settings config for '{args.task_setting}'.")
-    if not isinstance(ewc_layout_cfg, dict):
-        raise ValueError(f"Expected dict config in EWC settings for setting '{args.task_setting}'.")
+        raise ValueError(f"Expected dict adapt settings config for setting '{args.task_setting}'.")
     if "ppo" not in adapt_cfg or not isinstance(adapt_cfg["ppo"], dict):
         raise ValueError(f"Expected 'ppo' section for setting '{args.task_setting}' in {args.adapt_settings_file}.")
 
     adapt_ppo_cfg = adapt_cfg["ppo"]
-    if "ewc" in ewc_layout_cfg:
-        adapt_ewc_cfg = ewc_layout_cfg["ewc"]
-    elif any(k in ewc_layout_cfg for k in ("ewc_lambda", "lambda", "ewc_apply_to_critic")):
-        adapt_ewc_cfg = ewc_layout_cfg
-    else:
-        adapt_ewc_cfg = {}
-    if not isinstance(adapt_ewc_cfg, dict):
-        raise ValueError(f"Expected dict EWC config for setting '{args.task_setting}'.")
-
-    env_id = str(args.env_id or source_cfg.get("env_id") or downstream_cfg.get("env_id") or "LunarLander-v3")
+    env_id = str(
+        args.env_id
+        or source_cfg.get("env_id")
+        or downstream_cfg.get("env_id")
+        or "LunarLander-v3"
+    )
     source_gravity_raw = args.source_gravity if args.source_gravity is not None else source_cfg.get("gravity")
     downstream_gravity_raw = (
         args.downstream_gravity if args.downstream_gravity is not None else downstream_cfg.get("gravity")
@@ -282,17 +246,10 @@ def main() -> None:
     )
     actor_ckpt = source_run_dir / "actor.pt"
     critic_ckpt = source_run_dir / "critic.pt"
-    training_data_ckpt = source_run_dir / "training_data.pt"
-
-    ewc_apply_to_critic = bool(adapt_ewc_cfg.get("ewc_apply_to_critic", False) or args.ewc_apply_to_critic)
-    need_critic_checkpoint = warm_critic or ewc_apply_to_critic
-
     if not actor_ckpt.exists():
         raise FileNotFoundError(f"Source actor checkpoint not found: {actor_ckpt}")
-    if need_critic_checkpoint and not critic_ckpt.exists():
+    if warm_critic and not critic_ckpt.exists():
         raise FileNotFoundError(f"Source critic checkpoint not found: {critic_ckpt}")
-    if not training_data_ckpt.exists():
-        raise FileNotFoundError(f"Source training data not found: {training_data_ckpt}")
 
     hidden_size = _load_source_hidden_size(source_run_dir, args.hidden_size)
 
@@ -313,10 +270,8 @@ def main() -> None:
         hidden_size=hidden_size,
     )
     source_actor.load_state_dict(torch.load(actor_ckpt, map_location="cpu"))
-    if need_critic_checkpoint:
+    if warm_critic:
         source_critic.load_state_dict(torch.load(critic_ckpt, map_location="cpu"))
-    source_actor_for_ewc = copy.deepcopy(source_actor)
-    source_critic_for_ewc = copy.deepcopy(source_critic) if ewc_apply_to_critic else None
 
     task_transform_cfg = adapt_cfg.get("pre_adaptation_transform", {})
     do_task_neutralization = (
@@ -329,32 +284,6 @@ def main() -> None:
         neutralize_task_feature(source_actor, task_feature_index, downstream_task_id)
         if warm_critic:
             neutralize_task_feature(source_critic, task_feature_index, downstream_task_id)
-
-    source_training_data = torch.load(training_data_ckpt, map_location="cpu", weights_only=False)
-    if not isinstance(source_training_data, dict) or "states" not in source_training_data:
-        raise ValueError(f"Expected dict with key 'states' in source training data: {training_data_ckpt}")
-    source_states = np.asarray(source_training_data["states"], dtype=np.float32)
-    if source_states.ndim != 2 or source_states.shape[0] == 0:
-        raise ValueError(
-            f"Expected source_training_data['states'] to be shape (N, obs_dim), got {source_states.shape}",
-        )
-
-    fisher_sample_size = max(1, min(int(args.fisher_sample_size), int(source_states.shape[0])))
-    ewc_lambda = float(
-        args.ewc_lambda_override
-        if args.ewc_lambda_override is not None
-        else adapt_ewc_cfg.get("ewc_lambda", adapt_ewc_cfg.get("lambda", 5_000.0)),
-    )
-
-    ewc_state = compute_ewc_state(
-        actor=source_actor_for_ewc,
-        observations=source_states,
-        compute_critic=ewc_apply_to_critic,
-        critic=source_critic_for_ewc,
-        device=args.device,
-        fisher_sample_size=fisher_sample_size,
-        seed=args.seed,
-    )
 
     total_timesteps = (
         int(args.total_timesteps_override)
@@ -370,7 +299,7 @@ def main() -> None:
         else 200.0
     )
 
-    ppo_cfg = EWCPPOConfig(
+    ppo_cfg = PPOConfig(
         seed=int(adapt_ppo_cfg.get("seed", args.seed)),
         total_timesteps=total_timesteps,
         eval_episodes=int(args.eval_episodes_during_training),
@@ -396,15 +325,12 @@ def main() -> None:
         early_stop_deterministic_eval_episodes=int(
             adapt_ppo_cfg.get("early_stop_deterministic_eval_episodes", 20),
         ),
-        ewc_lambda=ewc_lambda,
-        ewc_apply_to_critic=ewc_apply_to_critic,
     )
 
     print(
-        f"Adapting LunarLander (EWC) | setting={args.task_setting} | source_task={source_task_id} -> "
-        f"downstream_task={downstream_task_id} | warm_critic={warm_critic} | "
-        f"task_neutralization={do_task_neutralization} | ewc_lambda={ewc_lambda} | "
-        f"fisher_sample_size={fisher_sample_size}",
+        f"Adapting LunarLander (unconstrained) | setting={args.task_setting} | "
+        f"source_task={source_task_id} -> downstream_task={downstream_task_id} | "
+        f"warm_critic={warm_critic} | task_neutralization={do_task_neutralization}",
     )
 
     train_env = _make_lunarlander_env(
@@ -417,10 +343,9 @@ def main() -> None:
         render_mode=None,
         **downstream_env_kwargs,
     )
-    actor, critic, training_data = ewc_ppo_train(  # type: ignore[assignment]
+    actor, critic, training_data = ppo_train(  # type: ignore[assignment]
         train_env,
         ppo_cfg,
-        ewc_states=[ewc_state],
         actor_warm_start=source_actor,
         critic_warm_start=(source_critic if warm_critic else None),
         early_stop_eval_env=early_stop_eval_env,
@@ -463,7 +388,6 @@ def main() -> None:
     actor_path = downstream_run_dir / "actor.pt"
     critic_path = downstream_run_dir / "critic.pt"
     training_data_path = downstream_run_dir / "training_data.pt"
-    ewc_state_path = downstream_run_dir / "ewc_state.pt"
     source_plot_path = downstream_run_dir / "trajectory_source.png"
     downstream_plot_path = downstream_run_dir / "trajectory_downstream.png"
     summary_path = downstream_run_dir / "run_summary.yaml"
@@ -471,7 +395,6 @@ def main() -> None:
     torch.save(actor.state_dict(), actor_path)
     torch.save(critic.state_dict(), critic_path)
     torch.save(training_data, training_data_path)
-    torch.save(ewc_state, ewc_state_path)
 
     # Plot with a CPU actor copy to avoid device-mismatch issues in rendering helpers.
     actor_for_plot = copy.deepcopy(actor).to("cpu")
@@ -523,13 +446,9 @@ def main() -> None:
         "eval_episodes_post_training": int(eval_episodes_post_training),
         "trajectory_episodes": int(args.trajectory_episodes),
         "trajectory_max_frames_per_episode": int(args.trajectory_max_frames_per_episode),
-        "ewc_lambda": float(ewc_lambda),
-        "ewc_apply_to_critic": ewc_apply_to_critic,
-        "fisher_sample_size": int(fisher_sample_size),
         "source_checkpoint_dir": str(source_run_dir),
         "task_settings_file": str(args.task_settings_file),
         "adapt_settings_file": str(args.adapt_settings_file),
-        "ewc_settings_file": str(args.ewc_settings_file),
     }
     run_results = {
         "source_mean_reward": float(source_mean_reward),
@@ -543,7 +462,6 @@ def main() -> None:
         "actor_path": str(actor_path),
         "critic_path": str(critic_path),
         "training_data_path": str(training_data_path),
-        "ewc_state_path": str(ewc_state_path),
         "trajectory_source_plot_path": str(source_plot_path),
         "trajectory_downstream_plot_path": str(downstream_plot_path),
     }
@@ -564,7 +482,6 @@ def main() -> None:
     )
     print(f"Saved actor: {actor_path}")
     print(f"Saved critic: {critic_path}")
-    print(f"Saved EWC state: {ewc_state_path}")
     print(f"Saved source trajectory grid: {source_plot_path}")
     print(f"Saved downstream trajectory grid: {downstream_plot_path}")
     print(f"Saved summary: {summary_path}")

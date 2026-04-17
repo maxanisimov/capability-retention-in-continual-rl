@@ -1,6 +1,6 @@
 """Highway Parking environment setup helpers."""
 
-from rl_project.highway.parking_setup import (
+from rl_project.experiments.highway.parking_setup import (
     HIGHWAY_PARKING_ENV_ID,
     HighwayTaskSetup,
     load_highway_task_setup,

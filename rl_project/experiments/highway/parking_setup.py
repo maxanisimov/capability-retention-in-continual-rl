@@ -19,7 +19,7 @@ from highway_env.vehicle.objects import Landmark, Obstacle
 
 
 HIGHWAY_PARKING_ENV_ID = "HighwayParkingCustom-v0"
-HIGHWAY_PARKING_ENTRY_POINT = "rl_project.highway.parking_setup:ConfigurableParkingEnv"
+HIGHWAY_PARKING_ENTRY_POINT = "rl_project.experiments.highway.parking_setup:ConfigurableParkingEnv"
 
 
 def _convert_lane_spots(

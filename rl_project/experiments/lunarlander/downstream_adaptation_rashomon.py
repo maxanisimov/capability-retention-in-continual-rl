@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import TensorDataset
 import yaml
 
-from rl_project.lunarlander.train_source_policy import (
+from rl_project.experiments.lunarlander.train_source_policy import (
     _load_task_settings,
     _make_lunarlander_env,
     _plot_trajectory_grid,

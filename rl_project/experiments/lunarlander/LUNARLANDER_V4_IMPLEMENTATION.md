@@ -11,7 +11,7 @@ This enables fully deterministic dynamics when both are `0.0`, with wind effects
 ## What Was Implemented
 
 ### 1. New Tunable Environment Class
-File: `rl_project/lunarlander/tunable_lunarlander.py`
+File: `rl_project/experiments/lunarlander/tunable_lunarlander.py`
 
 - Added `TunableLunarLander`, a subclass of Gymnasium's `LunarLander`.
 - Added constructor parameters:
@@ -65,14 +65,14 @@ This extra zeroing of wind/turbulence magnitudes is a defensive safeguard: even 
   - `LUNARLANDER_V4_ID = "LunarLander-v4"`
   - `ensure_lunarlander_v4_registered()`
 - Registration entry point:
-  - `rl_project.lunarlander.tunable_lunarlander:TunableLunarLander`
+  - `rl_project.experiments.lunarlander.tunable_lunarlander:TunableLunarLander`
 - Registration is idempotent:
   - If `LunarLander-v4` is already registered with the same entry point, it is left unchanged.
   - If registered differently, it is replaced.
 - Module calls `ensure_lunarlander_v4_registered()` at import time.
 
 ## Integration Into Existing Training/Eval Pipeline
-File: `rl_project/lunarlander/train_source_policy.py`
+File: `rl_project/experiments/lunarlander/train_source_policy.py`
 
 - `_resolve_lunarlander_dynamics(...)` now reads and validates:
   - `initial_random_strength`
@@ -86,12 +86,12 @@ File: `rl_project/lunarlander/train_source_policy.py`
   - printed runtime configuration
   - saved `run_summary.yaml` metadata
 
-File: `rl_project/lunarlander/rollout_policy_video.py`
+File: `rl_project/experiments/lunarlander/rollout_policy_video.py`
 
 - Added support for reading/writing these dynamics fields from run metadata.
 - When reconstructing env config for rollout, these values are passed to `_make_lunarlander_env(...)`.
 
-File: `rl_project/lunarlander/settings/task_settings.yaml`
+File: `rl_project/experiments/lunarlander/settings/task_settings.yaml`
 
 - Added nullable keys under each role:
   - `initial_random_strength: null`
@@ -102,7 +102,7 @@ File: `rl_project/lunarlander/settings/task_settings.yaml`
 ### Python
 ```python
 import gymnasium as gym
-from rl_project.lunarlander.tunable_lunarlander import ensure_lunarlander_v4_registered
+from rl_project.experiments.lunarlander.tunable_lunarlander import ensure_lunarlander_v4_registered
 
 ensure_lunarlander_v4_registered()
 env = gym.make(

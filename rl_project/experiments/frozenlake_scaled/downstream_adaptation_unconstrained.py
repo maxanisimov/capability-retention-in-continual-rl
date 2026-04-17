@@ -9,7 +9,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy" # to disable ALSA warnings when running 
 import torch
 import yaml
 
-from rl_project.frozenlake_scaled.train_source_policy import build_actor_critic, make_env_from_layout
+from rl_project.experiments.frozenlake_scaled.train_source_policy import build_actor_critic, make_env_from_layout
 from rl_project.utils.gymnasium_utils import plot_episode
 from rl_project.utils.ppo_utils import PPOConfig, evaluate, ppo_train
 

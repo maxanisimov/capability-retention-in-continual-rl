@@ -4,15 +4,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
-# Allow direct execution: `python rl_project/highway/create_env.py`.
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _SCRIPT_DIR.parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from rl_project.highway.parking_setup import (
+from rl_project.experiments.highway.parking_setup import (
     load_highway_task_setup,
     make_highway_parking_env,
 )
