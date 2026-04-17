@@ -1,8 +1,9 @@
-# CertifiedContinualLearning
+# capability-retention-in-continual-rl
 
-Codebase for certified/safe continual reinforcement learning experiments accompanying the paper release.
+Codebase for capability-retention experiments in continual reinforcement learning, including certified/Rashomon-set tooling and experiment pipelines.
 
 This repository contains:
+- the canonical Python package API (`certified_continual_learning/`),
 - the core certification/training code (`src/`, `abstract_gradient_training/`),
 - reusable RL utilities (`rl_project/utils/`),
 - paper-facing experiment pipelines in `rl_project/experiments/`.
@@ -21,15 +22,20 @@ Each pipeline supports:
 ```text
 .
 ├── abstract_gradient_training/        # Bounded/certified training components
-├── src/                               # Core trainers and verification modules
+├── certified_continual_learning/      # Canonical package API layer
+├── src/                               # Legacy compatibility import path
 ├── rl_project/
 │   ├── utils/                         # PPO/EWC/env plotting helper utilities
 │   ├── experiments/
 │   │   ├── frozen_lake/              # FrozenLake experiment pipeline
 │   │   ├── poisoned_apple/           # PoisonedApple experiment pipeline
+│   │   ├── frozenlake_scaled/        # Scaled FrozenLake experiments
+│   │   ├── lunarlander/              # LunarLander experiments
+│   │   ├── highway/                  # Highway parking experiments
 │   │   ├── visualisations/           # Figure/frame generation helpers
 │   │   └── README.md                 # Experiment quick-start guide
 │   └── scripts/                       # Older exploratory scripts
+├── pyproject.toml
 ├── requirements.txt
 └── LICENSE
 ```
@@ -42,11 +48,25 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+pip install -e .
 ```
 
 Notes:
 - The requirements file is comprehensive (research/dev environment).
 - Run commands from repository root for consistent relative paths.
+
+## Import Migration Notes
+New canonical imports should use:
+
+```python
+from certified_continual_learning.trainer import IntervalTrainer
+```
+
+Legacy imports remain supported during migration:
+
+```python
+from src.trainer import IntervalTrainer
+```
 
 ## Running Main Experiments
 See also: `rl_project/experiments/README.md`.
