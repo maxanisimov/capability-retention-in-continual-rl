@@ -1,0 +1,69 @@
+diagonal_10x10:
+  rashomon:
+    rashomon_n_iters: 10000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_20x20:
+  rashomon:
+    rashomon_n_iters: 10000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_30x30:
+  rashomon:
+    rashomon_n_iters: 10000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_40x40:
+  rashomon:
+    rashomon_n_iters: 10000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_50x50:
+  rashomon:
+    rashomon_n_iters: 10000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_60x60:
+  rashomon:
+    rashomon_n_iters: 100000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_70x70:
+  rashomon:
+    rashomon_n_iters: 50000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_80x80:
+  rashomon:
+    rashomon_n_iters: 50000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_90x90:
+  rashomon:
+    rashomon_n_iters: 50000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_100x100:
+  rashomon:
+    rashomon_n_iters: 50000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100

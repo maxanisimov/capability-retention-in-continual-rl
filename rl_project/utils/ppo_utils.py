@@ -298,6 +298,7 @@ def ppo_train(
     critic_warm_start: nn.Sequential | None = None,
     actor_param_bounds_l: list[torch.Tensor] | None = None,
     actor_param_bounds_u: list[torch.Tensor] | None = None,
+    early_stop_eval_env: gym.Env | None = None,
     return_training_data: bool = False
 ):
     """
@@ -311,6 +312,9 @@ def ppo_train(
         critic_warm_start: Optional pre-trained critic network
         actor_param_bounds_l: Optional lower bounds for actor parameters (for PGD)
         actor_param_bounds_u: Optional upper bounds for actor parameters (for PGD)
+        early_stop_eval_env: Optional environment for periodic evaluation and early-stopping checks.
+            If None, uses the training env. This is useful when training uses reward shaping but
+            early-stopping should use the original sparse reward.
         return_training_data: If True, returns state-action pairs collected during training
         
     Returns:
@@ -376,6 +380,8 @@ def ppo_train(
     if log_std is not None:
         optimizer_params.append({"params": [log_std], "lr": cfg.lr})
     optimizer = torch.optim.Adam(optimizer_params)
+
+    eval_env = early_stop_eval_env if early_stop_eval_env is not None else env
 
     obs, _ = env.reset(seed=cfg.seed)
     global_step = 0
@@ -552,7 +558,7 @@ def ppo_train(
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
             mean_r, std_r, failure_rate = evaluate(
-                env=env,
+                env=eval_env,
                 actor=actor,
                 device=device,
                 episodes=cfg.eval_episodes,
@@ -561,15 +567,16 @@ def ppo_train(
             deterministic_total_reward = None
             if cfg.early_stop_deterministic_total_reward_threshold is not None:
                 deterministic_total_reward, _, _ = evaluate(
-                    env=env,
+                    env=eval_env,
                     actor=actor,
                     device=device,
                     episodes=cfg.early_stop_deterministic_eval_episodes,
                     deterministic=True,
                 ) # type: ignore
 
-            # Reset the environment after evaluation since evaluation episodes ended.
-            obs, _ = env.reset()
+            # When evaluation reuses the training env, reset to recover rollout state.
+            if eval_env is env:
+                obs, _ = env.reset()
             elapsed = time.time() - start_time
             log_msg = f"Steps={global_step} | meanR={mean_r:.1f} +/- {std_r:.1f} | elapsed={elapsed:.1f}s"
             log_msg += f" | failure_rate={failure_rate:.2f}"
@@ -613,16 +620,24 @@ def ppo_train(
                     )
                     break
 
-    env.close()
-
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
         # Final checks and evaluation
-        mean_r, std_r, failure_rate = evaluate(env=env, actor=actor, device=device, episodes=cfg.eval_episodes, deterministic=True) # type: ignore
+        mean_r, std_r, failure_rate = evaluate(
+            env=eval_env,
+            actor=actor,
+            device=device,
+            episodes=cfg.eval_episodes,
+            deterministic=True,
+        ) # type: ignore
         final_msg = f"Final evaluation over {cfg.eval_episodes} episodes: mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         final_msg += f" | failure_rate={failure_rate:.2f}"
         if use_pgd:
             final_msg += f" | Total PGD projections during training: {pgd_projections}"
         print(final_msg)
+
+    env.close()
+    if early_stop_eval_env is not None and early_stop_eval_env is not env:
+        early_stop_eval_env.close()
 
     # Return results
     if return_training_data:

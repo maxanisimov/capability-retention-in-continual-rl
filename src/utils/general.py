@@ -37,6 +37,54 @@ def split_generators(
     return split_generator
 
 
+def sort_parameter_bounds_by_width(
+    param_bounds_l: list[torch.Tensor],
+    param_bounds_u: list[torch.Tensor],
+    descending: bool = True,
+) -> list[dict[str, int | float]]:
+    """
+    Sort parameter intervals by element-wise width.
+
+    Each output item corresponds to one scalar parameter and contains:
+    - ``tensor_index``: index of the parameter tensor in the bounds list.
+    - ``flat_index``: index of the scalar in the flattened parameter tensor.
+    - ``width``: interval width (upper - lower) for that scalar parameter.
+    """
+    if len(param_bounds_l) != len(param_bounds_u):
+        raise ValueError(
+            "Expected the same number of lower and upper bound tensors, "
+            f"got {len(param_bounds_l)} and {len(param_bounds_u)}."
+        )
+
+    width_entries: list[dict[str, int | float]] = []
+    for tensor_index, (p_l, p_u) in enumerate(zip(param_bounds_l, param_bounds_u)):
+        if p_l.shape != p_u.shape:
+            raise ValueError(
+                "Lower and upper bounds must have matching shapes for each tensor, "
+                f"but tensor {tensor_index} has {p_l.shape} and {p_u.shape}."
+            )
+
+        widths = (p_u.reshape(-1) - p_l.reshape(-1)).detach().cpu()
+        if (widths < 0).any():
+            min_width = widths.min().item()
+            raise ValueError(
+                "Upper bounds must be >= lower bounds for all elements, "
+                f"but tensor {tensor_index} has minimum width {min_width:.6e}."
+            )
+
+        for flat_index, width in enumerate(widths.tolist()):
+            width_entries.append(
+                {
+                    "tensor_index": tensor_index,
+                    "flat_index": flat_index,
+                    "width": float(width),
+                }
+            )
+
+    width_entries.sort(key=lambda item: item["width"], reverse=descending)
+    return width_entries
+
+
 class InContextHead(torch.nn.Module):
     """A model head that masks out output logits not corresponding to the current context."""
 

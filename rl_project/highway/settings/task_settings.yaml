@@ -1,0 +1,86 @@
+default:
+  append_task_id: true
+  use_goal: true
+  n_bins_accel: 5
+  n_bins_steer: 5
+  env_base:
+    observation:
+      type: KinematicsGoal
+      features: ["x", "y", "vx", "vy", "cos_h", "sin_h"]
+      scales: [100, 100, 5, 5, 1, 1]
+      normalize: false
+    action:
+      type: ContinuousAction
+    reward_weights: [1, 0.3, 0, 0, 0.02, 0.02]
+    success_goal_reward: 0.12
+    collision_reward: -5
+    steering_range_deg: 45
+    simulation_frequency: 15
+    policy_frequency: 5
+    duration: 100
+    screen_width: 600
+    screen_height: 300
+    centering_position: [0.5, 0.5]
+    scaling: 7
+    controlled_vehicles: 1
+    add_walls: true
+  source:
+    task_id: 0.0
+    goal_spots:
+      - ["b", "c", 1]
+    parked_vehicles_spots:
+      - ["a", "b", 0]
+      - ["a", "b", 1]
+      - ["b", "c", 0]
+      - ["b", "c", 2]
+    vehicles_count: 4
+  downstream:
+    task_id: 1.0
+    goal_spots:
+      - ["a", "b", 2]
+    parked_vehicles_spots:
+      - ["a", "b", 0]
+      - ["a", "b", 3]
+      - ["b", "c", 0]
+      - ["b", "c", 2]
+    vehicles_count: 4
+
+random_parked:
+  append_task_id: true
+  use_goal: true
+  n_bins_accel: 5
+  n_bins_steer: 5
+  env_base:
+    observation:
+      type: KinematicsGoal
+      features: ["x", "y", "vx", "vy", "cos_h", "sin_h"]
+      scales: [100, 100, 5, 5, 1, 1]
+      normalize: false
+    action:
+      type: ContinuousAction
+    reward_weights: [1, 0.3, 0, 0, 0.02, 0.02]
+    success_goal_reward: 0.12
+    collision_reward: -5
+    steering_range_deg: 45
+    simulation_frequency: 15
+    policy_frequency: 5
+    duration: 100
+    screen_width: 600
+    screen_height: 300
+    centering_position: [0.5, 0.5]
+    scaling: 7
+    controlled_vehicles: 1
+    add_walls: true
+  source:
+    task_id: 0.0
+    goal_spots:
+      - ["b", "c", 1]
+    parked_vehicles_spots: null
+    vehicles_count: 4
+  downstream:
+    task_id: 1.0
+    goal_spots:
+      - ["a", "b", 2]
+    parked_vehicles_spots: null
+    vehicles_count: 4
+

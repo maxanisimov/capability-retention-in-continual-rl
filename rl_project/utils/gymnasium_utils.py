@@ -7,6 +7,14 @@ import matplotlib.pyplot as plt
 
 ENV_ENGINES = ['gymnasium'] # , 'safety_gymnasium']
 
+
+def _module_device(module: torch.nn.Module) -> torch.device:
+    """Infer module parameter device; fallback to CPU for parameterless modules."""
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
 def render_gymnasium_agent(
         actor, 
         env: gymnasium.Env | None = None,
@@ -57,6 +65,7 @@ def render_gymnasium_agent(
         assert log_std > 0, "log_std must be positive"
 
     print(f"\n\n=== Rendering {actor} in {env_id} ===")
+    actor_device = _module_device(actor)
 
     for episode in range(num_episodes):
         print(f"\n--- Episode {episode + 1}/{num_episodes} ---")
@@ -64,7 +73,7 @@ def render_gymnasium_agent(
         done = False
         obs, _ = env.reset(seed=seed + episode)
         while not done:
-            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=actor_device).unsqueeze(0)
             with torch.no_grad():
                 if isinstance(env.action_space, gymnasium.spaces.Box):
                     # Continuous actions: use mean from actor
@@ -266,8 +275,10 @@ def plot_episode(
         env = gymnasium.make(env_id, render_mode='rgb_array', **env_kwargs)
 
     continuous_actions = isinstance(env.action_space, gymnasium.spaces.Box)
+    actor_device = _module_device(actor)
+    log_std_t = log_std.to(actor_device) if log_std is not None else None
     if not deterministic and continuous_actions:
-        assert log_std is not None, "log_std must be provided for stochastic continuous actions"
+        assert log_std_t is not None, "log_std must be provided for stochastic continuous actions"
 
     # --- collect frames ---
     frames: list[np.ndarray] = []
@@ -278,14 +289,14 @@ def plot_episode(
 
     done = False
     while not done:
-        obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        obs_t = torch.tensor(obs, dtype=torch.float32, device=actor_device).unsqueeze(0)
         with torch.no_grad():
             if continuous_actions:
                 if deterministic:
                     action = actor(obs_t).cpu().numpy()[0]
                 else:
                     mean = actor(obs_t)
-                    std = torch.exp(log_std)  # type: ignore[arg-type]
+                    std = torch.exp(log_std_t)  # type: ignore[arg-type]
                     dist = torch.distributions.Normal(mean, std)
                     action = dist.sample().cpu().numpy()[0]
                 action = np.clip(action, env.action_space.low, env.action_space.high)
@@ -741,6 +752,8 @@ def plot_gymnasium_episode_multitask(
         tuple[list[np.ndarray], list[np.ndarray]]: The collected RGB frames
             for Task 1 and Task 2 respectively (all frames, before striding).
     """
+    actor_device = _module_device(actor)
+    log_std_t = log_std.to(actor_device) if log_std is not None else None
 
     def _collect_frames(env, env_id, env_kwargs):
         """Create env if needed and collect one episode of frames."""
@@ -758,7 +771,7 @@ def plot_gymnasium_episode_multitask(
 
         continuous_actions = isinstance(env.action_space, gymnasium.spaces.Box)
         if not deterministic and continuous_actions:
-            assert log_std is not None, \
+            assert log_std_t is not None, \
                 "log_std must be provided for stochastic continuous actions"
 
         frames: list[np.ndarray] = []
@@ -769,14 +782,14 @@ def plot_gymnasium_episode_multitask(
 
         done = False
         while not done:
-            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=actor_device).unsqueeze(0)
             with torch.no_grad():
                 if continuous_actions:
                     if deterministic:
                         action = actor(obs_t).cpu().numpy()[0]
                     else:
                         mean = actor(obs_t)
-                        std = torch.exp(log_std)  # type: ignore[arg-type]
+                        std = torch.exp(log_std_t)  # type: ignore[arg-type]
                         dist = torch.distributions.Normal(mean, std)
                         action = dist.sample().cpu().numpy()[0]
                     action = np.clip(action, env.action_space.low, env.action_space.high)

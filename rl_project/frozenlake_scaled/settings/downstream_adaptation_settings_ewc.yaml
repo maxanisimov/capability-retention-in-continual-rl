@@ -1,0 +1,49 @@
+diagonal_10x10:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_20x20:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_30x30:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_40x40:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_50x50:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_60x60:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_70x70:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_80x80:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_90x90:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false
+
+diagonal_100x100:
+  ewc:
+    ewc_lambda: 5000.0
+    ewc_apply_to_critic: false

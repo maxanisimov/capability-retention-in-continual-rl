@@ -191,6 +191,8 @@ plots/
 tables/
 logs/
 rl_project/experiments/outputs/
+rl_project/**/archive/outputs_OLD/
+rl_project/**/notebooks/artifacts/
 
 # OS/editor
 .DS_Store

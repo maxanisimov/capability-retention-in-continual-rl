@@ -1,0 +1,40 @@
+default:
+  rashomon:
+    rashomon_rollouts: 1000
+    rashomon_n_iters: 50000
+    rashomon_min_hard_spec: 1.0
+    rashomon_surrogate_aggregation: min
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+dynamics_shift:
+  rashomon:
+    rashomon_rollouts: 1000
+    rashomon_n_iters: 50000
+    rashomon_min_hard_spec: 1.0
+    rashomon_surrogate_aggregation: min
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+deterministic:
+  rashomon:
+    rashomon_rollouts: 1
+    rashomon_n_iters: 50000
+    rashomon_min_hard_spec: 1.0
+    rashomon_surrogate_aggregation: min
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+deterministic_dynamics_hard:
+  rashomon:
+    rashomon_rollouts: 1
+    rashomon_n_iters: 20000
+    rashomon_min_hard_spec: 1.0
+    rashomon_surrogate_aggregation: min
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+

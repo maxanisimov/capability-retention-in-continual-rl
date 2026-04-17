@@ -1,7 +1,698 @@
 import os
+import math
+from pathlib import Path
 import numpy as np
+from scipy.fftpack import dct
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle, Patch
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+def _get_scalar_param(param_bounds: list, tensor_index: int, flat_index: int) -> float:
+    return float(param_bounds[tensor_index].flatten()[flat_index].item())
+
+def _cuboid_faces(x0: float, x1: float, y0: float, y1: float, z0: float, z1: float) -> list[list[tuple[float, float, float]]]:
+    return [
+        [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)],
+        [(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)],
+        [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)],
+        [(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)],
+        [(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)],
+        [(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)],
+    ]
+
+def plot_param_bounds(
+    param_lower_bounds: list,
+    param_upper_bounds: list,
+    param_indices: list[tuple[int, int]],
+    scatter_points: list[dict] | None = None,
+    title: str | None = None,
+):
+    """Plot Rashomon bounds for 2 parameters (rectangle) or 3 parameters (cuboid)."""
+    n_params = len(param_indices)
+    assert n_params in (2, 3), "Expected parameter indices for either 2D or 3D plotting."
+
+    bounds = []
+    for tensor_idx, flat_idx in param_indices:
+        lo = _get_scalar_param(param_lower_bounds, tensor_idx, flat_idx)
+        hi = _get_scalar_param(param_upper_bounds, tensor_idx, flat_idx)
+        bounds.append((lo, hi))
+
+    labels = [f"param {idx}" for idx in param_indices]
+
+    if n_params == 2:
+        (x0, x1), (y0, y1) = bounds
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+        if scatter_points is not None:
+            # assert len(source_params) == 2, "source_params must have 2 values for 2D plots."
+            for scatter_point_info in scatter_points:
+                ax.scatter(
+                    scatter_point_info['coordinates'][0],
+                    scatter_point_info['coordinates'][1],
+                    color=scatter_point_info.get('color', "tab:orange"),
+                    marker="o",
+                    s=60,
+                    label=scatter_point_info.get('label', None),
+                    zorder=5,
+                )
+
+        rect = Rectangle(
+            (x0, y0),
+            x1 - x0,
+            y1 - y0,
+            fill=True,
+            facecolor="tab:blue",
+            edgecolor="tab:blue",
+            linewidth=1.5,
+            alpha=0.2,
+            label="Rashomon set",
+        )
+        ax.add_patch(rect)
+
+        x_pad = 0.05 * max(1e-12, x1 - x0)
+        y_pad = 0.05 * max(1e-12, y1 - y0)
+        ax.set_xlim(x0 - x_pad, x1 + x_pad)
+        ax.set_ylim(y0 - y_pad, y1 + y_pad)
+
+        ax.set_xlabel(labels[0])
+        ax.set_ylabel(labels[1])
+        ax.set_title(title or f"Rashomon set: {labels[0]} vs {labels[1]}")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        plt.tight_layout()
+        plt.show()
+        return
+
+    (x0, x1), (y0, y1), (z0, z1) = bounds
+    fig = plt.figure(figsize=(6, 5))
+    ax = fig.add_subplot(111, projection="3d")
+
+    faces = _cuboid_faces(x0, x1, y0, y1, z0, z1)
+    cuboid = Poly3DCollection(
+        faces,
+        facecolors="tab:blue",
+        edgecolors="tab:blue",
+        linewidths=1.0,
+        alpha=0.2,
+    )
+    ax.add_collection3d(cuboid)
+
+    if scatter_points is not None:
+        for scatter_point_info in scatter_points:
+            ax.scatter(
+                scatter_point_info['coordinates'][0],
+                scatter_point_info['coordinates'][1],
+                scatter_point_info['coordinates'][2], # type: ignore
+            color=scatter_point_info.get('color', "tab:orange"),
+            marker="o",
+            s=70,
+            depthshade=False,
+        )
+
+    x_pad = 0.05 * max(1e-12, x1 - x0)
+    y_pad = 0.05 * max(1e-12, y1 - y0)
+    z_pad = 0.05 * max(1e-12, z1 - z0)
+    ax.set_xlim(x0 - x_pad, x1 + x_pad)
+    ax.set_ylim(y0 - y_pad, y1 + y_pad)
+    ax.set_zlim(z0 - z_pad, z1 + z_pad)
+
+    ax.set_xlabel(labels[0])
+    ax.set_ylabel(labels[1])
+    ax.set_zlabel(labels[2])
+    ax.set_title(title or f"Rashomon set: {labels[0]} vs {labels[1]} vs {labels[2]}")
+
+    legend_handles = [Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label="Rashomon set")]
+    if scatter_points is not None:
+        for scatter_point_info in scatter_points:
+            if 'label' in scatter_point_info and scatter_point_info['label'] is not None:
+                legend_handles.append(
+                    Line2D(
+                        [0], [0], marker="o", color="w", 
+                        markerfacecolor=scatter_point_info.get('color', "tab:orange"), markersize=8, label=scatter_point_info['label']
+                    ) # type: ignore
+                )
+    ax.legend(handles=legend_handles, loc="best")
+
+    plt.tight_layout()
+    plt.show()
+
+def _select_checkpoint_indices(n_ckpts: int, num_checkpoints_to_plot: int) -> list[int]:
+    """Select checkpoint indices using first/last/linspace rules."""
+    if n_ckpts <= 0:
+        raise ValueError("No checkpoints are available to plot.")
+
+    if num_checkpoints_to_plot <= 1:
+        return [n_ckpts - 1]
+
+    if n_ckpts == 1:
+        return [0]
+
+    if num_checkpoints_to_plot == 2:
+        return [0, n_ckpts - 1]
+
+    num = min(num_checkpoints_to_plot, n_ckpts)
+    linspace_indices = np.linspace(0, n_ckpts - 1, num=num)
+    selected = [int(round(v)) for v in linspace_indices]
+    selected[0] = 0
+    selected[-1] = n_ckpts - 1
+
+    deduped: list[int] = []
+    for idx in selected:
+        if idx not in deduped:
+            deduped.append(idx)
+
+    return deduped
+
+
+def _extract_param_bounds_per_checkpoint(
+    param_bounds_l_per_checkpoint: list[list],
+    param_bounds_u_per_checkpoint: list[list],
+    tensor_idx: int,
+    flat_idx: int,
+    selected_plot_indices: list[int],
+) -> list[dict[str, float]]:
+    return [
+        {
+            "lower": param_bounds_l_per_checkpoint[i][tensor_idx].flatten()[flat_idx].item(),
+            "upper": param_bounds_u_per_checkpoint[i][tensor_idx].flatten()[flat_idx].item(),
+        }
+        for i in selected_plot_indices
+    ]
+
+
+def _cuboid_faces(x0: float, x1: float, y0: float, y1: float, z0: float, z1: float) -> list[list[tuple[float, float, float]]]:
+    return [
+        [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)],
+        [(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)],
+        [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)],
+        [(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)],
+        [(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)],
+        [(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)],
+    ]
+
+
+def plot_param_bounds_per_checkpoint(
+    param_bounds_l_per_checkpoint: list[list],
+    param_bounds_u_per_checkpoint: list[list],
+    param_indices: list[tuple[int, int]],
+    scatter_points: list[list[dict]] | None = None,
+    # source_params: tuple[float, float] | tuple[float, float, float] | None = None,
+    # source_label: str = "Source policy",
+    num_checkpoints_to_plot: int = 5,
+    n_rows: int = 1,
+):
+    """Plot 2D/3D Rashomon sets per checkpoint for 2 or 3 selected parameters."""
+    n_params = len(param_indices)
+    if n_params not in (2, 3):
+        raise ValueError("plot_param_bounds_per_checkpoint expects 2 or 3 parameter indices.")
+
+    if len(param_bounds_l_per_checkpoint) != len(param_bounds_u_per_checkpoint):
+        raise ValueError("Lower/upper checkpoint bounds lengths do not match.")
+
+    n_ckpts = len(param_bounds_l_per_checkpoint)
+    if n_ckpts == 0:
+        raise ValueError("No checkpoint bounds were provided.")
+
+    if scatter_points is not None:
+        assert all (len(dct['coordinates']) == n_params for dct in scatter_points), "Each scatter point must have coordinates matching the number of parameters."
+
+    selected_plot_indices = _select_checkpoint_indices(n_ckpts, num_checkpoints_to_plot)
+    n_plots = len(selected_plot_indices)
+    n_cols = math.ceil(n_plots / n_rows)
+
+    param_bounds_to_plot: list[list[dict[str, float]]] = []
+    for tensor_idx, flat_idx in param_indices:
+        param_bounds_to_plot.append(
+            _extract_param_bounds_per_checkpoint(
+                param_bounds_l_per_checkpoint,
+                param_bounds_u_per_checkpoint,
+                tensor_idx,
+                flat_idx,
+                selected_plot_indices,
+            )
+        )
+
+    mins = [min(b["lower"] for b in param_bounds) for param_bounds in param_bounds_to_plot]
+    maxs = [max(b["upper"] for b in param_bounds) for param_bounds in param_bounds_to_plot]
+    pads = [0.02 * max(1e-12, hi - lo) for lo, hi in zip(mins, maxs)]
+
+    if n_params == 2:
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(2.8 * n_cols, 3.2 * n_rows),
+            squeeze=False,
+            sharex=True,
+            sharey=True,
+        )
+    else:
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(3.3 * n_cols, 3.2 * n_rows),
+            squeeze=False,
+            subplot_kw={"projection": "3d"},
+            # constrained_layout=True,
+        )
+
+    fig.suptitle(
+        "Rashomon set across checkpoints\n"
+        + ", ".join([f"param{i + 1}={param_indices[i]}" for i in range(n_params)]),
+        fontsize=13,
+        y=1.03,
+    )
+
+    for i, ax in enumerate(axes.flat):
+        if i >= n_plots:
+            ax.axis("off")
+            continue
+
+        ckpt_label = selected_plot_indices[i] + 1
+
+        if n_params == 2:
+            xb = param_bounds_to_plot[0][i]
+            yb = param_bounds_to_plot[1][i]
+
+            if scatter_points is not None:
+                for scatter_point_info in scatter_points:
+                    ax.scatter(
+                        scatter_point_info['coordinates'][0],
+                        scatter_point_info['coordinates'][1],
+                        color=scatter_point_info.get('color', "tab:orange"),
+                        marker="o",
+                        s=50,
+                        label=scatter_point_info.get('label', None) if i == 0 else None,
+                        zorder=5,
+                    )
+
+            rect = Rectangle(
+                (xb["lower"], yb["lower"]),
+                xb["upper"] - xb["lower"],
+                yb["upper"] - yb["lower"],
+                fill=True,
+                edgecolor="tab:blue",
+                facecolor="tab:blue",
+                linewidth=1.5,
+                alpha=0.2,
+                label="Rashomon set" if i == 0 else None,
+            )
+            ax.add_patch(rect)
+
+            ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
+            ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(alpha=0.25)
+            ax.set_title(f"checkpoint #{ckpt_label}", fontsize=9)
+
+            if i // n_cols == n_rows - 1:
+                ax.set_xlabel(f"param1 {param_indices[0]}", fontsize=10)
+            if i % n_cols == 0:
+                ax.set_ylabel(f"param2 {param_indices[1]}", fontsize=10)
+
+        else:
+            xb = param_bounds_to_plot[0][i]
+            yb = param_bounds_to_plot[1][i]
+            zb = param_bounds_to_plot[2][i]
+
+            faces = _cuboid_faces(
+                xb["lower"], xb["upper"],
+                yb["lower"], yb["upper"],
+                zb["lower"], zb["upper"],
+            )
+            cuboid = Poly3DCollection(
+                faces,
+                facecolors="tab:blue",
+                edgecolors="tab:blue",
+                linewidths=1.0,
+                alpha=0.2,
+            )
+            ax.add_collection3d(cuboid)
+
+            if scatter_points is not None:
+                for scatter_point_info in scatter_points:
+                    ax.scatter(
+                        scatter_point_info['coordinates'][0],
+                        scatter_point_info['coordinates'][1],
+                        scatter_point_info['coordinates'][2], # type: ignore
+                        color=scatter_point_info.get('color', "tab:orange"),
+                    marker="o",
+                    s=45,
+                    depthshade=False,
+                )
+
+            ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
+            ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
+            ax.set_zlim(mins[2] - pads[2], maxs[2] + pads[2])
+            ax.set_title(f"checkpoint #{ckpt_label}", fontsize=9)
+            ax.set_xlabel(f"param1 {param_indices[0]}", fontsize=9)
+            ax.set_ylabel(f"param2 {param_indices[1]}", fontsize=9)
+            ax.set_zlabel(f"param3 {param_indices[2]}", fontsize=9, labelpad=4)
+            ax.tick_params(axis="z", pad=1)
+            ax.set_box_aspect((1, 1, 1))  # keep 3D box compact and balanced
+
+    legend_handles = [Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label="Rashomon set")]
+    if scatter_points is not None:
+        for scatter_point_info in scatter_points:
+            if 'label' in scatter_point_info and scatter_point_info['label'] is not None:
+                legend_handles.insert(
+                    0,
+                    Line2D(
+                        [0], [0], marker="o", color="w", 
+                        markerfacecolor=scatter_point_info.get('color', "tab:orange"),
+                        markersize=7, label=scatter_point_info.get('label', None)
+                    ) # type: ignore
+        )
+    legend_labels = [h.get_label() for h in legend_handles]
+    fig.legend(
+        legend_handles, 
+        legend_labels, # type: ignore
+        loc="lower center", bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=8
+    )
+
+    if n_params ==2:
+        fig.tight_layout()
+    # else:
+    #     pass
+    #     # fig.subplots_adjust(right=0.9, bottom=0.14)  # reserve room for right edge + legend
+    plt.show()
+
+
+def _figure_to_rgb_array(fig: plt.Figure) -> np.ndarray:
+    """Convert a Matplotlib figure canvas into an RGB uint8 array."""
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba())
+    if rgba.ndim != 3 or rgba.shape[2] != 4:
+        raise ValueError(f"Expected HxWx4 RGBA canvas buffer, got shape {rgba.shape}.")
+    return np.ascontiguousarray(rgba[..., :3]).astype(np.uint8)
+
+
+def _axis_pad(lower: float, upper: float, ratio: float = 0.05) -> float:
+    """Return a stable axis padding, including near-zero-span intervals."""
+    span = upper - lower
+    if abs(span) < 1e-12:
+        return max(1e-6, ratio * max(abs(lower), abs(upper), 1.0))
+    return ratio * span
+
+
+def create_rashomon_set_video(
+    param_bounds_l_per_checkpoint: list[list[torch.Tensor]],
+    param_bounds_u_per_checkpoint: list[list[torch.Tensor]],
+    param_indices: list[tuple[int, int]],
+    output_path: str,
+    scatter_points: list[dict] | None = None,
+    checkpoint_indices: list[int] | None = None,
+    checkpoint_labels: list[int | str] | None = None,
+    num_checkpoints_to_plot: int | None = None,
+    fps: int = 2,
+    dpi: int = 140,
+    fig_size_2d: tuple[float, float] = (5.0, 5.0),
+    fig_size_3d: tuple[float, float] = (6.0, 5.0),
+    elev: float = 20.0,
+    azim: float = -60.0,
+    title_prefix: str = "Rashomon set",
+    repeat_last_frame: int = 0,
+) -> str:
+    """Create a 2D/3D Rashomon-set evolution video across checkpoints.
+
+    The function mirrors notebook visuals:
+    - 2D: one rectangle per checkpoint.
+    - 3D: one cuboid per checkpoint.
+    Optional scatter points (e.g., source policy params) are overlaid in all frames.
+
+    Args:
+        param_bounds_l_per_checkpoint: Lower bounds for each checkpoint.
+        param_bounds_u_per_checkpoint: Upper bounds for each checkpoint.
+        param_indices: Parameter indices to visualize (2 or 3 parameters).
+        output_path: Video path (e.g. ``.mp4`` or ``.gif``).
+        scatter_points: Optional static scatter points over all frames.
+        checkpoint_indices: Optional explicit checkpoint indices to render.
+        checkpoint_labels: Optional labels for all checkpoints; used in frame titles.
+        num_checkpoints_to_plot: Optional evenly-spaced checkpoint count.
+        fps: Output frames per second.
+        dpi: Figure DPI for frame rendering.
+        fig_size_2d: Frame figure size for 2D mode.
+        fig_size_3d: Frame figure size for 3D mode.
+        elev: 3D camera elevation.
+        azim: 3D camera azimuth.
+        title_prefix: Prefix for frame titles.
+        repeat_last_frame: Number of extra repeats for the final frame.
+
+    Returns:
+        Absolute output path of the written video file.
+    """
+    import imageio.v2 as imageio
+
+    n_params = len(param_indices)
+    if n_params not in (2, 3):
+        raise ValueError("create_rashomon_set_video expects 2 or 3 parameter indices.")
+
+    if len(param_bounds_l_per_checkpoint) != len(param_bounds_u_per_checkpoint):
+        raise ValueError("Lower/upper checkpoint bounds lengths do not match.")
+
+    n_ckpts = len(param_bounds_l_per_checkpoint)
+    if n_ckpts == 0:
+        raise ValueError("No checkpoint bounds were provided.")
+
+    if checkpoint_labels is not None and len(checkpoint_labels) != n_ckpts:
+        raise ValueError("checkpoint_labels must be None or have one label per checkpoint.")
+
+    if scatter_points is not None:
+        if any(len(dct["coordinates"]) != n_params for dct in scatter_points):
+            raise ValueError("Each scatter point must match the parameter dimensionality (2D/3D).")
+
+    if checkpoint_indices is not None and num_checkpoints_to_plot is not None:
+        raise ValueError("Provide either checkpoint_indices or num_checkpoints_to_plot, not both.")
+
+    if checkpoint_indices is not None:
+        selected_plot_indices = list(dict.fromkeys(checkpoint_indices))
+        for idx in selected_plot_indices:
+            if idx < 0 or idx >= n_ckpts:
+                raise IndexError(f"checkpoint index {idx} out of range for {n_ckpts} checkpoints.")
+    elif num_checkpoints_to_plot is not None:
+        selected_plot_indices = _select_checkpoint_indices(n_ckpts, num_checkpoints_to_plot)
+    else:
+        selected_plot_indices = list(range(n_ckpts))
+
+    if len(selected_plot_indices) == 0:
+        raise ValueError("No checkpoints selected for rendering.")
+
+    param_bounds_to_plot: list[list[dict[str, float]]] = []
+    for tensor_idx, flat_idx in param_indices:
+        param_bounds_to_plot.append(
+            _extract_param_bounds_per_checkpoint(
+                param_bounds_l_per_checkpoint=param_bounds_l_per_checkpoint,
+                param_bounds_u_per_checkpoint=param_bounds_u_per_checkpoint,
+                tensor_idx=tensor_idx,
+                flat_idx=flat_idx,
+                selected_plot_indices=selected_plot_indices,
+            )
+        )
+
+    mins = [min(frame_bounds["lower"] for frame_bounds in per_param) for per_param in param_bounds_to_plot]
+    maxs = [max(frame_bounds["upper"] for frame_bounds in per_param) for per_param in param_bounds_to_plot]
+    pads = [_axis_pad(lo, hi) for lo, hi in zip(mins, maxs)]
+
+    frames: list[np.ndarray] = []
+    for frame_idx, ckpt_idx in enumerate(selected_plot_indices):
+        ckpt_label: int | str
+        if checkpoint_labels is None:
+            ckpt_label = ckpt_idx + 1
+        else:
+            ckpt_label = checkpoint_labels[ckpt_idx]
+
+        if n_params == 2:
+            fig, ax = plt.subplots(figsize=fig_size_2d, dpi=dpi)
+            xb = param_bounds_to_plot[0][frame_idx]
+            yb = param_bounds_to_plot[1][frame_idx]
+
+            if scatter_points is not None:
+                for scatter_point_info in scatter_points:
+                    ax.scatter(
+                        scatter_point_info["coordinates"][0],
+                        scatter_point_info["coordinates"][1],
+                        color=scatter_point_info.get("color", "tab:orange"),
+                        marker="o",
+                        s=55,
+                        label=scatter_point_info.get("label", None),
+                        zorder=5,
+                    )
+
+            rect = Rectangle(
+                (xb["lower"], yb["lower"]),
+                xb["upper"] - xb["lower"],
+                yb["upper"] - yb["lower"],
+                fill=True,
+                edgecolor="tab:blue",
+                facecolor="tab:blue",
+                linewidth=1.5,
+                alpha=0.2,
+                label="Rashomon set",
+            )
+            ax.add_patch(rect)
+            ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
+            ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(alpha=0.25)
+            ax.set_xlabel(f"param1 {param_indices[0]}")
+            ax.set_ylabel(f"param2 {param_indices[1]}")
+            ax.set_title(f"{title_prefix} - checkpoint #{ckpt_label}")
+
+            handles, labels = ax.get_legend_handles_labels()
+            if len(handles) > 0:
+                deduped: dict[str, object] = {}
+                for handle, label in zip(handles, labels):
+                    if label not in deduped:
+                        deduped[label] = handle
+                ax.legend(deduped.values(), deduped.keys(), loc="best")
+        else:
+            fig = plt.figure(figsize=fig_size_3d, dpi=dpi)
+            ax = fig.add_subplot(111, projection="3d")
+            xb = param_bounds_to_plot[0][frame_idx]
+            yb = param_bounds_to_plot[1][frame_idx]
+            zb = param_bounds_to_plot[2][frame_idx]
+
+            faces = _cuboid_faces(
+                xb["lower"], xb["upper"],
+                yb["lower"], yb["upper"],
+                zb["lower"], zb["upper"],
+            )
+            cuboid = Poly3DCollection(
+                faces,
+                facecolors="tab:blue",
+                edgecolors="tab:blue",
+                linewidths=1.0,
+                alpha=0.2,
+            )
+            ax.add_collection3d(cuboid)
+
+            legend_handles: list[object] = [
+                Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label="Rashomon set"),
+            ]
+            if scatter_points is not None:
+                for scatter_point_info in scatter_points:
+                    ax.scatter(
+                        scatter_point_info["coordinates"][0],
+                        scatter_point_info["coordinates"][1],
+                        scatter_point_info["coordinates"][2],  # type: ignore[index]
+                        color=scatter_point_info.get("color", "tab:orange"),
+                        marker="o",
+                        s=55,
+                        depthshade=False,
+                    )
+                    label = scatter_point_info.get("label", None)
+                    if label is not None:
+                        legend_handles.insert(
+                            0,
+                            Line2D(
+                                [0], [0], marker="o", color="w",
+                                markerfacecolor=scatter_point_info.get("color", "tab:orange"),
+                                markersize=8,
+                                label=label,
+                            ),
+                        )
+
+            ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
+            ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
+            ax.set_zlim(mins[2] - pads[2], maxs[2] + pads[2])
+            ax.set_xlabel(f"param1 {param_indices[0]}")
+            ax.set_ylabel(f"param2 {param_indices[1]}")
+            ax.set_zlabel(f"param3 {param_indices[2]}", labelpad=4)
+            ax.tick_params(axis="z", pad=1)
+            ax.set_box_aspect((1, 1, 1))
+            ax.view_init(elev=elev, azim=azim)
+            ax.set_title(f"{title_prefix} - checkpoint #{ckpt_label}")
+
+            legend_labels = [handle.get_label() for handle in legend_handles]  # type: ignore[attr-defined]
+            ax.legend(legend_handles, legend_labels, loc="best")  # type: ignore[arg-type]
+
+        fig.tight_layout()
+        frames.append(_figure_to_rgb_array(fig))
+        plt.close(fig)
+
+    if repeat_last_frame > 0 and len(frames) > 0:
+        frames.extend([frames[-1]] * repeat_last_frame)
+
+    out_path = Path(output_path).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = out_path.suffix.lower()
+    if suffix == ".gif":
+        imageio.mimsave(out_path, frames, fps=fps, loop=0)
+    else:
+        imageio.mimwrite(out_path, frames, fps=fps, macro_block_size=1)
+
+    return str(out_path.resolve())
+
+
+def create_video_param_bounds_per_checkpoint(
+    param_bounds_l_per_checkpoint: list[list[torch.Tensor]],
+    param_bounds_u_per_checkpoint: list[list[torch.Tensor]],
+    param_indices: list[tuple[int, int]],
+    output_path: str,
+    scatter_points: list[dict] | None = None,
+    checkpoint_labels: list[int | str] | None = None,
+    fps: int = 2,
+    dpi: int = 140,
+    fig_size_2d: tuple[float, float] = (5.0, 5.0),
+    fig_size_3d: tuple[float, float] = (6.0, 5.0),
+    elev: float = 20.0,
+    azim: float = -60.0,
+    title_prefix: str = "Rashomon parameter bounds",
+    repeat_last_frame: int = 0,
+) -> str:
+    """Create a checkpoint-by-checkpoint parameter-bounds video.
+
+    This helper always renders *all* checkpoints provided in
+    ``param_bounds_l_per_checkpoint`` / ``param_bounds_u_per_checkpoint``.
+    It supports both:
+    - 2D visualisations (2 parameter indices), and
+    - 3D visualisations (3 parameter indices).
+
+    Args:
+        param_bounds_l_per_checkpoint: Lower bounds per checkpoint.
+        param_bounds_u_per_checkpoint: Upper bounds per checkpoint.
+        param_indices: Parameter indices to visualise (length 2 or 3).
+        output_path: Output video path (e.g. ``.mp4`` / ``.gif``).
+        scatter_points: Optional static points overlaid in every frame.
+        checkpoint_labels: Optional labels for each checkpoint.
+        fps: Output frames per second.
+        dpi: Figure DPI for rendering frames.
+        fig_size_2d: Figure size for 2D frames.
+        fig_size_3d: Figure size for 3D frames.
+        elev: 3D elevation angle.
+        azim: 3D azimuth angle.
+        title_prefix: Prefix for per-frame titles.
+        repeat_last_frame: Number of additional repeats for the final frame.
+
+    Returns:
+        Absolute path to the written video file.
+    """
+    if len(param_bounds_l_per_checkpoint) != len(param_bounds_u_per_checkpoint):
+        raise ValueError("Lower/upper checkpoint bounds lengths do not match.")
+    if len(param_bounds_l_per_checkpoint) == 0:
+        raise ValueError("No checkpoint bounds were provided.")
+
+    checkpoint_indices = list(range(len(param_bounds_l_per_checkpoint)))
+    return create_rashomon_set_video(
+        param_bounds_l_per_checkpoint=param_bounds_l_per_checkpoint,
+        param_bounds_u_per_checkpoint=param_bounds_u_per_checkpoint,
+        param_indices=param_indices,
+        output_path=output_path,
+        scatter_points=scatter_points,
+        checkpoint_indices=checkpoint_indices,
+        checkpoint_labels=checkpoint_labels,
+        num_checkpoints_to_plot=None,
+        fps=fps,
+        dpi=dpi,
+        fig_size_2d=fig_size_2d,
+        fig_size_3d=fig_size_3d,
+        elev=elev,
+        azim=azim,
+        title_prefix=title_prefix,
+        repeat_last_frame=repeat_last_frame,
+    )
+
 
 def plot_parameter_bound_widths(
     param_bounds_l: list[torch.Tensor],
