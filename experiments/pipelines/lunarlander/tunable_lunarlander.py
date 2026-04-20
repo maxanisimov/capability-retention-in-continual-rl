@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import gymnasium.envs.box2d.lunar_lander as ll_mod
 from gymnasium.envs.box2d.lunar_lander import LunarLander
@@ -53,6 +54,7 @@ class TunableLunarLander(LunarLander):
         leg_mass_scale: float = 1.0,
         linear_damping: float | None = None,
         angular_damping: float | None = None,
+        terrain_heights: list[float] | np.ndarray | None = None,
         deterministic: bool = False,
         **kwargs,
     ):
@@ -97,6 +99,9 @@ class TunableLunarLander(LunarLander):
         if self.angular_damping is not None and self.angular_damping < 0.0:
             raise ValueError(f"angular_damping must be >= 0, got {self.angular_damping}.")
 
+        self._manual_terrain_heights: np.ndarray | None = None
+        self.set_manual_terrain(terrain_heights)
+
         self._base_np_random: np.random.Generator | None = None
         self._install_rng_proxy()
 
@@ -125,6 +130,38 @@ class TunableLunarLander(LunarLander):
             if value < 0.0:
                 raise ValueError(f"dispersion_strength must be >= 0, got {value}.")
             self.dispersion_strength = value
+
+    def set_manual_terrain(self, terrain_heights: list[float] | np.ndarray | None) -> None:
+        """Set custom terrain heights used at reset (before helipad flattening)."""
+        if terrain_heights is None:
+            self._manual_terrain_heights = None
+            return
+
+        arr = np.asarray(terrain_heights, dtype=np.float64).reshape(-1)
+        # Gymnasium LunarLander reset uses CHUNKS=11 -> CHUNKS+1 == 12 heights.
+        expected_len = 12
+        if arr.shape[0] != expected_len:
+            raise ValueError(
+                f"terrain_heights must contain exactly {expected_len} values, got {arr.shape[0]}.",
+            )
+        if np.any(~np.isfinite(arr)):
+            raise ValueError("terrain_heights contains non-finite values.")
+        self._manual_terrain_heights = arr.copy()
+
+    def _terrain_profile_for_reset(self, *, chunks: int, H: float) -> np.ndarray:
+        if self._manual_terrain_heights is None:
+            height = self.np_random.uniform(0, H / 2, size=(chunks + 1,))
+        else:
+            height = self._manual_terrain_heights.astype(np.float64, copy=True)
+
+        helipad_y = H / 4
+        center = chunks // 2
+        height[center - 2] = helipad_y
+        height[center - 1] = helipad_y
+        height[center + 0] = helipad_y
+        height[center + 1] = helipad_y
+        height[center + 2] = helipad_y
+        return height
 
     def set_dynamics(
         self,
@@ -213,17 +250,137 @@ class TunableLunarLander(LunarLander):
             ll_mod.SIDE_ENGINE_POWER = old_side_engine_power
 
     def reset(self, *, seed=None, options=None):
+        # Seed RNG like upstream reset() does.
+        gym.Env.reset(self, seed=seed)
+
         old_initial_random = ll_mod.INITIAL_RANDOM
         old_leg_spring_torque = ll_mod.LEG_SPRING_TORQUE
         ll_mod.INITIAL_RANDOM = float(self.initial_random_strength)
         ll_mod.LEG_SPRING_TORQUE = float(self.leg_spring_torque)
         try:
-            obs, info = super().reset(seed=seed, options=options)
+            self._destroy()
+
+            # Mirrors upstream workaround for world cleanup.
+            self.world = ll_mod.Box2D.b2World(gravity=(0, self.gravity))
+            self.world.contactListener_keepref = ll_mod.ContactDetector(self)
+            self.world.contactListener = self.world.contactListener_keepref
+            self.game_over = False
+            self.prev_shaping = None
+
+            W = ll_mod.VIEWPORT_W / ll_mod.SCALE
+            H = ll_mod.VIEWPORT_H / ll_mod.SCALE
+
+            # Create terrain from manual heights (if provided) or RNG, while
+            # enforcing a flat central helipad.
+            CHUNKS = 11
+            height = self._terrain_profile_for_reset(chunks=CHUNKS, H=H)
+            chunk_x = [W / (CHUNKS - 1) * i for i in range(CHUNKS)]
+            self.helipad_x1 = chunk_x[CHUNKS // 2 - 1]
+            self.helipad_x2 = chunk_x[CHUNKS // 2 + 1]
+            self.helipad_y = H / 4
+            smooth_y = [
+                0.33 * (height[i - 1] + height[i + 0] + height[i + 1])
+                for i in range(CHUNKS)
+            ]
+
+            self.moon = self.world.CreateStaticBody(
+                shapes=ll_mod.edgeShape(vertices=[(0, 0), (W, 0)]),
+            )
+            self.sky_polys = []
+            for i in range(CHUNKS - 1):
+                p1 = (chunk_x[i], smooth_y[i])
+                p2 = (chunk_x[i + 1], smooth_y[i + 1])
+                self.moon.CreateEdgeFixture(vertices=[p1, p2], density=0, friction=0.1)
+                self.sky_polys.append([p1, p2, (p2[0], H), (p1[0], H)])
+
+            self.moon.color1 = (0.0, 0.0, 0.0)
+            self.moon.color2 = (0.0, 0.0, 0.0)
+
+            # Create Lander body
+            initial_y = ll_mod.VIEWPORT_H / ll_mod.SCALE
+            initial_x = ll_mod.VIEWPORT_W / ll_mod.SCALE / 2
+            self.lander = self.world.CreateDynamicBody(
+                position=(initial_x, initial_y),
+                angle=0.0,
+                fixtures=ll_mod.fixtureDef(
+                    shape=ll_mod.polygonShape(
+                        vertices=[(x / ll_mod.SCALE, y / ll_mod.SCALE) for x, y in ll_mod.LANDER_POLY],
+                    ),
+                    density=5.0,
+                    friction=0.1,
+                    categoryBits=0x0010,
+                    maskBits=0x001,
+                    restitution=0.0,
+                ),
+            )
+            self.lander.color1 = (128, 102, 230)
+            self.lander.color2 = (77, 77, 128)
+
+            # Apply (possibly disabled) initial random impulse.
+            self.lander.ApplyForceToCenter(
+                (
+                    self.np_random.uniform(-ll_mod.INITIAL_RANDOM, ll_mod.INITIAL_RANDOM),
+                    self.np_random.uniform(-ll_mod.INITIAL_RANDOM, ll_mod.INITIAL_RANDOM),
+                ),
+                True,
+            )
+
+            if self.enable_wind:
+                self.wind_idx = self.np_random.integers(-9999, 9999)
+                self.torque_idx = self.np_random.integers(-9999, 9999)
+
+            # Create legs.
+            self.legs = []
+            for i in [-1, +1]:
+                leg = self.world.CreateDynamicBody(
+                    position=(initial_x - i * ll_mod.LEG_AWAY / ll_mod.SCALE, initial_y),
+                    angle=(i * 0.05),
+                    fixtures=ll_mod.fixtureDef(
+                        shape=ll_mod.polygonShape(box=(ll_mod.LEG_W / ll_mod.SCALE, ll_mod.LEG_H / ll_mod.SCALE)),
+                        density=1.0,
+                        restitution=0.0,
+                        categoryBits=0x0020,
+                        maskBits=0x001,
+                    ),
+                )
+                leg.ground_contact = False
+                leg.color1 = (128, 102, 230)
+                leg.color2 = (77, 77, 128)
+                rjd = ll_mod.revoluteJointDef(
+                    bodyA=self.lander,
+                    bodyB=leg,
+                    localAnchorA=(0, 0),
+                    localAnchorB=(i * ll_mod.LEG_AWAY / ll_mod.SCALE, ll_mod.LEG_DOWN / ll_mod.SCALE),
+                    enableMotor=True,
+                    enableLimit=True,
+                    maxMotorTorque=ll_mod.LEG_SPRING_TORQUE,
+                    motorSpeed=+0.3 * i,
+                )
+                if i == -1:
+                    rjd.lowerAngle = +0.9 - 0.5
+                    rjd.upperAngle = +0.9
+                else:
+                    rjd.lowerAngle = -0.9
+                    rjd.upperAngle = -0.9 + 0.5
+                leg.joint = self.world.CreateJoint(rjd)
+                self.legs.append(leg)
+
+            self.drawlist = [self.lander] + self.legs
+
+            # Apply custom post-reset dynamics (masses + damping).
+            self._apply_post_reset_body_dynamics()
+
+            if self.render_mode == "human":
+                self.render()
+
+            # Upstream reset returns the observation after one no-op step.
+            obs = self.step(np.array([0, 0]) if self.continuous else 0)[0]
+            info = {}
         finally:
             ll_mod.INITIAL_RANDOM = old_initial_random
             ll_mod.LEG_SPRING_TORQUE = old_leg_spring_torque
-        self._apply_post_reset_body_dynamics()
-        self._install_rng_proxy()
+            # Reinstall proxy after possible RNG reseeding in reset flow.
+            self._install_rng_proxy()
         return obs, info
 
 

@@ -95,6 +95,7 @@ deterministic:
   source:
     task_id: 0.0
     gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -115,6 +116,7 @@ deterministic:
   downstream:
     task_id: 1.0
     gravity: -1.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -140,6 +142,7 @@ deterministic_dynamics_hard:
   source:
     task_id: 0.0
     gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -160,6 +163,7 @@ deterministic_dynamics_hard:
   downstream:
     task_id: 1.0
     gravity: -11.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -184,7 +188,8 @@ deterministic_vehicle_light:
   append_task_id: true
   source:
     task_id: 0.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -204,7 +209,8 @@ deterministic_vehicle_light:
     mark_out_of_viewport_as_unsafe: false
   downstream:
     task_id: 1.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -213,8 +219,8 @@ deterministic_vehicle_light:
     main_engine_power: 13.0
     side_engine_power: 0.6
     leg_spring_torque: 40.0
-    lander_mass_scale: 0.75
-    leg_mass_scale: 0.75
+    lander_mass_scale: 0.2
+    leg_mass_scale: 0.2
     linear_damping: 0.0
     angular_damping: 0.0
     action_repeat: 0
@@ -229,7 +235,8 @@ deterministic_vehicle_heavy:
   append_task_id: true
   source:
     task_id: 0.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -249,7 +256,8 @@ deterministic_vehicle_heavy:
     mark_out_of_viewport_as_unsafe: false
   downstream:
     task_id: 1.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -258,8 +266,8 @@ deterministic_vehicle_heavy:
     main_engine_power: 13.0
     side_engine_power: 0.6
     leg_spring_torque: 40.0
-    lander_mass_scale: 1.35
-    leg_mass_scale: 1.25
+    lander_mass_scale: 3
+    leg_mass_scale: 2
     linear_damping: 0.0
     angular_damping: 0.0
     action_repeat: 0
@@ -274,7 +282,8 @@ deterministic_vehicle_underpowered:
   append_task_id: true
   source:
     task_id: 0.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -294,7 +303,8 @@ deterministic_vehicle_underpowered:
     mark_out_of_viewport_as_unsafe: false
   downstream:
     task_id: 1.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -319,7 +329,8 @@ deterministic_vehicle_agile:
   append_task_id: true
   source:
     task_id: 0.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -339,7 +350,8 @@ deterministic_vehicle_agile:
     mark_out_of_viewport_as_unsafe: false
   downstream:
     task_id: 1.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -364,7 +376,8 @@ deterministic_vehicle_sluggish:
   append_task_id: true
   source:
     task_id: 0.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -384,7 +397,8 @@ deterministic_vehicle_sluggish:
     mark_out_of_viewport_as_unsafe: false
   downstream:
     task_id: 1.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -409,7 +423,8 @@ deterministic_vehicle_twitchy:
   append_task_id: true
   source:
     task_id: 0.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0
@@ -429,7 +444,8 @@ deterministic_vehicle_twitchy:
     mark_out_of_viewport_as_unsafe: false
   downstream:
     task_id: 1.0
-    gravity: -10.0
+    gravity: null
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
     enable_wind: false
     wind_power: 0.0
     turbulence_power: 0.0

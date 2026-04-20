@@ -6,6 +6,7 @@ import argparse
 import copy
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 os.environ["SDL_AUDIODRIVER"] = "dummy"
@@ -15,6 +16,11 @@ import numpy as np
 import torch
 from torch.utils.data import TensorDataset
 import yaml
+
+# Allow running this file directly from experiments/pipelines/lunarlander.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from experiments.pipelines.lunarlander.train_source_policy import (
     _load_task_settings,

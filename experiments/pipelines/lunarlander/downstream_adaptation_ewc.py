@@ -6,6 +6,7 @@ import argparse
 import copy
 import os
 from pathlib import Path
+import sys
 
 os.environ["SDL_AUDIODRIVER"] = "dummy"
 
@@ -14,6 +15,10 @@ import numpy as np
 import torch
 import yaml
 
+# Allow running this file directly from experiments/pipelines/lunarlander.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 from experiments.pipelines.lunarlander.train_source_policy import (
     _load_task_settings,
     _make_lunarlander_env,
@@ -202,8 +207,8 @@ def main() -> None:
 
     source_cfg = source_task_cfg
     downstream_cfg = downstream_task_cfg
-    adapt_cfg = adapt_settings[args.task_setting]
-    ewc_layout_cfg = ewc_settings[args.task_setting]
+    adapt_cfg = adapt_settings.get(args.task_setting, 'default')
+    ewc_layout_cfg = ewc_settings.get(args.task_setting, 'default')
 
     if not isinstance(source_cfg, dict):
         raise ValueError(f"Expected dict source config in task settings for '{args.task_setting}'.")

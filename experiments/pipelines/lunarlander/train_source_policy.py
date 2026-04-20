@@ -11,6 +11,7 @@ import argparse
 from collections import deque
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 import gymnasium as gym
@@ -20,6 +21,11 @@ import yaml
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+# Allow running this file directly from experiments/pipelines/lunarlander.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from experiments.utils.gymnasium_utils import plot_multi_episode_frames
 from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
@@ -264,6 +270,17 @@ def _resolve_lunarlander_dynamics(cfg: dict[str, Any], *, cfg_name: str = "confi
         raise ValueError(
             f"{cfg_name}: angular_damping must be >= 0, got {angular_damping}.",
         )
+    terrain_heights_raw = cfg.get("terrain_heights", None)
+    terrain_heights: list[float] | None
+    if terrain_heights_raw is None:
+        terrain_heights = None
+    else:
+        if not isinstance(terrain_heights_raw, (list, tuple, np.ndarray)):
+            raise ValueError(
+                f"{cfg_name}: terrain_heights must be a sequence of numbers or null, "
+                f"got {type(terrain_heights_raw)}.",
+            )
+        terrain_heights = [float(v) for v in terrain_heights_raw]
 
     action_repeat_raw = cfg.get("action_repeat", 1)
     action_repeat = 1 if action_repeat_raw is None else int(action_repeat_raw)
@@ -309,6 +326,7 @@ def _resolve_lunarlander_dynamics(cfg: dict[str, Any], *, cfg_name: str = "confi
         "leg_mass_scale": leg_mass_scale,
         "linear_damping": linear_damping,
         "angular_damping": angular_damping,
+        "terrain_heights": terrain_heights,
         "action_repeat": action_repeat,
         "action_delay": action_delay,
         "action_noise_prob": action_noise_prob,
@@ -330,7 +348,7 @@ def _load_task_settings(
     all_settings = yaml.safe_load(settings_file.read_text(encoding="utf-8")) or {}
     resolved_setting_name = setting_name
     # Backward-compatible alias for earlier config naming.
-    if setting_name == "default_to_low_gravity" and "default" in all_settings:
+    if setting_name not in all_settings:
         resolved_setting_name = "default"
 
     if resolved_setting_name not in all_settings:
@@ -354,6 +372,7 @@ def _load_task_settings(
         "leg_mass_scale": role_cfg.get("leg_mass_scale"),
         "linear_damping": role_cfg.get("linear_damping"),
         "angular_damping": role_cfg.get("angular_damping"),
+        "terrain_heights": role_cfg.get("terrain_heights"),
         "action_repeat": role_cfg.get("action_repeat"),
         "action_delay": role_cfg.get("action_delay"),
         "action_noise_prob": role_cfg.get("action_noise_prob"),
@@ -382,6 +401,7 @@ def _make_lunarlander_env(
     leg_mass_scale: float | None = None,
     linear_damping: float | None = None,
     angular_damping: float | None = None,
+    terrain_heights: list[float] | None = None,
     action_repeat: int = 1,
     action_delay: int = 0,
     action_noise_prob: float = 0.0,
@@ -421,6 +441,8 @@ def _make_lunarlander_env(
         make_kwargs["linear_damping"] = float(linear_damping)
     if angular_damping is not None:
         make_kwargs["angular_damping"] = float(angular_damping)
+    if terrain_heights is not None:
+        make_kwargs["terrain_heights"] = [float(v) for v in terrain_heights]
 
     def _retry_without_unsupported_kwargs(
         err: TypeError,
@@ -440,6 +462,7 @@ def _make_lunarlander_env(
                 "leg_mass_scale",
                 "linear_damping",
                 "angular_damping",
+                "terrain_heights",
             },
         }
         drop_keys: set[str] = set()
@@ -482,6 +505,19 @@ def _make_lunarlander_env(
                 f"Failed to create env '{env_id}'. Ensure Box2D deps are installed "
                 "(e.g., `pip install gymnasium[box2d]`)."
             ) from err
+
+    # If manual terrain is requested, fail fast unless the instantiated env
+    # actually exposes TunableLunarLander's manual-terrain support.
+    if terrain_heights is not None:
+        base_env = env.unwrapped
+        manual_terrain = getattr(base_env, "_manual_terrain_heights", None)
+        if manual_terrain is None:
+            raise RuntimeError(
+                "terrain_heights was provided, but the created environment does not "
+                "support manual terrain injection. Use env_id='LunarLander-v4' "
+                "(TunableLunarLander) and avoid fallbacks that drop custom kwargs.",
+            )
+
     env = LunarLanderCrashSafetyWrapper(
         env,
         mark_out_of_viewport_as_unsafe=mark_out_of_viewport_as_unsafe,
@@ -591,6 +627,7 @@ def _plot_trajectory_grid(
         leg_mass_scale=dynamics_cfg["leg_mass_scale"],
         linear_damping=dynamics_cfg["linear_damping"],
         angular_damping=dynamics_cfg["angular_damping"],
+        terrain_heights=dynamics_cfg["terrain_heights"],
         action_repeat=int(dynamics_cfg["action_repeat"]),
         action_delay=int(dynamics_cfg["action_delay"]),
         action_noise_prob=float(dynamics_cfg["action_noise_prob"]),
@@ -763,6 +800,7 @@ def main() -> None:
         "leg_mass_scale": dynamics_cfg["leg_mass_scale"],
         "linear_damping": dynamics_cfg["linear_damping"],
         "angular_damping": dynamics_cfg["angular_damping"],
+        "terrain_heights": dynamics_cfg["terrain_heights"],
         "action_repeat": int(dynamics_cfg["action_repeat"]),
         "action_delay": int(dynamics_cfg["action_delay"]),
         "action_noise_prob": float(dynamics_cfg["action_noise_prob"]),
@@ -920,6 +958,7 @@ def main() -> None:
             "leg_mass_scale": downstream_eval_dynamics["leg_mass_scale"],
             "linear_damping": downstream_eval_dynamics["linear_damping"],
             "angular_damping": downstream_eval_dynamics["angular_damping"],
+            "terrain_heights": downstream_eval_dynamics["terrain_heights"],
             "action_repeat": int(downstream_eval_dynamics["action_repeat"]),
             "action_delay": int(downstream_eval_dynamics["action_delay"]),
             "action_noise_prob": float(downstream_eval_dynamics["action_noise_prob"]),
@@ -975,6 +1014,7 @@ def main() -> None:
         "leg_mass_scale": dynamics_cfg["leg_mass_scale"],
         "linear_damping": dynamics_cfg["linear_damping"],
         "angular_damping": dynamics_cfg["angular_damping"],
+        "terrain_heights": dynamics_cfg["terrain_heights"],
         "action_repeat": int(dynamics_cfg["action_repeat"]),
         "action_delay": int(dynamics_cfg["action_delay"]),
         "action_noise_prob": float(dynamics_cfg["action_noise_prob"]),
