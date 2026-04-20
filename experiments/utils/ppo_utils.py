@@ -145,6 +145,8 @@ def evaluate(
         deterministic: Whether to use deterministic actions
         log_std: Log std parameter for continuous action spaces and non-deterministic eval (None for discrete)
     """
+    if int(episodes) <= 0:
+        return 0.0, 0.0, 0.0
     assert render_mode in (None, 'rgb_array')
     if deterministic:
         assert log_std is None, "log_std should be None for deterministic evaluation"
@@ -243,8 +245,10 @@ def evaluate_masked(
         seed: int = 2025,
         device: str | torch.device = "cpu",
         deterministic: bool = True,
-    ) -> tuple[float, float, float]:
+) -> tuple[float, float, float]:
     """Evaluate a discrete policy while respecting info['action_mask']."""
+    if int(episodes) <= 0:
+        return 0.0, 0.0, 0.0
     actor.eval()
     scores = []
     failures = 0
