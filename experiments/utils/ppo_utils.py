@@ -40,6 +40,9 @@ class PPOConfig:
     # want to stop as soon as the deterministic actor reaches it.
     early_stop_deterministic_total_reward_threshold: float | None = None
     early_stop_deterministic_eval_episodes: int = 1
+    # Distance norm used to select the nearest convex Rashomon set during PGD projection.
+    # Supported values: "l2" (default), "l1", "linf".
+    pgd_projection_distance_norm: str = "l2"
 
 def make_actor_critic(
     obs_dim: int, n_actions: int, 
@@ -307,7 +310,7 @@ def _validate_and_prepare_param_interval_bounds(
     device: torch.device,
 ) -> tuple[list[list[torch.Tensor]], list[list[torch.Tensor]]]:
     """
-    Normalize PGD bounds into per-parameter interval lists.
+    Normalize PGD bounds into set-major interval lists.
 
     Accepted formats:
       1) Single interval (backward-compatible):
@@ -317,6 +320,10 @@ def _validate_and_prepare_param_interval_bounds(
            inner index is parameter.
          - parameter-major: list[list[Tensor]] where outer index is parameter and
            inner index is interval.
+
+    Returns:
+      (bounds_l_sets, bounds_u_sets) where each is set-major:
+        bounds_*_sets[set_idx][param_idx] -> Tensor
     """
     n_params = len(actor_params)
 
@@ -340,8 +347,8 @@ def _validate_and_prepare_param_interval_bounds(
                 f"Expected {n_params}, got lower={len(actor_param_bounds_l)} upper={len(actor_param_bounds_u)}.",
             )
 
-        per_param_l: list[list[torch.Tensor]] = []
-        per_param_u: list[list[torch.Tensor]] = []
+        set_l: list[torch.Tensor] = []
+        set_u: list[torch.Tensor] = []
         for p_idx, (lb, ub, expected_shape) in enumerate(
             zip(actor_param_bounds_l, actor_param_bounds_u, actor_shapes),
         ):
@@ -350,9 +357,9 @@ def _validate_and_prepare_param_interval_bounds(
                     f"PGD bound shape mismatch at param index {p_idx}: "
                     f"expected={expected_shape}, lower={tuple(lb.shape)}, upper={tuple(ub.shape)}",
                 )
-            per_param_l.append([lb.to(device)])
-            per_param_u.append([ub.to(device)])
-        return per_param_l, per_param_u
+            set_l.append(lb.to(device))
+            set_u.append(ub.to(device))
+        return [set_l], [set_u]
 
     # Multi-interval formats: nested lists.
     if not (_is_nested_tensor_list(actor_param_bounds_l) and _is_nested_tensor_list(actor_param_bounds_u)):
@@ -369,131 +376,152 @@ def _validate_and_prepare_param_interval_bounds(
     if len(actor_param_bounds_l) == 0:
         raise ValueError("Nested PGD bounds must contain at least one interval/parameter group.")
 
-    # Parameter-major if outer length == number of actor parameters.
-    if len(actor_param_bounds_l) == n_params:
-        per_param_l = []
-        per_param_u = []
-        for p_idx, (param_l_list, param_u_list, expected_shape) in enumerate(
-            zip(actor_param_bounds_l, actor_param_bounds_u, actor_shapes),
+    def _is_valid_interval_major(
+        nested_l: list[list[torch.Tensor]],
+        nested_u: list[list[torch.Tensor]],
+    ) -> bool:
+        for int_l, int_u in zip(nested_l, nested_u):
+            if len(int_l) != n_params or len(int_u) != n_params:
+                return False
+            for p_idx, expected_shape in enumerate(actor_shapes):
+                if tuple(int_l[p_idx].shape) != expected_shape or tuple(int_u[p_idx].shape) != expected_shape:
+                    return False
+        return True
+
+    def _is_valid_parameter_major(
+        nested_l: list[list[torch.Tensor]],
+        nested_u: list[list[torch.Tensor]],
+    ) -> bool:
+        if len(nested_l) != n_params or len(nested_u) != n_params:
+            return False
+        if len(nested_l[0]) == 0:
+            return False
+        n_intervals = len(nested_l[0])
+        for p_idx, (param_l, param_u, expected_shape) in enumerate(
+            zip(nested_l, nested_u, actor_shapes),
         ):
-            if len(param_l_list) != len(param_u_list):
-                raise ValueError(
-                    f"Parameter-major PGD bounds interval count mismatch at param {p_idx}: "
-                    f"lower={len(param_l_list)} upper={len(param_u_list)}",
-                )
-            if len(param_l_list) == 0:
-                raise ValueError(f"Parameter-major PGD bounds for param {p_idx} are empty.")
+            if len(param_l) != n_intervals or len(param_u) != n_intervals:
+                return False
+            for int_idx in range(n_intervals):
+                if tuple(param_l[int_idx].shape) != expected_shape or tuple(param_u[int_idx].shape) != expected_shape:
+                    return False
+        return True
 
-            p_l: list[torch.Tensor] = []
-            p_u: list[torch.Tensor] = []
-            for int_idx, (lb, ub) in enumerate(zip(param_l_list, param_u_list)):
-                if tuple(lb.shape) != expected_shape or tuple(ub.shape) != expected_shape:
-                    raise ValueError(
-                        f"PGD bound shape mismatch at param {p_idx}, interval {int_idx}: "
-                        f"expected={expected_shape}, lower={tuple(lb.shape)}, upper={tuple(ub.shape)}",
-                    )
-                p_l.append(lb.to(device))
-                p_u.append(ub.to(device))
-            per_param_l.append(p_l)
-            per_param_u.append(p_u)
-        return per_param_l, per_param_u
+    interval_major_ok = _is_valid_interval_major(actor_param_bounds_l, actor_param_bounds_u)
+    parameter_major_ok = _is_valid_parameter_major(actor_param_bounds_l, actor_param_bounds_u)
 
-    # Interval-major: outer index is interval, inner index is parameter.
-    n_intervals = len(actor_param_bounds_l)
-    for int_idx, (int_l, int_u) in enumerate(zip(actor_param_bounds_l, actor_param_bounds_u)):
-        if len(int_l) != n_params or len(int_u) != n_params:
-            raise ValueError(
-                "Interval-major PGD bounds must provide one tensor per parameter in each interval. "
-                f"Interval {int_idx}: expected={n_params}, lower={len(int_l)}, upper={len(int_u)}",
-            )
+    # Prefer interval-major when both are syntactically possible.
+    if interval_major_ok:
+        bounds_l_sets: list[list[torch.Tensor]] = []
+        bounds_u_sets: list[list[torch.Tensor]] = []
+        for int_l, int_u in zip(actor_param_bounds_l, actor_param_bounds_u):
+            bounds_l_sets.append([t.to(device) for t in int_l])
+            bounds_u_sets.append([t.to(device) for t in int_u])
+        return bounds_l_sets, bounds_u_sets
 
-    per_param_l = [[] for _ in range(n_params)]
-    per_param_u = [[] for _ in range(n_params)]
-    for int_idx in range(n_intervals):
-        int_l = actor_param_bounds_l[int_idx]
-        int_u = actor_param_bounds_u[int_idx]
-        for p_idx, expected_shape in enumerate(actor_shapes):
-            lb = int_l[p_idx]
-            ub = int_u[p_idx]
-            if tuple(lb.shape) != expected_shape or tuple(ub.shape) != expected_shape:
-                raise ValueError(
-                    f"PGD bound shape mismatch at interval {int_idx}, param {p_idx}: "
-                    f"expected={expected_shape}, lower={tuple(lb.shape)}, upper={tuple(ub.shape)}",
-                )
-            per_param_l[p_idx].append(lb.to(device))
-            per_param_u[p_idx].append(ub.to(device))
-    return per_param_l, per_param_u
+    if parameter_major_ok:
+        n_intervals = len(actor_param_bounds_l[0])
+        bounds_l_sets = []
+        bounds_u_sets = []
+        for int_idx in range(n_intervals):
+            set_l = [actor_param_bounds_l[p_idx][int_idx].to(device) for p_idx in range(n_params)]
+            set_u = [actor_param_bounds_u[p_idx][int_idx].to(device) for p_idx in range(n_params)]
+            bounds_l_sets.append(set_l)
+            bounds_u_sets.append(set_u)
+        return bounds_l_sets, bounds_u_sets
 
-
-def _project_param_to_interval_union(
-    param: torch.nn.Parameter,
-    interval_l: list[torch.Tensor],
-    interval_u: list[torch.Tensor],
-) -> int:
-    """
-    Project one parameter tensor onto the union of provided intervals.
-
-    For values outside all intervals, projection is to the nearest interval endpoint.
-    Returns the number of parameter elements that were outside (and therefore projected).
-    """
-    if len(interval_l) != len(interval_u):
-        raise ValueError(
-            f"Interval lower/upper list length mismatch: {len(interval_l)} vs {len(interval_u)}",
-        )
-    if len(interval_l) == 0:
-        raise ValueError("At least one interval is required for PGD projection.")
-
-    if len(interval_l) == 1:
-        lb = interval_l[0]
-        ub = interval_u[0]
-        violations = ((param.data < lb) | (param.data > ub))
-        n_violations = int(violations.sum().item())
-        if n_violations > 0:
-            param.data.clamp_(lb, ub)
-        return n_violations
-
-    p = param.data
-    in_any_interval = torch.zeros_like(p, dtype=torch.bool)
-
-    # Track nearest endpoint among all interval endpoints for each element.
-    best_endpoint = interval_l[0]
-    best_dist = torch.abs(p - interval_l[0])
-
-    for lb, ub in zip(interval_l, interval_u):
-        in_any_interval |= (p >= lb) & (p <= ub)
-
-        d_lb = torch.abs(p - lb)
-        choose_lb = d_lb < best_dist
-        best_endpoint = torch.where(choose_lb, lb, best_endpoint)
-        best_dist = torch.where(choose_lb, d_lb, best_dist)
-
-        d_ub = torch.abs(p - ub)
-        choose_ub = d_ub < best_dist
-        best_endpoint = torch.where(choose_ub, ub, best_endpoint)
-        best_dist = torch.where(choose_ub, d_ub, best_dist)
-
-    outside_mask = ~in_any_interval
-    n_violations = int(outside_mask.sum().item())
-    if n_violations > 0:
-        p.copy_(torch.where(outside_mask, best_endpoint, p))
-    return n_violations
+    raise ValueError(
+        "Nested PGD bounds do not match either supported layout:\n"
+        "- interval-major: bounds[interval][parameter]\n"
+        "- parameter-major: bounds[parameter][interval]",
+    )
 
 
 def _project_actor_to_interval_union(
     actor_params: list[torch.nn.Parameter],
-    bounds_l: list[list[torch.Tensor]],
-    bounds_u: list[list[torch.Tensor]],
+    bounds_l_sets: list[list[torch.Tensor]],
+    bounds_u_sets: list[list[torch.Tensor]],
+    distance_norm: str = "l2",
 ) -> int:
-    """Project all actor parameters onto their interval unions; return total projections."""
-    if len(actor_params) != len(bounds_l) or len(actor_params) != len(bounds_u):
+    """
+    Project actor parameters onto the nearest convex Rashomon set (box) in full parameter space.
+
+    IMPORTANT: This preserves set coupling across parameters.
+    """
+    norm = str(distance_norm).strip().lower()
+    if norm in {"l_inf", "inf", "infty", "infinity"}:
+        norm = "linf"
+    if norm not in {"l2", "l1", "linf"}:
         raise ValueError(
-            "Actor-parameter/bounds length mismatch: "
-            f"params={len(actor_params)}, lower={len(bounds_l)}, upper={len(bounds_u)}",
+            "Unsupported projection distance norm. "
+            f"Got '{distance_norm}', expected one of: 'l2', 'l1', 'linf'.",
         )
-    total_projections = 0
-    for param, interval_l, interval_u in zip(actor_params, bounds_l, bounds_u):
-        total_projections += _project_param_to_interval_union(param, interval_l, interval_u)
-    return total_projections
+
+    if len(bounds_l_sets) != len(bounds_u_sets):
+        raise ValueError(
+            "Set-major lower/upper bounds length mismatch: "
+            f"lower_sets={len(bounds_l_sets)}, upper_sets={len(bounds_u_sets)}",
+        )
+    if len(bounds_l_sets) == 0:
+        raise ValueError("At least one convex Rashomon set is required for PGD projection.")
+
+    n_params = len(actor_params)
+    for set_idx, (set_l, set_u) in enumerate(zip(bounds_l_sets, bounds_u_sets)):
+        if len(set_l) != n_params or len(set_u) != n_params:
+            raise ValueError(
+                f"Rashomon set {set_idx} must provide bounds for all parameters: "
+                f"expected={n_params}, lower={len(set_l)}, upper={len(set_u)}",
+            )
+
+    best_set_idx: int | None = None
+    best_distance = float("inf")
+    best_projected: list[torch.Tensor] | None = None
+    best_n_projected = 0
+
+    for set_idx, (set_l, set_u) in enumerate(zip(bounds_l_sets, bounds_u_sets)):
+        distance = 0.0
+        n_projected = 0
+        projected_for_set: list[torch.Tensor] = []
+
+        for p_idx, (param, lb, ub) in enumerate(zip(actor_params, set_l, set_u)):
+            p = param.data
+            if tuple(lb.shape) != tuple(p.shape) or tuple(ub.shape) != tuple(p.shape):
+                raise ValueError(
+                    f"Shape mismatch at set {set_idx}, param {p_idx}: "
+                    f"param={tuple(p.shape)}, lower={tuple(lb.shape)}, upper={tuple(ub.shape)}",
+                )
+
+            projected = torch.maximum(torch.minimum(p, ub), lb)
+            outside = (p < lb) | (p > ub)
+            n_projected += int(outside.sum().item())
+            delta = projected - p
+            if norm == "l2":
+                # Compare using squared L2 distance (equivalent ordering to L2).
+                distance += float(torch.sum(delta * delta).item())
+            elif norm == "l1":
+                distance += float(torch.sum(torch.abs(delta)).item())
+            else:  # norm == "linf"
+                distance = max(distance, float(torch.max(torch.abs(delta)).item()))
+            projected_for_set.append(projected)
+
+            # Optional pruning: once this candidate is already worse, no need to keep accumulating.
+            if distance > best_distance:
+                break
+
+        if distance < best_distance:
+            best_distance = distance
+            best_set_idx = set_idx
+            best_projected = projected_for_set
+            best_n_projected = n_projected
+            if best_distance == 0.0:
+                break
+
+    if best_set_idx is None or best_projected is None:
+        raise RuntimeError("Failed to select a nearest Rashomon set during PGD projection.")
+
+    for param, projected in zip(actor_params, best_projected):
+        param.data.copy_(projected)
+    return int(best_n_projected)
 
 def ppo_train(
     env: gym.Env, cfg: PPOConfig, 
@@ -573,24 +601,30 @@ def ppo_train(
         )
     use_pgd = (actor_param_bounds_l is not None and actor_param_bounds_u is not None)
     print('Use PGD:', use_pgd)
-    bounds_l = None
-    bounds_u = None
+    bounds_l_sets = None
+    bounds_u_sets = None
     if use_pgd:
-        bounds_l, bounds_u = _validate_and_prepare_param_interval_bounds(
+        projection_distance_norm = str(cfg.pgd_projection_distance_norm)
+        bounds_l_sets, bounds_u_sets = _validate_and_prepare_param_interval_bounds(
             actor_params=actor_params,
             actor_param_bounds_l=actor_param_bounds_l, # type: ignore[arg-type]
             actor_param_bounds_u=actor_param_bounds_u, # type: ignore[arg-type]
             device=device,
         )
-        interval_counts = sorted({len(v) for v in bounds_l})
+        n_sets = len(bounds_l_sets)
         print(
-            "Using projected gradient descent with parameter interval bounds "
-            f"(intervals per parameter: {interval_counts})",
+            "Using projected gradient descent with convex-set projection "
+            f"(num_sets={n_sets}, distance_norm={projection_distance_norm})",
         )
 
-        # Ensure initial parameters are within bounds / projected to nearest endpoint.
+        # Ensure initial parameters are inside at least one Rashomon set.
         with torch.no_grad():
-            init_projections = _project_actor_to_interval_union(actor_params, bounds_l, bounds_u)
+            init_projections = _project_actor_to_interval_union(
+                actor_params,
+                bounds_l_sets,
+                bounds_u_sets,
+                distance_norm=projection_distance_norm,
+            )
         if init_projections > 0:
             print(f"Initial PGD projection count: {init_projections}")
 
@@ -773,8 +807,9 @@ def ppo_train(
                     with torch.no_grad():
                         pgd_projections += _project_actor_to_interval_union(
                             actor_params,
-                            bounds_l, # type: ignore[arg-type]
-                            bounds_u, # type: ignore[arg-type]
+                            bounds_l_sets, # type: ignore[arg-type]
+                            bounds_u_sets, # type: ignore[arg-type]
+                            distance_norm=projection_distance_norm, # type: ignore[arg-type]
                         )
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
@@ -939,22 +974,28 @@ def ppo_train_maskable(
         )
     use_pgd = (actor_param_bounds_l is not None and actor_param_bounds_u is not None)
     print("Use PGD:", use_pgd)
-    bounds_l = None
-    bounds_u = None
+    bounds_l_sets = None
+    bounds_u_sets = None
     if use_pgd:
-        bounds_l, bounds_u = _validate_and_prepare_param_interval_bounds(
+        projection_distance_norm = str(cfg.pgd_projection_distance_norm)
+        bounds_l_sets, bounds_u_sets = _validate_and_prepare_param_interval_bounds(
             actor_params=actor_params,
             actor_param_bounds_l=actor_param_bounds_l, # type: ignore[arg-type]
             actor_param_bounds_u=actor_param_bounds_u, # type: ignore[arg-type]
             device=device,
         )
-        interval_counts = sorted({len(v) for v in bounds_l})
+        n_sets = len(bounds_l_sets)
         print(
-            "Using projected gradient descent with parameter interval bounds "
-            f"(intervals per parameter: {interval_counts})",
+            "Using projected gradient descent with convex-set projection "
+            f"(num_sets={n_sets}, distance_norm={projection_distance_norm})",
         )
         with torch.no_grad():
-            init_projections = _project_actor_to_interval_union(actor_params, bounds_l, bounds_u)
+            init_projections = _project_actor_to_interval_union(
+                actor_params,
+                bounds_l_sets,
+                bounds_u_sets,
+                distance_norm=projection_distance_norm,
+            )
         if init_projections > 0:
             print(f"Initial PGD projection count: {init_projections}")
 
@@ -1115,8 +1156,9 @@ def ppo_train_maskable(
                     with torch.no_grad():
                         pgd_projections += _project_actor_to_interval_union(
                             actor_params,
-                            bounds_l, # type: ignore[arg-type]
-                            bounds_u, # type: ignore[arg-type]
+                            bounds_l_sets, # type: ignore[arg-type]
+                            bounds_u_sets, # type: ignore[arg-type]
+                            distance_norm=projection_distance_norm, # type: ignore[arg-type]
                         )
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
