@@ -21,6 +21,7 @@ import csv
 from dataclasses import asdict
 import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -60,7 +61,7 @@ from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
     resolve_policy_dir as _resolve_policy_dir,
     seed_run_dir as _seed_run_dir,
 )
-from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
+from experiments.utils.ppo_utils import PPOConfig, evaluate_with_success, ppo_train
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -638,12 +639,6 @@ def main() -> None:
     parser.add_argument("--total-timesteps-override", type=int, default=None)
     parser.add_argument("--eval-episodes-during-training", type=int, default=None)
     parser.add_argument("--eval-episodes-post-training", type=int, default=None)
-    parser.add_argument(
-        "--early-stop",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Override early-stop behavior from adaptation PPO settings.",
-    )
     args = parser.parse_args()
 
     if args.analysis_top_k <= 0:
@@ -821,6 +816,294 @@ def main() -> None:
         f"| L2-distance={old_outside_ewc['distance_l2']:.6f}",
     )
 
+    old_width_summary = _summarize_bound_widths(bounds_l=old_bounds_l, bounds_u=old_bounds_u)
+
+    old_run_summary_path = rashomon_run_dir / "run_summary.yaml"
+    old_summary_run_settings: dict[str, Any] = {}
+    if old_run_summary_path.exists():
+        old_summary = _load_yaml(old_run_summary_path)
+        run_settings = old_summary.get("run_settings", {})
+        if isinstance(run_settings, dict):
+            old_summary_run_settings = run_settings
+
+    # Load adaptation settings early because we need post-training eval episodes
+    # for the pre-expansion success-rate gate.
+    adapt_settings = _load_yaml(args.adapt_settings_file)
+    adapt_cfg = _resolve_setting_cfg(
+        adapt_settings,
+        args.task_setting,
+        settings_name=str(args.adapt_settings_file),
+    )
+    adapt_ppo_cfg = adapt_cfg.get("ppo", {})
+    if not isinstance(adapt_ppo_cfg, dict):
+        raise ValueError(
+            f"Expected 'ppo' mapping for setting '{args.task_setting}' in {args.adapt_settings_file}.",
+        )
+    downstream_eval_cfg = adapt_cfg.get("downstream_eval", {})
+    if not isinstance(downstream_eval_cfg, dict):
+        downstream_eval_cfg = {}
+
+    eval_episodes_during_training = int(
+        args.eval_episodes_during_training
+        if args.eval_episodes_during_training is not None
+        else adapt_ppo_cfg.get("eval_episodes_during_training", 20),
+    )
+    eval_episodes_post_training = int(
+        args.eval_episodes_post_training
+        if args.eval_episodes_post_training is not None
+        else downstream_eval_cfg.get("episodes_post_training", 100),
+    )
+    if eval_episodes_post_training <= 0:
+        raise ValueError("--eval-episodes-post-training must be > 0.")
+
+    downstream_eval_env_precheck = _make_lunarlander_env(
+        env_id,
+        render_mode=None,
+        **downstream_env_kwargs,
+    )
+    (
+        existing_downstream_mean_reward,
+        existing_downstream_std_reward,
+        existing_downstream_failure_rate,
+        existing_downstream_success_rate,
+    ) = evaluate_with_success(
+        downstream_eval_env_precheck,
+        actors["downstream_rashomon"]["actor"],
+        episodes=eval_episodes_post_training,
+        deterministic=True,
+        device=args.device,
+    )
+    downstream_eval_env_precheck.close()
+    print(
+        "\nExisting Rashomon actor downstream eval before expansion: "
+        f"mean={existing_downstream_mean_reward:.3f}, "
+        f"std={existing_downstream_std_reward:.3f}, "
+        f"failure_rate={existing_downstream_failure_rate:.3f}, "
+        f"success_rate={existing_downstream_success_rate:.3f}",
+    )
+
+    if existing_downstream_success_rate >= 1.0:
+        print(
+            "\nSkipping Rashomon expansion and PPO-PGD because the existing Rashomon actor "
+            "already reached downstream success_rate=1.0.",
+        )
+
+        source_eval_env_precheck = _make_lunarlander_env(
+            env_id,
+            render_mode=None,
+            **source_env_kwargs,
+        )
+        (
+            existing_source_mean_reward,
+            existing_source_std_reward,
+            existing_source_failure_rate,
+            existing_source_success_rate,
+        ) = evaluate_with_success(
+            source_eval_env_precheck,
+            actors["downstream_rashomon"]["actor"],
+            episodes=eval_episodes_post_training,
+            deterministic=True,
+            device=args.device,
+        )
+        source_eval_env_precheck.close()
+
+        adapted_outside_old = _analyze_distance_to_rashomon_interval(
+            actor_name="downstream_rashomon",
+            actor_param_list=actor_parameters_dct["downstream_rashomon"],
+            bounds_l_intervals=[old_bounds_l],
+            bounds_u_intervals=[old_bounds_u],
+            top_k=args.analysis_top_k,
+        )
+        union_interval_width_summary = {
+            "n_intervals": 1,
+            "per_interval": [
+                {
+                    "name": "old",
+                    **old_width_summary,
+                },
+            ],
+        }
+
+        run_dir = _seed_run_dir(args.outputs_root, args.task_setting, args.seed) / args.run_subdir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        analysis_dir = run_dir / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        pairwise_matrix_csv = analysis_dir / "actor_pairwise_l2_matrix.csv"
+        pairwise_pairs_csv = analysis_dir / "actor_pairwise_l2_pairs.csv"
+        outside_old_unconstrained_csv = analysis_dir / "outside_old_rashomon_downstream_unconstrained.csv"
+        outside_old_ewc_csv = analysis_dir / "outside_old_rashomon_downstream_ewc.csv"
+        outside_union_unconstrained_csv = analysis_dir / "outside_union_rashomon_downstream_unconstrained.csv"
+        outside_union_ewc_csv = analysis_dir / "outside_union_rashomon_downstream_ewc.csv"
+        outside_union_adapted_csv = analysis_dir / "outside_union_rashomon_adapted_actor.csv"
+        summary_path = run_dir / "run_summary.yaml"
+
+        _write_pairwise_matrix_csv(matrix=pairwise_l2_matrix, out_path=pairwise_matrix_csv)
+        _write_pairwise_pairs_csv(pairs=pairwise_l2_pairs, out_path=pairwise_pairs_csv)
+        _write_outside_entries_csv(
+            entries=old_outside_unconstrained["outside_entries"],
+            out_path=outside_old_unconstrained_csv,
+        )
+        _write_outside_entries_csv(
+            entries=old_outside_ewc["outside_entries"],
+            out_path=outside_old_ewc_csv,
+        )
+        _write_outside_entries_csv(
+            entries=old_outside_unconstrained["outside_entries"],
+            out_path=outside_union_unconstrained_csv,
+        )
+        _write_outside_entries_csv(
+            entries=old_outside_ewc["outside_entries"],
+            out_path=outside_union_ewc_csv,
+        )
+        _write_outside_entries_csv(
+            entries=adapted_outside_old["outside_entries"],
+            out_path=outside_union_adapted_csv,
+        )
+
+        copied_artifact_names: list[str] = []
+        for src_path in sorted(rashomon_run_dir.iterdir()):
+            if not src_path.is_file():
+                continue
+            if src_path.name == "run_summary.yaml":
+                continue
+            dst_path = run_dir / src_path.name
+            if src_path.resolve() == dst_path.resolve():
+                continue
+            shutil.copy2(src_path, dst_path)
+            copied_artifact_names.append(src_path.name)
+
+        actor_out_path = run_dir / "actor.pt"
+        critic_out_path = run_dir / "critic.pt"
+        training_data_out_path = run_dir / "training_data.pt"
+        copied_rashomon_dataset_out_path = run_dir / "rashomon_dataset.pt"
+        copied_bounded_model_out_path = run_dir / "rashomon_bounded_model.pt"
+        copied_bounds_out_path = run_dir / "rashomon_param_bounds.pt"
+        copied_rollout_stats_out_path = run_dir / "rashomon_rollout_stats.yaml"
+
+        summary = {
+            "run_settings": {
+                "task_setting": str(args.task_setting),
+                "seed": int(args.seed),
+                "device": str(args.device),
+                "outputs_root": str(args.outputs_root),
+                "source_run_dir": str(source_run_dir),
+                "unconstrained_run_dir": str(unconstrained_dir),
+                "ewc_run_dir": str(ewc_dir),
+                "rashomon_run_dir": str(rashomon_run_dir),
+                "run_subdir": str(args.run_subdir),
+                "env_id": env_id,
+                "continuous": bool(continuous),
+                "source_gravity": source_gravity,
+                "downstream_gravity": downstream_gravity,
+                "source_dynamics": source_dynamics,
+                "downstream_dynamics": downstream_dynamics,
+                "source_task_id": float(source_task_id),
+                "downstream_task_id": float(downstream_task_id),
+                "append_task_id": bool(append_task_id),
+                "analysis_top_k": int(args.analysis_top_k),
+                "eval_episodes_during_training": int(eval_episodes_during_training),
+                "eval_episodes_post_training": int(eval_episodes_post_training),
+                "task_settings_file": str(args.task_settings_file),
+                "adapt_settings_file": str(args.adapt_settings_file),
+                "rashomon_settings_file": str(args.rashomon_settings_file),
+                "expansion_skipped_due_to_perfect_downstream_success": True,
+                "old_rashomon_run_summary_path": (
+                    str(old_run_summary_path) if old_run_summary_path.exists() else None
+                ),
+            },
+            "analysis": {
+                "pairwise_l2_matrix": pairwise_l2_matrix,
+                "pairwise_l2_pairs_sorted_desc": pairwise_l2_pairs,
+                "outside_old_rashomon": {
+                    "downstream_unconstrained": _outside_analysis_for_summary(old_outside_unconstrained),
+                    "downstream_ewc": _outside_analysis_for_summary(old_outside_ewc),
+                },
+                "outside_union_rashomon": {
+                    "downstream_unconstrained": _outside_analysis_for_summary(old_outside_unconstrained),
+                    "downstream_ewc": _outside_analysis_for_summary(old_outside_ewc),
+                },
+                "bounds_width_summary": {
+                    "old": old_width_summary,
+                    "new": None,
+                    "union_interval_set": union_interval_width_summary,
+                },
+            },
+            "run_results": {
+                "new_rashomon_dataset_size": None,
+                "new_rashomon_surrogate_threshold": None,
+                "new_rashomon_inverse_temperature": None,
+                "new_rashomon_selected_certificate_index": None,
+                "new_rashomon_selected_certificate": None,
+                "new_rashomon_all_certificates": None,
+                "source_mean_reward": float(existing_source_mean_reward),
+                "source_std_reward": float(existing_source_std_reward),
+                "source_failure_rate": float(existing_source_failure_rate),
+                "source_success_rate": float(existing_source_success_rate),
+                "downstream_mean_reward": float(existing_downstream_mean_reward),
+                "downstream_std_reward": float(existing_downstream_std_reward),
+                "downstream_failure_rate": float(existing_downstream_failure_rate),
+                "downstream_success_rate": float(existing_downstream_success_rate),
+                "adapted_outside_union_rashomon": _outside_analysis_for_summary(adapted_outside_old),
+                "adapted_outside_old_rashomon": _outside_analysis_for_summary(adapted_outside_old),
+            },
+            "artifacts": {
+                "actor_path": (
+                    str(actor_out_path) if actor_out_path.exists() else str(actors["downstream_rashomon"]["actor_path"])
+                ),
+                "critic_path": (
+                    str(critic_out_path)
+                    if critic_out_path.exists()
+                    else str(rashomon_run_dir / "critic.pt")
+                ),
+                "training_data_path": (
+                    str(training_data_out_path)
+                    if training_data_out_path.exists()
+                    else str(rashomon_run_dir / "training_data.pt")
+                ),
+                "rashomon_dataset_path": (
+                    str(copied_rashomon_dataset_out_path)
+                    if copied_rashomon_dataset_out_path.exists()
+                    else str(rashomon_dataset_path)
+                ),
+                "rashomon_bounded_model_path": (
+                    str(copied_bounded_model_out_path)
+                    if copied_bounded_model_out_path.exists()
+                    else str(old_bounded_model_path)
+                ),
+                "rashomon_param_bounds_path": (
+                    str(copied_bounds_out_path) if copied_bounds_out_path.exists() else None
+                ),
+                "rashomon_rollout_stats_path": (
+                    str(copied_rollout_stats_out_path) if copied_rollout_stats_out_path.exists() else None
+                ),
+                "pairwise_l2_matrix_csv": str(pairwise_matrix_csv),
+                "pairwise_l2_pairs_csv": str(pairwise_pairs_csv),
+                "outside_old_unconstrained_csv": str(outside_old_unconstrained_csv),
+                "outside_old_ewc_csv": str(outside_old_ewc_csv),
+                "outside_union_unconstrained_csv": str(outside_union_unconstrained_csv),
+                "outside_union_ewc_csv": str(outside_union_ewc_csv),
+                "outside_union_adapted_csv": str(outside_union_adapted_csv),
+                "copied_from_rashomon_artifacts": copied_artifact_names,
+                "original_rashomon_bounded_model_path": str(old_bounded_model_path),
+                "original_rashomon_dataset_path": str(rashomon_dataset_path),
+            },
+        }
+        summary_path.write_text(yaml.safe_dump(summary, sort_keys=False), encoding="utf-8")
+
+        print(
+            "\nExisting Rashomon actor evaluation (saved without expansion):\n"
+            f"- Source    ({eval_episodes_post_training} ep): mean={existing_source_mean_reward:.3f}, "
+            f"std={existing_source_std_reward:.3f}, failure_rate={existing_source_failure_rate:.3f}, "
+            f"success_rate={existing_source_success_rate:.3f}\n"
+            f"- Downstream({eval_episodes_post_training} ep): mean={existing_downstream_mean_reward:.3f}, "
+            f"std={existing_downstream_std_reward:.3f}, failure_rate={existing_downstream_failure_rate:.3f}, "
+            f"success_rate={existing_downstream_success_rate:.3f}",
+        )
+        print(f"\nSaved copied Rashomon artifacts to: {run_dir}")
+        print(f"Saved summary: {summary_path}")
+        return
+
     # Step 4: sample lower/upper per-parameter and build a new reference actor.
     sample_seed = int(args.bound_sample_seed) if args.bound_sample_seed is not None else int(args.seed)
     sampled_param_list, sample_stats = _sample_param_list_from_bounds(
@@ -852,14 +1135,6 @@ def main() -> None:
             f"Expected a mapping for rashomon config in {args.rashomon_settings_file} "
             f"for setting '{args.task_setting}'.",
         )
-
-    old_run_summary_path = rashomon_run_dir / "run_summary.yaml"
-    old_summary_run_settings: dict[str, Any] = {}
-    if old_run_summary_path.exists():
-        old_summary = _load_yaml(old_run_summary_path)
-        run_settings = old_summary.get("run_settings", {})
-        if isinstance(run_settings, dict):
-            old_summary_run_settings = run_settings
 
     rashomon_n_iters = int(
         args.rashomon_n_iters
@@ -983,37 +1258,6 @@ def main() -> None:
     )
 
     # Build adaptation PPO config.
-    adapt_settings = _load_yaml(args.adapt_settings_file)
-    adapt_cfg = _resolve_setting_cfg(
-        adapt_settings,
-        args.task_setting,
-        settings_name=str(args.adapt_settings_file),
-    )
-    adapt_ppo_cfg = adapt_cfg.get("ppo", {})
-    if not isinstance(adapt_ppo_cfg, dict):
-        raise ValueError(
-            f"Expected 'ppo' mapping for setting '{args.task_setting}' in {args.adapt_settings_file}.",
-        )
-
-    eval_episodes_during_training = int(
-        args.eval_episodes_during_training
-        if args.eval_episodes_during_training is not None
-        else adapt_ppo_cfg.get("eval_episodes_during_training", 20),
-    )
-    eval_episodes_post_training = int(
-        args.eval_episodes_post_training
-        if args.eval_episodes_post_training is not None
-        else adapt_cfg.get("downstream_eval", {}).get("episodes_post_training", 100),
-    )
-    # if eval_episodes_during_training < 2:
-    #     raise ValueError(
-    #         "--eval-episodes-during-training must be >= 2 for LunarLander.",
-    #     )
-    # if eval_episodes_post_training < 2:
-    #     raise ValueError(
-    #         "--eval-episodes-post-training must be >= 2 for LunarLander.",
-    #     )
-
     total_timesteps = int(
         args.total_timesteps_override
         if args.total_timesteps_override is not None
@@ -1022,17 +1266,11 @@ def main() -> None:
     if total_timesteps <= 0:
         raise ValueError("--total-timesteps-override (or resolved total_timesteps) must be > 0.")
 
-    early_stop_from_cfg = adapt_ppo_cfg.get("early_stop", True)
-    early_stop_enabled = (
-        bool(args.early_stop)
-        if args.early_stop is not None
-        else (True if early_stop_from_cfg is None else bool(early_stop_from_cfg))
-    )
-    early_stop_reward_threshold_cfg = adapt_ppo_cfg.get("early_stop_reward_threshold", 200.0)
+    early_stop_reward_threshold_cfg = adapt_ppo_cfg.get("early_stop_reward_threshold", None)
     early_stop_reward_threshold = (
         float(early_stop_reward_threshold_cfg)
         if early_stop_reward_threshold_cfg is not None
-        else 200.0
+        else None
     )
 
     ppo_cfg = PPOConfig(
@@ -1050,17 +1288,10 @@ def main() -> None:
         lr=float(adapt_ppo_cfg.get("lr", 3e-4)),
         max_grad_norm=float(adapt_ppo_cfg.get("max_grad_norm", 0.5)),
         device=str(args.device),
-        early_stop=early_stop_enabled,
         early_stop_min_steps=int(adapt_ppo_cfg.get("early_stop_min_steps", 0)),
         early_stop_reward_threshold=early_stop_reward_threshold,
         early_stop_failure_rate_threshold=adapt_ppo_cfg.get("early_stop_failure_rate_threshold", None),
-        early_stop_deterministic_total_reward_threshold=adapt_ppo_cfg.get(
-            "early_stop_deterministic_total_reward_threshold",
-            None,
-        ),
-        early_stop_deterministic_eval_episodes=int(
-            adapt_ppo_cfg.get("early_stop_deterministic_eval_episodes", 20),
-        ),
+        early_stop_success_rate_threshold=adapt_ppo_cfg.get("early_stop_success_rate_threshold", None),
     )
 
     # Build source actor/critic warm starts for PGD adaptation.
@@ -1147,7 +1378,7 @@ def main() -> None:
         render_mode=None,
         **source_env_kwargs,
     )
-    source_mean_reward, source_std_reward, source_failure_rate = evaluate(
+    source_mean_reward, source_std_reward, source_failure_rate, source_success_rate = evaluate_with_success(
         source_eval_env,
         adapted_actor,
         episodes=eval_episodes_post_training,
@@ -1161,7 +1392,12 @@ def main() -> None:
         render_mode=None,
         **downstream_env_kwargs,
     )
-    downstream_mean_reward, downstream_std_reward, downstream_failure_rate = evaluate(
+    (
+        downstream_mean_reward,
+        downstream_std_reward,
+        downstream_failure_rate,
+        downstream_success_rate,
+    ) = evaluate_with_success(
         downstream_eval_env,
         adapted_actor,
         episodes=eval_episodes_post_training,
@@ -1324,9 +1560,11 @@ def main() -> None:
             "source_mean_reward": float(source_mean_reward),
             "source_std_reward": float(source_std_reward),
             "source_failure_rate": float(source_failure_rate),
+            "source_success_rate": float(source_success_rate),
             "downstream_mean_reward": float(downstream_mean_reward),
             "downstream_std_reward": float(downstream_std_reward),
             "downstream_failure_rate": float(downstream_failure_rate),
+            "downstream_success_rate": float(downstream_success_rate),
             "adapted_outside_union_rashomon": _outside_analysis_for_summary(adapted_outside_union),
             "adapted_outside_old_rashomon": _outside_analysis_for_summary(adapted_outside_old),
         },
@@ -1354,9 +1592,11 @@ def main() -> None:
     print(
         "\nAdapted actor evaluation:\n"
         f"- Source    ({eval_episodes_post_training} ep): mean={source_mean_reward:.3f}, "
-        f"std={source_std_reward:.3f}, failure_rate={source_failure_rate:.3f}\n"
+        f"std={source_std_reward:.3f}, failure_rate={source_failure_rate:.3f}, "
+        f"success_rate={source_success_rate:.3f}\n"
         f"- Downstream({eval_episodes_post_training} ep): mean={downstream_mean_reward:.3f}, "
-        f"std={downstream_std_reward:.3f}, failure_rate={downstream_failure_rate:.3f}",
+        f"std={downstream_std_reward:.3f}, failure_rate={downstream_failure_rate:.3f}, "
+        f"success_rate={downstream_success_rate:.3f}",
     )
     print(f"\nSaved expanded-Rashomon run to: {run_dir}")
     print(f"Saved summary: {summary_path}")
