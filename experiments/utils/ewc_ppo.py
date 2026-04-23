@@ -40,7 +40,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .ppo_utils import PPOConfig, make_actor_critic, set_seed, evaluate
+from .ppo_utils import (
+    PPOConfig,
+    _early_stop_thresholds_satisfied,
+    _is_early_stop_enabled,
+    _warn_if_deprecated_early_stop_settings,
+    evaluate_with_success,
+    make_actor_critic,
+    set_seed,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +347,8 @@ def ewc_ppo_train(
     ewc_states = ewc_states or []
 
     set_seed(env, cfg.seed)
-    if (
-        cfg.early_stop_deterministic_total_reward_threshold is not None
-        and cfg.early_stop_deterministic_eval_episodes <= 0
-    ):
-        raise ValueError(
-            "early_stop_deterministic_eval_episodes must be > 0 when "
-            "early_stop_deterministic_total_reward_threshold is set.",
-        )
+    _warn_if_deprecated_early_stop_settings(cfg)
+    early_stop_enabled = _is_early_stop_enabled(cfg)
 
     continuous_actions = isinstance(env.action_space, gym.spaces.Box)
     obs_dim = (
@@ -402,8 +404,10 @@ def ewc_ppo_train(
 
     obs, _ = env.reset(seed=cfg.seed)
     global_step = 0
+    ppo_update_count = 0
     start_time = time.time()
     pgd_projections = 0
+    stop_training_early = False
 
     if return_training_data:
         training_data: dict = {
@@ -414,10 +418,40 @@ def ewc_ppo_train(
             "safe": [],
         }
 
+    # Initial pre-update early-stop check at step=0.
+    if early_stop_enabled and cfg.early_stop_min_steps == 0:
+        mean_r, std_r, failure_rate, success_rate = evaluate_with_success(
+            env=eval_env,
+            actor=actor,
+            device=device,
+            episodes=cfg.eval_episodes,
+            deterministic=True,
+        )
+        if eval_env is env:
+            obs, _ = env.reset(seed=cfg.seed)
+        print(
+            f"Pre-update check | Steps=0 | meanR={mean_r:.1f} +/- {std_r:.1f} | "
+            f"failure_rate={failure_rate:.2f} | success_rate={success_rate:.2f}",
+        )
+        reward_ok, failure_ok, success_ok = _early_stop_thresholds_satisfied(
+            cfg,
+            mean_reward=mean_r,
+            failure_rate=failure_rate,
+            success_rate=success_rate,
+        )
+        if reward_ok and failure_ok and success_ok:
+            print(
+                "  [Early stop pre-update] step=0 | "
+                f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
+                f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
+                f"success_rate={success_rate:.2f} (threshold={cfg.early_stop_success_rate_threshold})"
+            )
+            stop_training_early = True
+
     # ------------------------------------------------------------------
     # Main training loop
     # ------------------------------------------------------------------
-    while global_step < cfg.total_timesteps:
+    while global_step < cfg.total_timesteps and not stop_training_early:
         # --- Rollout collection -------------------------------------------
         obs_buf = np.zeros((cfg.rollout_steps, obs_dim), dtype=np.float32)
         if continuous_actions:
@@ -582,25 +616,17 @@ def ewc_ppo_train(
                             if violations > 0:
                                 pgd_projections += violations
                             param.data.clamp_(lb, ub)
+        ppo_update_count += 1
 
         # --- Periodic evaluation and logging ------------------------------
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
-            mean_r, std_r, failure_rate = evaluate(
+            mean_r, std_r, failure_rate, success_rate = evaluate_with_success(
                 env=eval_env,
                 actor=actor,
                 device=device,
                 episodes=cfg.eval_episodes,
                 deterministic=True,
             )
-            deterministic_total_reward = None
-            if cfg.early_stop_deterministic_total_reward_threshold is not None:
-                deterministic_total_reward, _, _ = evaluate(
-                    env=eval_env,
-                    actor=actor,
-                    device=device,
-                    episodes=cfg.early_stop_deterministic_eval_episodes,
-                    deterministic=True,
-                )
             if eval_env is env:
                 obs, _ = env.reset()
             elapsed = time.time() - start_time
@@ -608,12 +634,7 @@ def ewc_ppo_train(
                 f"Steps={global_step} | meanR={mean_r:.1f} +/- {std_r:.1f}"
                 f" | elapsed={elapsed:.1f}s | failure_rate={failure_rate:.2f}"
             )
-            if deterministic_total_reward is not None:
-                log_msg += (
-                    " | det_meanR="
-                    f"{deterministic_total_reward:.2f}"
-                    f" ({cfg.early_stop_deterministic_eval_episodes} ep)"
-                )
+            log_msg += f" | success_rate={success_rate:.2f}"
             if active_ewc:
                 log_msg += f" | EWC lambda={cfg.ewc_lambda}"
             if use_pgd:
@@ -621,37 +642,24 @@ def ewc_ppo_train(
             print(log_msg)
 
             # Early stopping
-            if cfg.early_stop and global_step >= cfg.early_stop_min_steps:
-                reward_ok = (
-                    cfg.early_stop_reward_threshold is None
-                    or mean_r >= cfg.early_stop_reward_threshold
+            if early_stop_enabled and ppo_update_count >= cfg.early_stop_min_steps:
+                reward_ok, failure_ok, success_ok = _early_stop_thresholds_satisfied(
+                    cfg,
+                    mean_reward=mean_r,
+                    failure_rate=failure_rate,
+                    success_rate=success_rate,
                 )
-                failure_ok = (
-                    cfg.early_stop_failure_rate_threshold is None
-                    or failure_rate <= cfg.early_stop_failure_rate_threshold
-                )
-                det_reward_ok = (
-                    cfg.early_stop_deterministic_total_reward_threshold is None
-                    or (
-                        deterministic_total_reward is not None
-                        and deterministic_total_reward
-                        >= cfg.early_stop_deterministic_total_reward_threshold
-                    )
-                )
-                if reward_ok and failure_ok and det_reward_ok:
+                if reward_ok and failure_ok and success_ok:
                     print(
-                        f"  [Early stop] step={global_step} | "
+                        f"  [Early stop] updates={ppo_update_count} | step={global_step} | "
                         f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
                         f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
-                        "det_meanR="
-                        f"{(deterministic_total_reward if deterministic_total_reward is not None else float('nan')):.2f} "
-                        f"(threshold={cfg.early_stop_deterministic_total_reward_threshold}, "
-                        f"episodes={cfg.early_stop_deterministic_eval_episodes})"
+                        f"success_rate={success_rate:.2f} (threshold={cfg.early_stop_success_rate_threshold})"
                     )
                     break
 
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
-        mean_r, std_r, failure_rate = evaluate(
+        mean_r, std_r, failure_rate, success_rate = evaluate_with_success(
             env=eval_env,
             actor=actor,
             device=device,
@@ -662,6 +670,7 @@ def ewc_ppo_train(
             f"Final evaluation over {cfg.eval_episodes} episodes: "
             f"mean_reward={mean_r:.2f} +/- {std_r:.2f}"
             f" | failure_rate={failure_rate:.2f}"
+            f" | success_rate={success_rate:.2f}"
         )
         if use_pgd:
             final_msg += f" | Total PGD projections: {pgd_projections}"

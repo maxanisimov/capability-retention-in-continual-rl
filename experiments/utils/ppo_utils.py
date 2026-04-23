@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import copy
 import matplotlib.pyplot as plt
+import warnings
 
 ActorParamBounds = list[torch.Tensor] | list[list[torch.Tensor]]
 
@@ -31,13 +32,17 @@ class PPOConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     # Early stopping: checked at every periodic evaluation (every 10×rollout_steps steps).
     # Triggers when ALL non-None thresholds are simultaneously satisfied.
+    # Deprecated: this flag is ignored; early stopping is enabled automatically
+    # when at least one threshold below is set.
     early_stop: bool = False
-    early_stop_min_steps: int = 0             # do not check before this many steps
+    # Minimum PPO updates before early-stop checks:
+    # - 0: include a pre-update check at step=0
+    # - N>=1: start checking only after N PPO updates
+    early_stop_min_steps: int = 0
     early_stop_reward_threshold: float | None = None   # stop if mean_reward >= threshold
     early_stop_failure_rate_threshold: float | None = None  # stop if failure_rate <= threshold
-    # Optional deterministic-performance criterion for early stopping.
-    # Useful when an environment has a known "max achievable total reward" and you
-    # want to stop as soon as the deterministic actor reaches it.
+    early_stop_success_rate_threshold: float | None = None  # stop if success_rate >= threshold
+    # Deprecated (kept for backwards compatibility, ignored in early-stop logic).
     early_stop_deterministic_total_reward_threshold: float | None = None
     early_stop_deterministic_eval_episodes: int = 1
     # Distance norm used to select the nearest convex Rashomon set during PGD projection.
@@ -131,33 +136,29 @@ def set_seed(env, seed: int):
         env.reset()
         env.action_space.seed(seed)
 
-def evaluate(
+def evaluate_with_success(
         env: gym.Env, actor: nn.Sequential, episodes=10, seed: int = 2025,
         device: str = 'cpu', render_mode: str | None = None,
         deterministic: bool = True,
         log_std: torch.nn.Parameter | None = None
-    ):
+    ) -> tuple[float, float, float, float]:
     """
-    Evaluate the actor policy over a number of episodes and return mean and std of rewards.
-    
-    Args:
-        env: Gymnasium environment
-        actor: Actor network
-        episodes: Number of episodes to evaluate
-        seed: Random seed
-        device: Device to run on
-        render_mode: Rendering mode (None or 'rgb_array')
-        deterministic: Whether to use deterministic actions
-        log_std: Log std parameter for continuous action spaces and non-deterministic eval (None for discrete)
+    Evaluate policy over episodes and return:
+    (mean_total_reward, std_total_reward, failure_rate, success_rate).
+
+    ``failure_rate`` and ``success_rate`` are episode-level rates:
+    - failure episode: any step reports unsafe (`safe=False` or `cost>0`)
+    - success episode: any step reports `is_success=True`
     """
     if int(episodes) <= 0:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     assert render_mode in (None, 'rgb_array')
     if deterministic:
         assert log_std is None, "log_std should be None for deterministic evaluation"
     actor.eval()
     scores = []
     failures = 0
+    successes = 0
     
     # Determine if actions are continuous
     continuous_actions = isinstance(env.action_space, gym.spaces.Box)
@@ -165,6 +166,8 @@ def evaluate(
     for episode_num in range(episodes):
         obs, _ = env.reset(seed=seed*episode_num)
         episodic_reward = 0.0
+        episode_failed = False
+        episode_success = False
         done = False
         while not done:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
@@ -194,22 +197,49 @@ def evaluate(
                 plt.imshow(env.render()) # type: ignore
                 plt.axis('off')
                 plt.show()
-            # Safety tracking: check 'safe' flag (custom envs) or 'cost' (Safety Gymnasium)
+            # Episode-level safety/success tracking.
             is_safe = info.get('safe', None)
             if is_safe is None:
                 # For Safety Gymnasium: cost > 0 means unsafe
                 cost = info.get('cost', 0)
                 is_safe = (cost == 0)
             if not is_safe:
-                failures += 1
+                episode_failed = True
+            episode_success = episode_success or bool(info.get("is_success", False))
             episodic_reward += reward # type: ignore
             done = terminated or truncated
         scores.append(episodic_reward)
+        failures += int(episode_failed)
+        successes += int(episode_success)
     actor.train()
     avg_total_reward = float(np.mean(scores))
     std_total_reward = float(np.std(scores))
     failure_rate = failures / episodes
-    return avg_total_reward, std_total_reward, failure_rate
+    success_rate = successes / episodes
+    return avg_total_reward, std_total_reward, failure_rate, success_rate
+
+
+def evaluate(
+        env: gym.Env, actor: nn.Sequential, episodes=10, seed: int = 2025,
+        device: str = 'cpu', render_mode: str | None = None,
+        deterministic: bool = True,
+        log_std: torch.nn.Parameter | None = None
+    ):
+    """
+    Backward-compatible wrapper returning:
+    (mean_total_reward, std_total_reward, failure_rate).
+    """
+    mean_r, std_r, failure_rate, _ = evaluate_with_success(
+        env=env,
+        actor=actor,
+        episodes=episodes,
+        seed=seed,
+        device=device,
+        render_mode=render_mode,
+        deterministic=deterministic,
+        log_std=log_std,
+    )
+    return mean_r, std_r, failure_rate
 
 
 def _extract_action_mask(info: dict | None, n_actions: int) -> np.ndarray:
@@ -243,20 +273,21 @@ def _apply_action_mask_to_logits(
     return torch.where(valid, logits, invalid_logit)
 
 
-def evaluate_masked(
+def evaluate_masked_with_success(
         env: gym.Env,
         actor: nn.Sequential,
         episodes: int = 10,
         seed: int = 2025,
         device: str | torch.device = "cpu",
         deterministic: bool = True,
-) -> tuple[float, float, float]:
-    """Evaluate a discrete policy while respecting info['action_mask']."""
+) -> tuple[float, float, float, float]:
+    """Evaluate masked policy and return (mean_reward, std_reward, failure_rate, success_rate)."""
     if int(episodes) <= 0:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     actor.eval()
     scores = []
     failures = 0
+    successes = 0
 
     if not isinstance(env.action_space, gym.spaces.Discrete):
         raise ValueError("evaluate_masked only supports Discrete action spaces.")
@@ -266,6 +297,8 @@ def evaluate_masked(
         obs, info = env.reset(seed=seed * episode_num)
         action_mask = _extract_action_mask(info, n_actions)
         episodic_reward = 0.0
+        episode_failed = False
+        episode_success = False
         done = False
         while not done:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
@@ -288,18 +321,101 @@ def evaluate_masked(
                 cost = info.get("cost", 0)
                 is_safe = (cost == 0)
             if not is_safe:
-                failures += 1
+                episode_failed = True
+            episode_success = episode_success or bool(info.get("is_success", False))
 
             if not done:
                 action_mask = _extract_action_mask(info, n_actions)
 
         scores.append(episodic_reward)
+        failures += int(episode_failed)
+        successes += int(episode_success)
 
     actor.train()
     avg_total_reward = float(np.mean(scores))
     std_total_reward = float(np.std(scores))
     failure_rate = failures / episodes
-    return avg_total_reward, std_total_reward, failure_rate
+    success_rate = successes / episodes
+    return avg_total_reward, std_total_reward, failure_rate, success_rate
+
+
+def evaluate_masked(
+        env: gym.Env,
+        actor: nn.Sequential,
+        episodes: int = 10,
+        seed: int = 2025,
+        device: str | torch.device = "cpu",
+        deterministic: bool = True,
+) -> tuple[float, float, float]:
+    """Backward-compatible wrapper returning (mean_reward, std_reward, failure_rate)."""
+    mean_r, std_r, failure_rate, _ = evaluate_masked_with_success(
+        env=env,
+        actor=actor,
+        episodes=episodes,
+        seed=seed,
+        device=device,
+        deterministic=deterministic,
+    )
+    return mean_r, std_r, failure_rate
+
+
+def _early_stop_thresholds_satisfied(
+    cfg: PPOConfig,
+    *,
+    mean_reward: float,
+    failure_rate: float,
+    success_rate: float,
+) -> tuple[bool, bool, bool]:
+    reward_ok = (
+        cfg.early_stop_reward_threshold is None
+        or mean_reward >= cfg.early_stop_reward_threshold
+    )
+    failure_ok = (
+        cfg.early_stop_failure_rate_threshold is None
+        or failure_rate <= cfg.early_stop_failure_rate_threshold
+    )
+    success_ok = (
+        cfg.early_stop_success_rate_threshold is None
+        or success_rate >= cfg.early_stop_success_rate_threshold
+    )
+    return reward_ok, failure_ok, success_ok
+
+
+def _has_any_early_stop_threshold(cfg: PPOConfig) -> bool:
+    return (
+        cfg.early_stop_reward_threshold is not None
+        or cfg.early_stop_failure_rate_threshold is not None
+        or cfg.early_stop_success_rate_threshold is not None
+    )
+
+
+def _is_early_stop_enabled(cfg: PPOConfig) -> bool:
+    return _has_any_early_stop_threshold(cfg)
+
+
+def _warn_if_deprecated_early_stop_settings(cfg: PPOConfig) -> None:
+    if (
+        cfg.early_stop_deterministic_total_reward_threshold is not None
+        or cfg.early_stop_deterministic_eval_episodes != 1
+    ):
+        warnings.warn(
+            "PPOConfig.early_stop_deterministic_total_reward_threshold and "
+            "PPOConfig.early_stop_deterministic_eval_episodes are deprecated and "
+            "ignored. Use early_stop_reward_threshold / early_stop_failure_rate_threshold / "
+            "early_stop_success_rate_threshold instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
+    if cfg.early_stop:
+        warnings.warn(
+            "PPOConfig.early_stop is deprecated and ignored. Early stopping is now "
+            "enabled automatically when any threshold is set "
+            "(early_stop_reward_threshold / early_stop_failure_rate_threshold / "
+            "early_stop_success_rate_threshold).",
+            FutureWarning,
+            stacklevel=2,
+        )
 
 
 def _validate_and_prepare_param_interval_bounds(
@@ -565,14 +681,8 @@ def ppo_train(
     # env_kwargs = cfg.env_kwargs if cfg.env_kwargs is not None else {}
     # env = gym.make(cfg.env_id, **env_kwargs)
     set_seed(env, cfg.seed)
-    if (
-        cfg.early_stop_deterministic_total_reward_threshold is not None
-        and cfg.early_stop_deterministic_eval_episodes <= 0
-    ):
-        raise ValueError(
-            "early_stop_deterministic_eval_episodes must be > 0 when "
-            "early_stop_deterministic_total_reward_threshold is set.",
-        )
+    _warn_if_deprecated_early_stop_settings(cfg)
+    early_stop_enabled = _is_early_stop_enabled(cfg)
 
     # Determine action space type
     continuous_actions = isinstance(env.action_space, gym.spaces.Box)
@@ -641,8 +751,10 @@ def ppo_train(
 
     obs, _ = env.reset(seed=cfg.seed)
     global_step = 0
+    ppo_update_count = 0
     start_time = time.time()
     pgd_projections = 0  # Count total parameter projections for logging
+    stop_training_early = False
     
     # Training data tracking
     if return_training_data:
@@ -655,7 +767,40 @@ def ppo_train(
             # 'rewards': []
         }
 
-    while global_step < cfg.total_timesteps:
+    # Initial pre-update early-stop check at step=0.
+    if early_stop_enabled and cfg.early_stop_min_steps == 0:
+        mean_r, std_r, failure_rate, success_rate = evaluate_with_success(
+            env=eval_env,
+            actor=actor,
+            device=device,
+            episodes=cfg.eval_episodes,
+            deterministic=True,
+        ) # type: ignore
+
+        # If eval reuses training env, restore initial rollout state for reproducibility.
+        if eval_env is env:
+            obs, _ = env.reset(seed=cfg.seed)
+
+        print(
+            f"Pre-update check | Steps=0 | meanR={mean_r:.1f} +/- {std_r:.1f} | "
+            f"failure_rate={failure_rate:.2f} | success_rate={success_rate:.2f}",
+        )
+        reward_ok, failure_ok, success_ok = _early_stop_thresholds_satisfied(
+            cfg,
+            mean_reward=mean_r,
+            failure_rate=failure_rate,
+            success_rate=success_rate,
+        )
+        if reward_ok and failure_ok and success_ok:
+            print(
+                "  [Early stop pre-update] step=0 | "
+                f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
+                f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
+                f"success_rate={success_rate:.2f} (threshold={cfg.early_stop_success_rate_threshold})"
+            )
+            stop_training_early = True
+
+    while global_step < cfg.total_timesteps and not stop_training_early:
         # Storage for rollout
         obs_buf = np.zeros((cfg.rollout_steps, obs_dim), dtype=np.float32)
         if continuous_actions:
@@ -811,24 +956,16 @@ def ppo_train(
                             bounds_u_sets, # type: ignore[arg-type]
                             distance_norm=projection_distance_norm, # type: ignore[arg-type]
                         )
+        ppo_update_count += 1
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
-            mean_r, std_r, failure_rate = evaluate(
+            mean_r, std_r, failure_rate, success_rate = evaluate_with_success(
                 env=eval_env,
                 actor=actor,
                 device=device,
                 episodes=cfg.eval_episodes,
                 deterministic=True, # NOTE: eval always uses deterministic policy
             ) # type: ignore
-            deterministic_total_reward = None
-            if cfg.early_stop_deterministic_total_reward_threshold is not None:
-                deterministic_total_reward, _, _ = evaluate(
-                    env=eval_env,
-                    actor=actor,
-                    device=device,
-                    episodes=cfg.early_stop_deterministic_eval_episodes,
-                    deterministic=True,
-                ) # type: ignore
 
             # When evaluation reuses the training env, reset to recover rollout state.
             if eval_env is env:
@@ -836,49 +973,31 @@ def ppo_train(
             elapsed = time.time() - start_time
             log_msg = f"Steps={global_step} | meanR={mean_r:.1f} +/- {std_r:.1f} | elapsed={elapsed:.1f}s"
             log_msg += f" | failure_rate={failure_rate:.2f}"
-            if deterministic_total_reward is not None:
-                log_msg += (
-                    " | det_meanR="
-                    f"{deterministic_total_reward:.2f}"
-                    f" ({cfg.early_stop_deterministic_eval_episodes} ep)"
-                )
+            log_msg += f" | success_rate={success_rate:.2f}"
             if use_pgd:
                 log_msg += f" | PGD projections={pgd_projections}"
             print(log_msg)
 
             # ── Early stopping ──────────────────────────────────────────
-            if cfg.early_stop and global_step >= cfg.early_stop_min_steps:
-                reward_ok = (
-                    cfg.early_stop_reward_threshold is None
-                    or mean_r >= cfg.early_stop_reward_threshold
+            if early_stop_enabled and ppo_update_count >= cfg.early_stop_min_steps:
+                reward_ok, failure_ok, success_ok = _early_stop_thresholds_satisfied(
+                    cfg,
+                    mean_reward=mean_r,
+                    failure_rate=failure_rate,
+                    success_rate=success_rate,
                 )
-                failure_ok = (
-                    cfg.early_stop_failure_rate_threshold is None
-                    or failure_rate <= cfg.early_stop_failure_rate_threshold
-                )
-                det_reward_ok = (
-                    cfg.early_stop_deterministic_total_reward_threshold is None
-                    or (
-                        deterministic_total_reward is not None
-                        and deterministic_total_reward
-                        >= cfg.early_stop_deterministic_total_reward_threshold
-                    )
-                )
-                if reward_ok and failure_ok and det_reward_ok:
+                if reward_ok and failure_ok and success_ok:
                     print(
-                        f"  [Early stop] step={global_step} | "
+                        f"  [Early stop] updates={ppo_update_count} | step={global_step} | "
                         f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
                         f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
-                        "det_meanR="
-                        f"{(deterministic_total_reward if deterministic_total_reward is not None else float('nan')):.2f} "
-                        f"(threshold={cfg.early_stop_deterministic_total_reward_threshold}, "
-                        f"episodes={cfg.early_stop_deterministic_eval_episodes})"
+                        f"success_rate={success_rate:.2f} (threshold={cfg.early_stop_success_rate_threshold})"
                     )
                     break
 
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
         # Final checks and evaluation
-        mean_r, std_r, failure_rate = evaluate(
+        mean_r, std_r, failure_rate, success_rate = evaluate_with_success(
             env=eval_env,
             actor=actor,
             device=device,
@@ -887,6 +1006,7 @@ def ppo_train(
         ) # type: ignore
         final_msg = f"Final evaluation over {cfg.eval_episodes} episodes: mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         final_msg += f" | failure_rate={failure_rate:.2f}"
+        final_msg += f" | success_rate={success_rate:.2f}"
         if use_pgd:
             final_msg += f" | Total PGD projections during training: {pgd_projections}"
         print(final_msg)
@@ -934,14 +1054,8 @@ def ppo_train_maskable(
     If an action mask is missing from ``info``, a full-valid mask is used.
     """
     set_seed(env, cfg.seed)
-    if (
-        cfg.early_stop_deterministic_total_reward_threshold is not None
-        and cfg.early_stop_deterministic_eval_episodes <= 0
-    ):
-        raise ValueError(
-            "early_stop_deterministic_eval_episodes must be > 0 when "
-            "early_stop_deterministic_total_reward_threshold is set.",
-        )
+    _warn_if_deprecated_early_stop_settings(cfg)
+    early_stop_enabled = _is_early_stop_enabled(cfg)
 
     if not isinstance(env.action_space, gym.spaces.Discrete):
         raise ValueError(
@@ -1009,8 +1123,10 @@ def ppo_train_maskable(
     obs, info = env.reset(seed=cfg.seed)
     current_action_mask = _extract_action_mask(info, n_actions)
     global_step = 0
+    ppo_update_count = 0
     start_time = time.time()
     pgd_projections = 0
+    stop_training_early = False
 
     if return_training_data:
         training_data = {
@@ -1021,7 +1137,40 @@ def ppo_train_maskable(
             "safe": [],
         }
 
-    while global_step < cfg.total_timesteps:
+    # Initial pre-update early-stop check at step=0.
+    if early_stop_enabled and cfg.early_stop_min_steps == 0:
+        mean_r, std_r, failure_rate, success_rate = evaluate_masked_with_success(
+            env=env,
+            actor=actor,
+            device=device,
+            episodes=cfg.eval_episodes,
+            deterministic=True,
+        )
+
+        # Restore initial rollout state for reproducibility.
+        obs, info = env.reset(seed=cfg.seed)
+        current_action_mask = _extract_action_mask(info, n_actions)
+
+        print(
+            f"Pre-update check | Steps=0 | meanR={mean_r:.1f} +/- {std_r:.1f} | "
+            f"failure_rate={failure_rate:.2f} | success_rate={success_rate:.2f}",
+        )
+        reward_ok, failure_ok, success_ok = _early_stop_thresholds_satisfied(
+            cfg,
+            mean_reward=mean_r,
+            failure_rate=failure_rate,
+            success_rate=success_rate,
+        )
+        if reward_ok and failure_ok and success_ok:
+            print(
+                "  [Early stop pre-update] step=0 | "
+                f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
+                f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
+                f"success_rate={success_rate:.2f} (threshold={cfg.early_stop_success_rate_threshold})"
+            )
+            stop_training_early = True
+
+    while global_step < cfg.total_timesteps and not stop_training_early:
         obs_buf = np.zeros((cfg.rollout_steps, obs_dim), dtype=np.float32)
         act_buf = np.zeros((cfg.rollout_steps,), dtype=np.int64)
         logp_buf = np.zeros((cfg.rollout_steps,), dtype=np.float32)
@@ -1160,24 +1309,16 @@ def ppo_train_maskable(
                             bounds_u_sets, # type: ignore[arg-type]
                             distance_norm=projection_distance_norm, # type: ignore[arg-type]
                         )
+        ppo_update_count += 1
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
-            mean_r, std_r, failure_rate = evaluate_masked(
+            mean_r, std_r, failure_rate, success_rate = evaluate_masked_with_success(
                 env=env,
                 actor=actor,
                 device=device,
                 episodes=cfg.eval_episodes,
                 deterministic=True,
             )
-            deterministic_total_reward = None
-            if cfg.early_stop_deterministic_total_reward_threshold is not None:
-                deterministic_total_reward, _, _ = evaluate_masked(
-                    env=env,
-                    actor=actor,
-                    device=device,
-                    episodes=cfg.early_stop_deterministic_eval_episodes,
-                    deterministic=True,
-                )
 
             obs, info = env.reset()
             current_action_mask = _extract_action_mask(info, n_actions)
@@ -1185,47 +1326,29 @@ def ppo_train_maskable(
             elapsed = time.time() - start_time
             log_msg = f"Steps={global_step} | meanR={mean_r:.1f} +/- {std_r:.1f} | elapsed={elapsed:.1f}s"
             log_msg += f" | failure_rate={failure_rate:.2f}"
-            if deterministic_total_reward is not None:
-                log_msg += (
-                    " | det_meanR="
-                    f"{deterministic_total_reward:.2f}"
-                    f" ({cfg.early_stop_deterministic_eval_episodes} ep)"
-                )
+            log_msg += f" | success_rate={success_rate:.2f}"
             if use_pgd:
                 log_msg += f" | PGD projections={pgd_projections}"
             print(log_msg)
 
-            if cfg.early_stop and global_step >= cfg.early_stop_min_steps:
-                reward_ok = (
-                    cfg.early_stop_reward_threshold is None
-                    or mean_r >= cfg.early_stop_reward_threshold
+            if early_stop_enabled and ppo_update_count >= cfg.early_stop_min_steps:
+                reward_ok, failure_ok, success_ok = _early_stop_thresholds_satisfied(
+                    cfg,
+                    mean_reward=mean_r,
+                    failure_rate=failure_rate,
+                    success_rate=success_rate,
                 )
-                failure_ok = (
-                    cfg.early_stop_failure_rate_threshold is None
-                    or failure_rate <= cfg.early_stop_failure_rate_threshold
-                )
-                det_reward_ok = (
-                    cfg.early_stop_deterministic_total_reward_threshold is None
-                    or (
-                        deterministic_total_reward is not None
-                        and deterministic_total_reward
-                        >= cfg.early_stop_deterministic_total_reward_threshold
-                    )
-                )
-                if reward_ok and failure_ok and det_reward_ok:
+                if reward_ok and failure_ok and success_ok:
                     print(
-                        f"  [Early stop] step={global_step} | "
+                        f"  [Early stop] updates={ppo_update_count} | step={global_step} | "
                         f"meanR={mean_r:.2f} (threshold={cfg.early_stop_reward_threshold}) | "
                         f"failure_rate={failure_rate:.2f} (threshold={cfg.early_stop_failure_rate_threshold}) | "
-                        "det_meanR="
-                        f"{(deterministic_total_reward if deterministic_total_reward is not None else float('nan')):.2f} "
-                        f"(threshold={cfg.early_stop_deterministic_total_reward_threshold}, "
-                        f"episodes={cfg.early_stop_deterministic_eval_episodes})"
+                        f"success_rate={success_rate:.2f} (threshold={cfg.early_stop_success_rate_threshold})"
                     )
                     break
 
     if cfg.eval_episodes is not None and cfg.eval_episodes > 0:
-        mean_r, std_r, failure_rate = evaluate_masked(
+        mean_r, std_r, failure_rate, success_rate = evaluate_masked_with_success(
             env=env,
             actor=actor,
             device=device,
@@ -1237,6 +1360,7 @@ def ppo_train_maskable(
             f"mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         )
         final_msg += f" | failure_rate={failure_rate:.2f}"
+        final_msg += f" | success_rate={success_rate:.2f}"
         if use_pgd:
             final_msg += f" | Total PGD projections during training: {pgd_projections}"
         print(final_msg)
