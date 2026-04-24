@@ -187,6 +187,7 @@ llm_final_results.txt
 figures/
 
 # Experiment/runtime artifacts
+artifacts/
 outputs/
 results/
 plots/
