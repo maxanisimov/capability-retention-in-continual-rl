@@ -1,96 +1,18 @@
-default:
+deterministic__default_to_underpowered_vehicle:
   append_task_id: true
   source:
-    env: default__source
+    env: deterministic__default
   downstream:
-    env: default__downstream
-dynamics_shift:
+    env: deterministic__underpowered_vehicle
+deterministic__default_to_sluggish_vehicle:
   append_task_id: true
   source:
-    env: dynamics_shift__source
+    env: deterministic__default
   downstream:
-    env: dynamics_shift__downstream
-deterministic:
+    env: deterministic__sluggish_vehicle
+deterministic__default_to_twitchy_vehicle:
   append_task_id: true
   source:
-    env: deterministic__source
+    env: deterministic__default
   downstream:
-    env: deterministic__downstream
-deterministic_dynamics_hard:
-  append_task_id: true
-  source:
-    env: deterministic_dynamics_hard__source
-  downstream:
-    env: deterministic_dynamics_hard__downstream
-deterministic_vehicle_light:
-  append_task_id: true
-  source:
-    env: deterministic_vehicle_light__source
-  downstream:
-    env: deterministic_vehicle_light__downstream
-deterministic_vehicle_heavy:
-  append_task_id: true
-  source:
-    env: deterministic_vehicle_heavy__source
-  downstream:
-    env: deterministic_vehicle_heavy__downstream
-deterministic_vehicle_underpowered:
-  append_task_id: true
-  source:
-    env: deterministic_vehicle_underpowered__source
-  downstream:
-    env: deterministic_vehicle_underpowered__downstream
-deterministic_vehicle_agile:
-  append_task_id: true
-  source:
-    env: deterministic_vehicle_agile__source
-  downstream:
-    env: deterministic_vehicle_agile__downstream
-deterministic_vehicle_sluggish:
-  append_task_id: true
-  source:
-    env: deterministic_vehicle_sluggish__source
-  downstream:
-    env: deterministic_vehicle_sluggish__downstream
-deterministic_vehicle_twitchy:
-  append_task_id: true
-  source:
-    env: deterministic_vehicle_twitchy__source
-  downstream:
-    env: deterministic_vehicle_twitchy__downstream
-cond_twitchy_plus:
-  append_task_id: true
-  source:
-    env: cond_twitchy_plus__source
-  downstream:
-    env: cond_twitchy_plus__downstream
-cond_underpowered_moderate:
-  append_task_id: true
-  source:
-    env: cond_underpowered_moderate__source
-  downstream:
-    env: cond_underpowered_moderate__downstream
-cond_twitchy_tradeoff_mild:
-  append_task_id: true
-  source:
-    env: cond_twitchy_tradeoff_mild__source
-  downstream:
-    env: cond_twitchy_tradeoff_mild__downstream
-cond_twitchy_tradeoff_medium:
-  append_task_id: true
-  source:
-    env: cond_twitchy_tradeoff_medium__source
-  downstream:
-    env: cond_twitchy_tradeoff_medium__downstream
-cond_twitchy_tradeoff_hard:
-  append_task_id: true
-  source:
-    env: cond_twitchy_tradeoff_hard__source
-  downstream:
-    env: cond_twitchy_tradeoff_hard__downstream
-cond_twitchy_tradeoff_extreme:
-  append_task_id: true
-  source:
-    env: cond_twitchy_tradeoff_extreme__source
-  downstream:
-    env: cond_twitchy_tradeoff_extreme__downstream
+    env: deterministic__twitchy_vehicle
