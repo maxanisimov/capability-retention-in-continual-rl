@@ -22,12 +22,100 @@ def _cuboid_faces(x0: float, x1: float, y0: float, y1: float, z0: float, z1: flo
         [(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)],
     ]
 
+
+def _union_surface_faces_from_cuboids(
+    cuboids: list[tuple[float, float, float, float, float, float]],
+) -> list[list[tuple[float, float, float]]]:
+    """Build outer-surface faces of a union of axis-aligned cuboids."""
+    valid = [(x0, x1, y0, y1, z0, z1) for (x0, x1, y0, y1, z0, z1) in cuboids if x1 > x0 and y1 > y0 and z1 > z0]
+    if not valid:
+        return []
+
+    xs = sorted({x for x0, x1, _, _, _, _ in valid for x in (x0, x1)})
+    ys = sorted({y for _, _, y0, y1, _, _ in valid for y in (y0, y1)})
+    zs = sorted({z for _, _, _, _, z0, z1 in valid for z in (z0, z1)})
+    if len(xs) < 2 or len(ys) < 2 or len(zs) < 2:
+        return []
+
+    x_idx = {x: i for i, x in enumerate(xs)}
+    y_idx = {y: i for i, y in enumerate(ys)}
+    z_idx = {z: i for i, z in enumerate(zs)}
+
+    occ = np.zeros((len(xs) - 1, len(ys) - 1, len(zs) - 1), dtype=bool)
+    for x0, x1, y0, y1, z0, z1 in valid:
+        i0, i1 = x_idx[x0], x_idx[x1]
+        j0, j1 = y_idx[y0], y_idx[y1]
+        k0, k1 = z_idx[z0], z_idx[z1]
+        occ[i0:i1, j0:j1, k0:k1] = True
+
+    faces: list[list[tuple[float, float, float]]] = []
+    nx, ny, nz = occ.shape
+    filled = np.argwhere(occ)
+    for i, j, k in filled:
+        x0, x1 = xs[i], xs[i + 1]
+        y0, y1 = ys[j], ys[j + 1]
+        z0, z1 = zs[k], zs[k + 1]
+
+        # xmin face
+        if i == 0 or not occ[i - 1, j, k]:
+            faces.append([(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)])
+        # xmax face
+        if i == nx - 1 or not occ[i + 1, j, k]:
+            faces.append([(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)])
+        # ymin face
+        if j == 0 or not occ[i, j - 1, k]:
+            faces.append([(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)])
+        # ymax face
+        if j == ny - 1 or not occ[i, j + 1, k]:
+            faces.append([(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)])
+        # zmin face
+        if k == 0 or not occ[i, j, k - 1]:
+            faces.append([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)])
+        # zmax face
+        if k == nz - 1 or not occ[i, j, k + 1]:
+            faces.append([(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)])
+
+    return faces
+
+
+def _union_cells_from_rectangles(
+    rectangles: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    """Decompose the union of axis-aligned rectangles into filled grid cells."""
+    valid = [(x0, x1, y0, y1) for (x0, x1, y0, y1) in rectangles if x1 > x0 and y1 > y0]
+    if not valid:
+        return []
+
+    xs = sorted({x for x0, x1, _, _ in valid for x in (x0, x1)})
+    ys = sorted({y for _, _, y0, y1 in valid for y in (y0, y1)})
+    if len(xs) < 2 or len(ys) < 2:
+        return []
+
+    x_idx = {x: i for i, x in enumerate(xs)}
+    y_idx = {y: i for i, y in enumerate(ys)}
+
+    occ = np.zeros((len(xs) - 1, len(ys) - 1), dtype=bool)
+    for x0, x1, y0, y1 in valid:
+        i0, i1 = x_idx[x0], x_idx[x1]
+        j0, j1 = y_idx[y0], y_idx[y1]
+        occ[i0:i1, j0:j1] = True
+
+    cells: list[tuple[float, float, float, float]] = []
+    for i, j in np.argwhere(occ):
+        cells.append((xs[i], xs[i + 1], ys[j], ys[j + 1]))
+    return cells
+
+
 def plot_param_bounds(
     param_lower_bounds: list,
     param_upper_bounds: list,
     param_indices: list[tuple[int, int]],
     scatter_points: list[dict] | None = None,
     title: str | None = None,
+    figsize: tuple[float, float] | None = None,
+    legend_loc: str = "upper center",
+    legend_bbox_to_anchor: tuple[float, float] = (0.5, -0.5),
+    legend_ncol: int = 2,
 ):
     """Plot Rashomon bounds for 2 parameters (rectangle) or 3 parameters (cuboid)."""
     n_params = len(param_indices)
@@ -43,7 +131,8 @@ def plot_param_bounds(
 
     if n_params == 2:
         (x0, x1), (y0, y1) = bounds
-        fig, ax = plt.subplots(figsize=(5, 4))
+        figsize = figsize or (5.0, 4.0)
+        fig, ax = plt.subplots(figsize=figsize)
 
         if scatter_points is not None:
             # assert len(source_params) == 2, "source_params must have 2 values for 2D plots."
@@ -71,22 +160,23 @@ def plot_param_bounds(
         )
         ax.add_patch(rect)
 
-        x_pad = 0.05 * max(1e-12, x1 - x0)
-        y_pad = 0.05 * max(1e-12, y1 - y0)
-        ax.set_xlim(x0 - x_pad, x1 + x_pad)
-        ax.set_ylim(y0 - y_pad, y1 + y_pad)
+        # x_pad = 0.05 * max(1e-12, x1 - x0)
+        # y_pad = 0.05 * max(1e-12, y1 - y0)
+        # ax.set_xlim(x0 - x_pad, x1 + x_pad)
+        # ax.set_ylim(y0 - y_pad, y1 + y_pad)
 
         ax.set_xlabel(labels[0])
         ax.set_ylabel(labels[1])
         ax.set_title(title or f"Rashomon set: {labels[0]} vs {labels[1]}")
         ax.grid(alpha=0.25)
-        ax.legend(loc="best")
+        ax.legend(loc=legend_loc, bbox_to_anchor=legend_bbox_to_anchor, ncol=legend_ncol, framealpha=0.2)
         plt.tight_layout()
         plt.show()
         return
 
     (x0, x1), (y0, y1), (z0, z1) = bounds
-    fig = plt.figure(figsize=(6, 5))
+    figsize = figsize or (6.0, 5.0)
+    fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111, projection="3d")
 
     faces = _cuboid_faces(x0, x1, y0, y1, z0, z1)
@@ -111,12 +201,12 @@ def plot_param_bounds(
             depthshade=False,
         )
 
-    x_pad = 0.05 * max(1e-12, x1 - x0)
-    y_pad = 0.05 * max(1e-12, y1 - y0)
-    z_pad = 0.05 * max(1e-12, z1 - z0)
-    ax.set_xlim(x0 - x_pad, x1 + x_pad)
-    ax.set_ylim(y0 - y_pad, y1 + y_pad)
-    ax.set_zlim(z0 - z_pad, z1 + z_pad)
+    # x_pad = 0.05 * max(1e-12, x1 - x0)
+    # y_pad = 0.05 * max(1e-12, y1 - y0)
+    # z_pad = 0.05 * max(1e-12, z1 - z0)
+    # ax.set_xlim(x0 - x_pad, x1 + x_pad)
+    # ax.set_ylim(y0 - y_pad, y1 + y_pad)
+    # ax.set_zlim(z0 - z_pad, z1 + z_pad)
 
     ax.set_xlabel(labels[0])
     ax.set_ylabel(labels[1])
@@ -133,10 +223,294 @@ def plot_param_bounds(
                         markerfacecolor=scatter_point_info.get('color', "tab:orange"), markersize=8, label=scatter_point_info['label']
                     ) # type: ignore
                 )
-    ax.legend(handles=legend_handles, loc="best")
+    ax.legend(
+        handles=legend_handles, 
+        loc=legend_loc, bbox_to_anchor=legend_bbox_to_anchor, ncol=legend_ncol,
+        framealpha=0.2
+    )   
 
+    # plt.tight_layout(rect=[0, 0.08, 1, 1])  # leave space at bottom for legend
     plt.tight_layout()
     plt.show()
+
+
+def plot_param_bounds_multi_set(
+    param_lower_bounds_sets: list[list[torch.Tensor]],
+    param_upper_bounds_sets: list[list[torch.Tensor]],
+    param_indices: list[tuple[int, int]],
+    scatter_points: list[dict] | None = None,
+    set_labels: list[str] | None = None,
+    title: str | None = None,
+    figsize: tuple[float, float] | None = None,
+    alpha: float = 0.18,
+    set_color: str | tuple[float, float, float] | tuple[float, float, float, float] | None = None,
+    merge_cuboids: bool = False,
+    legend: bool = True,
+    legend_loc: str = "best",
+    show: bool = True,
+    ax: plt.Axes | None = None,
+):
+    """Plot multiple convex Rashomon sets in one 2D or 3D subplot.
+
+    This is intended for visualizing the union returned by
+    ``compute_nonconvex_rashomon_bounds`` where bounds are provided as:
+    ``bounds[set_idx][param_tensor_idx]``.
+
+    Args:
+        param_lower_bounds_sets: Lower bounds per set/per parameter tensor.
+        param_upper_bounds_sets: Upper bounds per set/per parameter tensor.
+        param_indices: Selected parameter coordinates as ``(tensor_idx, flat_idx)``.
+            Provide exactly 2 indices for 2D or 3 indices for 3D.
+        scatter_points: Optional overlay points. Each dict should include
+            ``coordinates`` (length 2 or 3), plus optional ``color``, ``marker``,
+            ``size`` and ``label``.
+        set_labels: Optional label per convex set.
+        title: Optional plot title.
+        figsize: Figure size when creating a new figure.
+        alpha: Face alpha for rectangles/cuboids.
+        set_color: Optional shared color for all Rashomon sets. If ``None``,
+            sets use distinct colors from ``tab20``.
+        merge_cuboids: If ``True``, render the union as one shape:
+            - 2D: fills the union of rectangles without internal boundaries.
+            - 3D: renders the outer union surface of all cuboids.
+        legend: Whether to draw a legend.
+        legend_loc: Legend location argument for Matplotlib.
+        show: Whether to call ``plt.show()``.
+        ax: Optional existing axis. If omitted, a new figure/axis is created.
+
+    Returns:
+        ``(fig, ax)`` for further customization.
+    """
+    n_params = len(param_indices)
+    if n_params not in (2, 3):
+        raise ValueError("plot_param_bounds_multi_set expects 2 or 3 parameter indices.")
+
+    if len(param_lower_bounds_sets) != len(param_upper_bounds_sets):
+        raise ValueError("Lower/upper set bounds lengths do not match.")
+    n_sets = len(param_lower_bounds_sets)
+    if n_sets == 0:
+        raise ValueError("At least one convex Rashomon set is required.")
+
+    if set_labels is not None and len(set_labels) != n_sets:
+        raise ValueError(
+            f"set_labels length mismatch: expected {n_sets}, got {len(set_labels)}.",
+        )
+
+    if scatter_points is not None:
+        if any(len(p.get("coordinates", [])) != n_params for p in scatter_points):
+            raise ValueError(
+                "Each scatter point must have coordinates matching the selected parameter dimensionality.",
+            )
+
+    # Extract scalar bounds for selected coordinates for every set.
+    set_bounds: list[list[tuple[float, float]]] = []
+    for set_idx, (lower_set, upper_set) in enumerate(zip(param_lower_bounds_sets, param_upper_bounds_sets)):
+        if len(lower_set) != len(upper_set):
+            raise ValueError(
+                f"Set {set_idx}: lower/upper tensor counts mismatch "
+                f"(lower={len(lower_set)}, upper={len(upper_set)}).",
+            )
+        coord_bounds: list[tuple[float, float]] = []
+        for tensor_idx, flat_idx in param_indices:
+            lo = _get_scalar_param(lower_set, tensor_idx, flat_idx)
+            hi = _get_scalar_param(upper_set, tensor_idx, flat_idx)
+            if hi < lo:
+                raise ValueError(
+                    f"Set {set_idx}, param {(tensor_idx, flat_idx)} has invalid interval: "
+                    f"lower={lo} > upper={hi}.",
+                )
+            coord_bounds.append((lo, hi))
+        set_bounds.append(coord_bounds)
+
+    mins = [min(b[p_idx][0] for b in set_bounds) for p_idx in range(n_params)]
+    maxs = [max(b[p_idx][1] for b in set_bounds) for p_idx in range(n_params)]
+    pads = [0.05 * max(1e-12, hi - lo) for lo, hi in zip(mins, maxs)]
+
+    labels = [f"param {idx}" for idx in param_indices]
+    labels_per_set = set_labels if set_labels is not None else [f"set #{i + 1}" for i in range(n_sets)]
+    if set_color is None:
+        colours = list(plt.cm.tab20(np.linspace(0, 1, max(2, n_sets))))
+    else:
+        colours = [set_color for _ in range(n_sets)]
+
+    if n_params == 2:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize or (6.0, 5.0))
+        else:
+            fig = ax.figure
+
+        if merge_cuboids:
+            rectangles = [(b[0][0], b[0][1], b[1][0], b[1][1]) for b in set_bounds]
+            union_cells = _union_cells_from_rectangles(rectangles)
+            union_label = (
+                "union of convex Rashomon sets"
+                if set_labels is None
+                else " | ".join(labels_per_set)
+            )
+            for idx, (x0, x1, y0, y1) in enumerate(union_cells):
+                rect = Rectangle(
+                    (x0, y0),
+                    x1 - x0,
+                    y1 - y0,
+                    fill=True,
+                    edgecolor="none",
+                    facecolor=colours[0],
+                    linewidth=0.0,
+                    alpha=alpha,
+                    antialiased=False,
+                    label=(union_label if idx == 0 else None),
+                )
+                ax.add_patch(rect)
+        else:
+            for i, bounds in enumerate(set_bounds):
+                (x0, x1), (y0, y1) = bounds
+                rect = Rectangle(
+                    (x0, y0),
+                    x1 - x0,
+                    y1 - y0,
+                    fill=True,
+                    edgecolor=colours[i],
+                    facecolor=colours[i],
+                    linewidth=1.4,
+                    alpha=alpha,
+                    label=labels_per_set[i],
+                )
+                ax.add_patch(rect)
+
+        if scatter_points is not None:
+            for p in scatter_points:
+                ax.scatter(
+                    p["coordinates"][0],
+                    p["coordinates"][1],
+                    color=p.get("color", "black"),
+                    marker=p.get("marker", "o"),
+                    s=p.get("size", 55),
+                    label=p.get("label", None),
+                    zorder=5,
+                )
+
+        ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
+        ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
+        ax.set_xlabel(labels[0])
+        ax.set_ylabel(labels[1])
+        ax.set_title(title or "Convex Rashomon sets (2D projection)")
+        ax.grid(alpha=0.25)
+        ax.set_aspect("equal", adjustable="box")
+
+        if legend:
+            handles, labels_found = ax.get_legend_handles_labels()
+            deduped: dict[str, object] = {}
+            for h, lbl in zip(handles, labels_found):
+                if lbl and lbl not in deduped:
+                    deduped[lbl] = h
+            if deduped:
+                ax.legend(deduped.values(), deduped.keys(), loc=legend_loc, framealpha=0.25)
+
+        if show:
+            plt.tight_layout()
+            plt.show()
+        return fig, ax
+
+    # 3D mode
+    if ax is None:
+        fig = plt.figure(figsize=figsize or (7.0, 5.5))
+        ax = fig.add_subplot(111, projection="3d")
+    else:
+        fig = ax.figure
+        if not hasattr(ax, "zaxis"):
+            raise ValueError("For 3D plotting, provide a 3D axis (projection='3d').")
+
+    if merge_cuboids:
+        cuboids = [
+            (bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1], bounds[2][0], bounds[2][1])
+            for bounds in set_bounds
+        ]
+        union_faces = _union_surface_faces_from_cuboids(cuboids)
+        if len(union_faces) > 0:
+            union_poly = Poly3DCollection(
+                union_faces,
+                facecolors=colours[0],
+                edgecolors="none",
+                linewidths=0.0,
+                alpha=alpha,
+            )
+            ax.add_collection3d(union_poly)
+    else:
+        for i, bounds in enumerate(set_bounds):
+            (x0, x1), (y0, y1), (z0, z1) = bounds
+            faces = _cuboid_faces(x0, x1, y0, y1, z0, z1)
+            cuboid = Poly3DCollection(
+                faces,
+                facecolors=colours[i],
+                edgecolors=colours[i],
+                linewidths=1.0,
+                alpha=alpha,
+            )
+            ax.add_collection3d(cuboid)
+
+    scatter_handles: list[Line2D] = []
+    if scatter_points is not None:
+        for p in scatter_points:
+            ax.scatter(
+                p["coordinates"][0],
+                p["coordinates"][1],
+                p["coordinates"][2],  # type: ignore[index]
+                color=p.get("color", "black"),
+                marker=p.get("marker", "o"),
+                s=p.get("size", 60),
+                depthshade=False,
+            )
+            label = p.get("label", None)
+            if label is not None:
+                scatter_handles.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker=p.get("marker", "o"),
+                        color="w",
+                        markerfacecolor=p.get("color", "black"),
+                        markersize=8,
+                        label=label,
+                    ),
+                )
+
+    ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
+    ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
+    ax.set_zlim(mins[2] - pads[2], maxs[2] + pads[2])
+    ax.set_xlabel(labels[0])
+    ax.set_ylabel(labels[1])
+    ax.set_zlabel(labels[2])
+    ax.set_title(title or "Convex Rashomon sets (3D projection)")
+
+    if legend:
+        if merge_cuboids:
+            set_handles = [
+                Patch(
+                    facecolor=colours[0],
+                    edgecolor=colours[0],
+                    alpha=alpha,
+                    label=("union of convex Rashomon sets" if set_labels is None else " | ".join(labels_per_set)),
+                ),
+            ]
+        else:
+            set_handles = [
+                Patch(facecolor=colours[i], edgecolor=colours[i], alpha=alpha, label=labels_per_set[i])
+                for i in range(n_sets)
+            ]
+        legend_handles = set_handles + scatter_handles
+        deduped: dict[str, object] = {}
+        for h in legend_handles:
+            lbl = h.get_label()  # type: ignore[union-attr]
+            if lbl and lbl not in deduped:
+                deduped[lbl] = h
+        if deduped:
+            ax.legend(deduped.values(), deduped.keys(), loc=legend_loc, framealpha=0.25)
+
+    if show:
+        plt.tight_layout()
+        plt.show()
+    return fig, ax
+
 
 def _select_checkpoint_indices(n_ckpts: int, num_checkpoints_to_plot: int) -> list[int]:
     """Select checkpoint indices using first/last/linspace rules."""
@@ -202,6 +576,7 @@ def plot_param_bounds_per_checkpoint(
     # source_label: str = "Source policy",
     num_checkpoints_to_plot: int = 5,
     n_rows: int = 1,
+    figsize: tuple[float, float] | None = None,
 ):
     """Plot 2D/3D Rashomon sets per checkpoint for 2 or 3 selected parameters."""
     n_params = len(param_indices)
