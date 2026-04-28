@@ -117,6 +117,36 @@ def _get_min_acc(
     return acc
 
 
+def _expand_limit_per_task(
+    limits: list[float] | float,
+    ntasks: int,
+) -> list[float]:
+    if isinstance(limits, list):
+        if not limits:
+            raise ValueError("Accuracy limit list must not be empty.")
+        if len(limits) >= ntasks:
+            return limits[:ntasks]
+        return limits + [limits[-1]] * (ntasks - len(limits))
+    return [limits] * ntasks
+
+
+def _resolve_limit_value(
+    limit: list[float] | float | None,
+    *,
+    fallback: list[float] | float | None,
+) -> tuple[list[float], float]:
+    value = limit if limit is not None else fallback
+    if value is None:
+        raise ValueError(
+            "At least one min-accuracy limit must be specified.",
+        )
+    if isinstance(value, list):
+        if not value:
+            raise ValueError("Accuracy limit list must not be empty.")
+        return value, float(value[-1])
+    return [], float(value)
+
+
 @torch.no_grad()
 def _project_bounded_model(
     bounded_model: IntervalBoundedModel,
@@ -157,7 +187,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self,
         bounded_model: IntervalBoundedModel,
         dataloader: torch.utils.data.DataLoader,
-        min_acc_limits: list[float] | float,
+        min_soft_acc_limits: list[float] | float,
+        min_hard_acc_limits: list[float] | float,
         penalty_coefficient: float,
         objective_fn: Callable,
         obj_alpha: float,
@@ -174,11 +205,13 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.dataloader = dataloader
         self.data_iter = iter(dataloader)
         self.obj_alpha = obj_alpha
-        self.min_acc_limits = (
-            min_acc_limits + [0.0] * (5 - len(min_acc_limits))
-            if isinstance(min_acc_limits, list)
-            else [min_acc_limits] * 5
-        )  # TODO: *5 implies 5 tasks, so not dynamic
+        self.task_labels = (
+            task_labels
+            or torch._unique(_extract_targets(dataloader.dataset))[0].tolist()
+        )  # if there is only one task then we can extract the task labels as opposed to having to provide them
+        ntasks = len(self.task_labels)
+        self.min_soft_acc_limits = _expand_limit_per_task(min_soft_acc_limits, ntasks)
+        self.min_hard_acc_limits = _expand_limit_per_task(min_hard_acc_limits, ntasks)
         self.context_mask = context_mask
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn
@@ -191,10 +224,6 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             )
         )
         self.new = True
-        self.task_labels = (
-            task_labels
-            or torch._unique(_extract_targets(dataloader.dataset))[0].tolist()
-        )  # if there is only one task then we can extract the task labels as opposed to having to provide them
         for i in range(len(self.task_labels)):
             multiplier = cooper.multipliers.DenseMultiplier(
                 init=torch.zeros(1, device=device)
@@ -283,9 +312,11 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 aggregation=self.aggregation,
             )
 
-            defect = self.min_acc_limits[i] - soft_min_acc
+            soft_limit = self.min_soft_acc_limits[i]
+            hard_limit = self.min_hard_acc_limits[i]
+            defect = soft_limit - soft_min_acc
             setattr(self, f"defect{i}", defect)
-            defect_strict = self.min_acc_limits[i] - min_acc
+            defect_strict = hard_limit - min_acc
             setattr(self, f"defect_strict{i}", defect_strict)
             constraint_state = cooper.ConstraintState(
                 violation=getattr(self, f"defect{i}"),
@@ -298,6 +329,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 "strict_defect": getattr(self, f"defect_strict{i}").item(),
                 "min_acc": min_acc.item(),
                 "min_soft_acc": soft_min_acc.item(),
+                "target_min_acc": hard_limit,
+                "target_min_soft_acc": soft_limit,
                 "penalty": getattr(self, f"constraint{i}").penalty_coefficient().item(),
             }
             observed_constraints = observed_constraints | {
@@ -388,6 +421,8 @@ def compute_rashomon_set(
     batch_size: int = 500,
     certificate_samples: int = 1000,
     min_acc_limit=0.85,
+    min_soft_acc_limit: list[float] | float | None = None,
+    min_hard_acc_limit: list[float] | float | None = None,
     n_iters=2000,
     primal_learning_rate=0.1,
     dual_learning_rate=0.1,
@@ -416,7 +451,12 @@ def compute_rashomon_set(
         dataset (torch.utils.data.Dataset): The dataset for certification.
         batch_size (int): Batch size for the dataset.
         certificate_samples (int): Number of samples to use for the final certificates.
-        min_acc_limit (float): Minimum accuracy limit for the constraint.
+        min_acc_limit (float): Backward-compatible shared minimum-accuracy limit used for both
+            soft and hard constraints when explicit limits are not provided.
+        min_soft_acc_limit (float | list[float] | None): Minimum soft-accuracy limit used in the
+            differentiable constraint. Falls back to min_acc_limit when None.
+        min_hard_acc_limit (float | list[float] | None): Minimum hard-accuracy limit used as
+            strict_violation. Falls back to min_acc_limit when None.
         n_iters (int): Number of iterations for optimization.
         primal_learning_rate (float): Learning rate for primal variables. A higher value prioritizes expanding the bbox,
             potentially at the expense of violating the accuracy constraint.
@@ -442,10 +482,14 @@ def compute_rashomon_set(
             If checkpoint is not -1, returns a list of models at each checkpoint.
         certificates (list[float]): The certificates for each checkpoint.
     """
-    min_acc_limits = []
-    if isinstance(min_acc_limit, list):
-        min_acc_limits = min_acc_limit
-        min_acc_limit = min_acc_limit[-1]
+    min_soft_acc_limits, min_soft_acc_limit = _resolve_limit_value(
+        min_soft_acc_limit,
+        fallback=min_acc_limit,
+    )
+    min_hard_acc_limits, min_hard_acc_limit = _resolve_limit_value(
+        min_hard_acc_limit,
+        fallback=min_acc_limit,
+    )
     device = next(model.parameters()).device
     objective_fn = custom_objective if custom_objective is not None else _objective_fn
 
@@ -518,9 +562,9 @@ def compute_rashomon_set(
     if domain_map_fn is not None:
         y_cert = domain_map_fn(y_cert)
 
-    if min_acc_limit <= 0.0:
+    if min_soft_acc_limit <= 0.0 and min_hard_acc_limit <= 0.0:
         print(
-            "Warning: min_acc_limit <= 0.0, returning without computing Rashomon set."
+            "Warning: both min_soft_acc_limit and min_hard_acc_limit <= 0.0; returning without computing Rashomon set."
         )
         if outer_bbox is not None:
             bounded_model = copy.deepcopy(outer_bbox)
@@ -534,7 +578,7 @@ def compute_rashomon_set(
 
     # Check initial constraint satisfaction feasibility
     with torch.no_grad():
-        initial_defect = min_acc_limit - _get_min_acc(
+        initial_defect = min_soft_acc_limit - _get_min_acc(
             bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask,
             multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
             aggregation=aggregation,
@@ -549,14 +593,24 @@ def compute_rashomon_set(
         print(
             f"Computing Rashomon set within outer box of size: {_bounded_model_width(outer_bbox).item():.2f}"
         )
+        outer_min_soft_acc = _get_min_acc(
+            outer_bbox, X_cert, y_cert, soft=True, context_mask=context_mask,
+            multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
+            aggregation=aggregation,
+        )
         outer_min_acc = _get_min_acc(
             outer_bbox, X_cert, y_cert, soft=False, context_mask=context_mask,
             multi_label=multi_label, aggregation=aggregation,
         )
-        if outer_min_acc > min_acc_limit:
+        if (
+            outer_min_soft_acc > min_soft_acc_limit
+            and outer_min_acc > min_hard_acc_limit
+        ):
             print(
-                f"Warning: outer bounding box already satisfies min acc limit of {min_acc_limit:.2f} "
-                f"with min acc of {outer_min_acc.item():.2f}. No need to compute Rashomon set."
+                "Warning: outer bounding box already satisfies both thresholds "
+                f"(soft >= {min_soft_acc_limit:.2f}, hard >= {min_hard_acc_limit:.2f}) "
+                f"with soft={outer_min_soft_acc.item():.2f}, hard={outer_min_acc.item():.2f}. "
+                "No need to compute Rashomon set."
             )
             return [outer_bbox], [outer_min_acc.item()]
 
@@ -565,7 +619,8 @@ def compute_rashomon_set(
         bounded_model,
         dataloader=dataloader,
         objective_fn=objective_fn,
-        min_acc_limits=min_acc_limits or min_acc_limit,
+        min_soft_acc_limits=min_soft_acc_limits or min_soft_acc_limit,
+        min_hard_acc_limits=min_hard_acc_limits or min_hard_acc_limit,
         penalty_coefficient=penalty_coefficient,
         obj_alpha=obj_alpha,
         context_mask=context_mask,
@@ -599,7 +654,11 @@ def compute_rashomon_set(
     )
 
     # --- Optimization Loop ---
-    print(f"Computing Rashomon set with min acc limit: {min_acc_limit:.2f}")
+    print(
+        "Computing Rashomon set with limits: "
+        f"min_soft_acc_limit={min_soft_acc_limit:.2f}, "
+        f"min_hard_acc_limit={min_hard_acc_limit:.2f}"
+    )
     obj = objective_fn(bounded_model, obj_alpha)
     print(
         "Initial bbox: ",

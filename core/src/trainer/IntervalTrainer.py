@@ -21,6 +21,8 @@ class IntervalTrainer(BaseTrainer):
         n_certificate_samples=256,
         min_acc_increment=0.05,
         min_acc_limit=0.9,
+        min_soft_acc_limit: float | list[float] | None = None,
+        min_hard_acc_limit: float | list[float] | None = None,
         T: float | None = None,
         paradigm: str = "TIL",
         domain_map_fn: Callable = None,
@@ -35,6 +37,8 @@ class IntervalTrainer(BaseTrainer):
         self.n_certificate_samples = n_certificate_samples
         self.min_acc_increment = min_acc_increment
         self.min_acc_limit = min_acc_limit
+        self.min_soft_acc_limit = min_soft_acc_limit
+        self.min_hard_acc_limit = min_hard_acc_limit
         self.bounds = []
         self.paradigm = paradigm
         if T is None:
@@ -136,6 +140,23 @@ class IntervalTrainer(BaseTrainer):
             # project the parameters to the bounds
             p.data.clamp_(min=p_l, max=p_u)
 
+    def _resolve_min_acc_limit(
+        self,
+        *,
+        base_limit: float | list[float] | None,
+        task_acc: float,
+    ) -> float | list[float] | None:
+        """Resolve per-task min-accuracy limit using increment fallback logic."""
+        if isinstance(base_limit, list):
+            return base_limit
+        if self.min_acc_increment and base_limit is not None:
+            return min(max(task_acc - self.min_acc_increment, task_acc / 2), base_limit)
+        if self.min_acc_increment:
+            return max(task_acc - self.min_acc_increment, task_acc / 2)
+        if base_limit is not None:
+            return base_limit
+        return None
+
     def compute_rashomon_set(
         self,
         dataset: torch.utils.data.Dataset,
@@ -173,23 +194,35 @@ class IntervalTrainer(BaseTrainer):
             model = self.model
             context_mask = None
 
-        if isinstance(self.min_acc_limit, list):
-            min_acc_limit = self.min_acc_limit
-        elif self.min_acc_increment and self.min_acc_limit:
-            min_acc_limit = min(max(task_acc - self.min_acc_increment, task_acc / 2), self.min_acc_limit)
-        elif self.min_acc_increment:
-            min_acc_limit = max(task_acc - self.min_acc_increment, task_acc / 2)
-        elif self.min_acc_limit:
-            min_acc_limit = self.min_acc_limit
-        else:
+        base_soft_limit = (
+            self.min_soft_acc_limit
+            if self.min_soft_acc_limit is not None
+            else self.min_acc_limit
+        )
+        base_hard_limit = (
+            self.min_hard_acc_limit
+            if self.min_hard_acc_limit is not None
+            else self.min_acc_limit
+        )
+        min_soft_acc_limit = self._resolve_min_acc_limit(
+            base_limit=base_soft_limit,
+            task_acc=float(task_acc),
+        )
+        min_hard_acc_limit = self._resolve_min_acc_limit(
+            base_limit=base_hard_limit,
+            task_acc=float(task_acc),
+        )
+        if min_soft_acc_limit is None and min_hard_acc_limit is None:
             raise ValueError(
-                "min_acc_limit or min_acc_increment must be set to compute the Rashomon set."
+                "At least one of min_acc_limit, min_soft_acc_limit, min_hard_acc_limit, or min_acc_increment must be set."
             )
 
         bounded_models, certificates = interval_utils.compute_rashomon_set(
             model,
             dataset,
-            min_acc_limit=min_acc_limit,
+            min_acc_limit=self.min_acc_limit,
+            min_soft_acc_limit=min_soft_acc_limit,
+            min_hard_acc_limit=min_hard_acc_limit,
             context_mask=context_mask,
             callback=callback,
             certificate_samples=self.n_certificate_samples,
