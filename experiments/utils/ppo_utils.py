@@ -10,6 +10,8 @@ import torch.nn as nn
 import copy
 import matplotlib.pyplot as plt
 import warnings
+from pathlib import Path
+from typing import Any
 
 ActorParamBounds = list[torch.Tensor] | list[list[torch.Tensor]]
 
@@ -639,6 +641,97 @@ def _project_actor_to_interval_union(
         param.data.copy_(projected)
     return int(best_n_projected)
 
+
+def _build_eval_metrics_dict(
+    *,
+    mean_reward: float,
+    std_reward: float,
+    failure_rate: float,
+    success_rate: float,
+) -> dict[str, float]:
+    return {
+        "mean_reward": float(mean_reward),
+        "std_reward": float(std_reward),
+        "failure_rate": float(failure_rate),
+        "success_rate": float(success_rate),
+    }
+
+
+def _snapshot_actor_policy_params(
+    actor: nn.Sequential,
+    log_std: torch.nn.Parameter | None = None,
+) -> dict[str, torch.Tensor]:
+    params_snapshot: dict[str, torch.Tensor] = {
+        name: value.detach().cpu().clone()
+        for name, value in actor.state_dict().items()
+    }
+    if log_std is not None:
+        params_snapshot["log_std"] = log_std.detach().cpu().clone()
+    return params_snapshot
+
+
+def _write_eval_policy_snapshot(
+    *,
+    params_snapshot: dict[str, torch.Tensor],
+    save_dir: Path,
+    checkpoint_idx: int,
+    eval_phase: str,
+    timestep: int,
+    update_idx: int,
+) -> Path:
+    filename = (
+        f"eval_params_{checkpoint_idx:05d}_{eval_phase}_"
+        f"step_{int(timestep)}_update_{int(update_idx)}.pt"
+    )
+    save_path = save_dir / filename
+    torch.save(params_snapshot, save_path)
+    return save_path
+
+
+def _append_eval_checkpoint_record(
+    eval_checkpoint_records: list[dict[str, Any]],
+    *,
+    actor: nn.Sequential,
+    log_std: torch.nn.Parameter | None,
+    timestep: int,
+    update_idx: int,
+    eval_phase: str,
+    mean_reward: float,
+    std_reward: float,
+    failure_rate: float,
+    success_rate: float,
+    save_params_to_disk: bool,
+    eval_params_save_dir: Path | None,
+) -> None:
+    metrics = _build_eval_metrics_dict(
+        mean_reward=mean_reward,
+        std_reward=std_reward,
+        failure_rate=failure_rate,
+        success_rate=success_rate,
+    )
+    record: dict[str, Any] = {
+        "timestep": int(timestep),
+        "update_idx": int(update_idx),
+        "eval_phase": eval_phase,
+        "metrics": metrics,
+    }
+    params_snapshot = _snapshot_actor_policy_params(actor=actor, log_std=log_std)
+    if save_params_to_disk:
+        if eval_params_save_dir is None:
+            raise ValueError("eval_params_save_dir must be provided when save_params_to_disk=True.")
+        params_path = _write_eval_policy_snapshot(
+            params_snapshot=params_snapshot,
+            save_dir=eval_params_save_dir,
+            checkpoint_idx=len(eval_checkpoint_records),
+            eval_phase=eval_phase,
+            timestep=timestep,
+            update_idx=update_idx,
+        )
+        record["params_path"] = str(params_path)
+    else:
+        record["params"] = params_snapshot
+    eval_checkpoint_records.append(record)
+
 def ppo_train(
     env: gym.Env, cfg: PPOConfig, 
     actor_warm_start: nn.Sequential | None = None,
@@ -646,7 +739,11 @@ def ppo_train(
     actor_param_bounds_l: ActorParamBounds | None = None,
     actor_param_bounds_u: ActorParamBounds | None = None,
     early_stop_eval_env: gym.Env | None = None,
-    return_training_data: bool = False
+    return_training_data: bool = False,
+    track_eval_params: bool = False,
+    return_eval_checkpoint_records: bool = False,
+    save_eval_params_to_disk: bool = False,
+    eval_params_save_dir: str | Path | None = None,
 ):
     """
     Train a PPO agent. If actor_param_bounds_l and actor_param_bounds_u are provided,
@@ -666,23 +763,53 @@ def ppo_train(
         early_stop_eval_env: Optional environment for periodic evaluation and early-stopping checks.
             If None, uses the training env. This is useful when training uses reward shaping but
             early-stopping should use the original sparse reward.
-        return_training_data: If True, returns state-action pairs collected during training
+        return_training_data: If True, returns state-action pairs collected during training.
+        track_eval_params: If True, track policy-parameter snapshots only at evaluation checkpoints.
+        return_eval_checkpoint_records: If True, append evaluation checkpoint records to the returned tuple.
+        save_eval_params_to_disk: If True, save eval-checkpoint parameters to disk and store paths in records.
+        eval_params_save_dir: Directory used for per-checkpoint parameter files when
+            save_eval_params_to_disk=True.
         
     Returns:
-        If return_training_data is False: (actor, critic)
-        If return_training_data is True: (actor, critic, training_data)
-            where training_data is a dict containing:
-                - 'states': numpy array of shape (N, obs_dim) containing all states visited
-                - 'actions': numpy array of shape (N,) containing all actions taken
-                - 'terminated': numpy array of shape (N,) containing all termination flags for state-action pairs (1 if terminated, 0 otherwise)
-                - 'truncated': numpy array of shape (N,) containing all truncation flags for state-action pairs (1 if truncated, 0 otherwise)
-                - 'safe': numpy array of shape (N,) containing all safety flags for state-action pairs (1 if safe, 0 if unsafe)
+        Base returns:
+            - Discrete:
+                - without return_training_data: (actor, critic)
+                - with return_training_data: (actor, critic, training_data)
+            - Continuous:
+                - without return_training_data: (actor, critic, log_std)
+                - with return_training_data: (actor, critic, log_std, training_data)
+
+        If return_eval_checkpoint_records=True, appends eval_checkpoint_records as the
+        final return item in the corresponding base return above.
+
+        training_data is a dict containing:
+            - 'states': numpy array of shape (N, obs_dim) containing all states visited
+            - 'actions': numpy array of shape (N,) containing all actions taken
+            - 'terminated': numpy array of shape (N,) containing all termination flags for state-action pairs (1 if terminated, 0 otherwise)
+            - 'truncated': numpy array of shape (N,) containing all truncation flags for state-action pairs (1 if truncated, 0 otherwise)
+            - 'safe': numpy array of shape (N,) containing all safety flags for state-action pairs (1 if safe, 0 if unsafe)
+
+        eval_checkpoint_records is a list of dictionaries with:
+            - 'timestep': global timestep at evaluation
+            - 'update_idx': PPO update index at evaluation
+            - 'eval_phase': one of {'pre_update', 'periodic', 'final'}
+            - 'metrics': dict with mean/std reward and failure/success rates
+            - either 'params' (in-memory snapshot) or 'params_path' (disk path)
     """
     # env_kwargs = cfg.env_kwargs if cfg.env_kwargs is not None else {}
     # env = gym.make(cfg.env_id, **env_kwargs)
     set_seed(env, cfg.seed)
     _warn_if_deprecated_early_stop_settings(cfg)
     early_stop_enabled = _is_early_stop_enabled(cfg)
+    eval_checkpoint_records: list[dict[str, Any]] = []
+    eval_params_dir: Path | None = None
+    if save_eval_params_to_disk:
+        if eval_params_save_dir is None:
+            raise ValueError(
+                "eval_params_save_dir must be provided when save_eval_params_to_disk=True.",
+            )
+        eval_params_dir = Path(eval_params_save_dir)
+        eval_params_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine action space type
     continuous_actions = isinstance(env.action_space, gym.spaces.Box)
@@ -776,6 +903,21 @@ def ppo_train(
             episodes=cfg.eval_episodes,
             deterministic=True,
         ) # type: ignore
+        if track_eval_params:
+            _append_eval_checkpoint_record(
+                eval_checkpoint_records,
+                actor=actor,
+                log_std=log_std,
+                timestep=global_step,
+                update_idx=ppo_update_count,
+                eval_phase="pre_update",
+                mean_reward=mean_r,
+                std_reward=std_r,
+                failure_rate=failure_rate,
+                success_rate=success_rate,
+                save_params_to_disk=save_eval_params_to_disk,
+                eval_params_save_dir=eval_params_dir,
+            )
 
         # If eval reuses training env, restore initial rollout state for reproducibility.
         if eval_env is env:
@@ -966,6 +1108,21 @@ def ppo_train(
                 episodes=cfg.eval_episodes,
                 deterministic=True, # NOTE: eval always uses deterministic policy
             ) # type: ignore
+            if track_eval_params:
+                _append_eval_checkpoint_record(
+                    eval_checkpoint_records,
+                    actor=actor,
+                    log_std=log_std,
+                    timestep=global_step,
+                    update_idx=ppo_update_count,
+                    eval_phase="periodic",
+                    mean_reward=mean_r,
+                    std_reward=std_r,
+                    failure_rate=failure_rate,
+                    success_rate=success_rate,
+                    save_params_to_disk=save_eval_params_to_disk,
+                    eval_params_save_dir=eval_params_dir,
+                )
 
             # When evaluation reuses the training env, reset to recover rollout state.
             if eval_env is env:
@@ -1004,6 +1161,21 @@ def ppo_train(
             episodes=cfg.eval_episodes,
             deterministic=True,
         ) # type: ignore
+        if track_eval_params:
+            _append_eval_checkpoint_record(
+                eval_checkpoint_records,
+                actor=actor,
+                log_std=log_std,
+                timestep=global_step,
+                update_idx=ppo_update_count,
+                eval_phase="final",
+                mean_reward=mean_r,
+                std_reward=std_r,
+                failure_rate=failure_rate,
+                success_rate=success_rate,
+                save_params_to_disk=save_eval_params_to_disk,
+                eval_params_save_dir=eval_params_dir,
+            )
         final_msg = f"Final evaluation over {cfg.eval_episodes} episodes: mean_reward={mean_r:.2f} +/- {std_r:.2f}"
         final_msg += f" | failure_rate={failure_rate:.2f}"
         final_msg += f" | success_rate={success_rate:.2f}"
@@ -1025,14 +1197,17 @@ def ppo_train(
         training_data['safe'] =  np.array(training_data['safe']) # type: ignore
         # training_data['rewards'] = np.array(training_data['rewards']) # type: ignore
         if continuous_actions:
-            return actor, critic, log_std, training_data # type: ignore
+            result = (actor, critic, log_std, training_data)
         else:
-            return actor, critic, training_data # type: ignore
+            result = (actor, critic, training_data)
     else:
         if continuous_actions:
-            return actor, critic, log_std
+            result = (actor, critic, log_std)
         else:
-            return actor, critic
+            result = (actor, critic)
+    if return_eval_checkpoint_records:
+        return (*result, eval_checkpoint_records)
+    return result
 
 
 def ppo_train_maskable(

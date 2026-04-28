@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+import tempfile
 
 import gymnasium as gym
 import numpy as np
@@ -16,6 +18,7 @@ from experiments.utils.ppo_utils import (
     evaluate_masked,
     evaluate_masked_with_success,
     evaluate_with_success,
+    ppo_train,
 )
 
 
@@ -86,6 +89,25 @@ def _make_tiny_actor() -> torch.nn.Sequential:
 
 
 class PpoUtilsTests(unittest.TestCase):
+    @staticmethod
+    def _make_small_ppo_cfg(*, update_epochs: int = 2) -> PPOConfig:
+        return PPOConfig(
+            seed=123,
+            total_timesteps=8,
+            eval_episodes=2,
+            rollout_steps=2,
+            update_epochs=update_epochs,
+            minibatch_size=2,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_coef=0.2,
+            ent_coef=0.0,
+            vf_coef=0.5,
+            lr=1e-3,
+            max_grad_norm=0.5,
+            device="cpu",
+        )
+
     def test_evaluate_with_success_and_backward_compatible_wrapper(self) -> None:
         env = _SingleStepEvalEnv(
             rewards=[1.0, 3.0, 5.0],
@@ -193,6 +215,120 @@ class PpoUtilsTests(unittest.TestCase):
 
         cfg_success = PPOConfig(early_stop=False, early_stop_success_rate_threshold=0.8)
         self.assertTrue(_is_early_stop_enabled(cfg_success))
+
+    def test_ppo_train_default_shape_and_no_eval_records_when_tracking_disabled(self) -> None:
+        env = _SingleStepEvalEnv(
+            rewards=[1.0, 3.0],
+            safe_flags=[True, False],
+            success_flags=[False, True],
+        )
+        cfg = self._make_small_ppo_cfg(update_epochs=3)
+
+        result_default = ppo_train(env=env, cfg=cfg, track_eval_params=False)
+        self.assertIsInstance(result_default, tuple)
+        self.assertEqual(len(result_default), 2)
+
+        env_with_records = _SingleStepEvalEnv(
+            rewards=[1.0, 3.0],
+            safe_flags=[True, False],
+            success_flags=[False, True],
+        )
+        actor, critic, eval_records = ppo_train(
+            env=env_with_records,
+            cfg=cfg,
+            track_eval_params=False,
+            return_eval_checkpoint_records=True,
+        )
+        self.assertIsInstance(actor, torch.nn.Sequential)
+        self.assertIsInstance(critic, torch.nn.Sequential)
+        self.assertEqual(eval_records, [])
+
+    def test_ppo_train_eval_checkpoint_records_memory_mode(self) -> None:
+        env = _SingleStepEvalEnv(
+            rewards=[1.0, 3.0],
+            safe_flags=[True, False],
+            success_flags=[False, True],
+        )
+        cfg = self._make_small_ppo_cfg(update_epochs=4)
+
+        actor, critic, eval_records = ppo_train(
+            env=env,
+            cfg=cfg,
+            track_eval_params=True,
+            return_eval_checkpoint_records=True,
+        )
+
+        del critic
+        self.assertEqual(len(eval_records), 2)  # periodic + final (no pre-update early-stop eval)
+        self.assertEqual([rec["eval_phase"] for rec in eval_records], ["periodic", "final"])
+
+        for rec in eval_records:
+            self.assertIn("timestep", rec)
+            self.assertIn("update_idx", rec)
+            self.assertIn("metrics", rec)
+            self.assertIn("params", rec)
+            self.assertNotIn("params_path", rec)
+            metrics = rec["metrics"]
+            self.assertAlmostEqual(metrics["mean_reward"], 2.0, places=7)
+            self.assertAlmostEqual(metrics["std_reward"], 1.0, places=7)
+            self.assertAlmostEqual(metrics["failure_rate"], 0.5, places=7)
+            self.assertAlmostEqual(metrics["success_rate"], 0.5, places=7)
+            params = rec["params"]
+            self.assertIsInstance(params, dict)
+            self.assertTrue(len(params) > 0)
+            for tensor in params.values():
+                self.assertIsInstance(tensor, torch.Tensor)
+                self.assertEqual(tensor.device.type, "cpu")
+                self.assertFalse(tensor.requires_grad)
+
+        first_snapshot = eval_records[0]["params"]
+        first_key = next(iter(first_snapshot.keys()))
+        snapshot_before = first_snapshot[first_key].clone()
+        with torch.no_grad():
+            next(actor.parameters()).add_(1.0)
+        self.assertTrue(torch.equal(first_snapshot[first_key], snapshot_before))
+        self.assertFalse(torch.equal(first_snapshot[first_key], actor.state_dict()[first_key].detach().cpu()))
+
+    def test_ppo_train_eval_checkpoint_records_disk_mode(self) -> None:
+        env = _SingleStepEvalEnv(
+            rewards=[1.0, 3.0],
+            safe_flags=[True, False],
+            success_flags=[False, True],
+        )
+        cfg = self._make_small_ppo_cfg(update_epochs=4)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            actor, critic, eval_records = ppo_train(
+                env=env,
+                cfg=cfg,
+                track_eval_params=True,
+                return_eval_checkpoint_records=True,
+                save_eval_params_to_disk=True,
+                eval_params_save_dir=tmpdir,
+            )
+
+            del actor, critic
+            self.assertEqual(len(eval_records), 2)
+            saved_paths = []
+            for rec in eval_records:
+                self.assertIn("params_path", rec)
+                self.assertNotIn("params", rec)
+                params_path = Path(rec["params_path"])
+                saved_paths.append(params_path)
+                self.assertTrue(params_path.exists())
+                self.assertEqual(params_path.parent, Path(tmpdir))
+                self.assertAlmostEqual(rec["metrics"]["mean_reward"], 2.0, places=7)
+                self.assertAlmostEqual(rec["metrics"]["std_reward"], 1.0, places=7)
+                self.assertAlmostEqual(rec["metrics"]["failure_rate"], 0.5, places=7)
+                self.assertAlmostEqual(rec["metrics"]["success_rate"], 0.5, places=7)
+                payload = torch.load(params_path, map_location="cpu")
+                self.assertIsInstance(payload, dict)
+                self.assertTrue(len(payload) > 0)
+                self.assertTrue(all(isinstance(v, torch.Tensor) for v in payload.values()))
+                self.assertTrue(all(v.device.type == "cpu" for v in payload.values()))
+
+            self.assertEqual(len(saved_paths), len(set(saved_paths)))
+            self.assertEqual(len(list(Path(tmpdir).glob("*.pt"))), len(eval_records))
 
 
 if __name__ == "__main__":
