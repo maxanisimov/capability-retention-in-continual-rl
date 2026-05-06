@@ -1,0 +1,2 @@
+"""Small FrozenLake safety pipeline."""
+
