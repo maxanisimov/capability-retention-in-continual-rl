@@ -1,0 +1,27 @@
+diagonal_10x10:
+  rashomon:
+    rashomon_n_iters: 10000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_20x20:
+  rashomon:
+    rashomon_n_iters: 50000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_30x30:
+  rashomon:
+    rashomon_n_iters: 500000 # 200,000 gives 0.6 downstream success rate; 100,000 gives 0.5 success rate in downstream
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+
+diagonal_60x60:
+  rashomon:
+    rashomon_n_iters: 200000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100

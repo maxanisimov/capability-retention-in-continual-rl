@@ -1,31 +1,64 @@
-# FrozenLake Scaled (10x10 .. 100x100)
+# FrozenLake Pipeline
 
-This folder contains large diagonal **source** environments and PPO settings that were empirically verified to train a successful policy for each size from `10x10` to `100x100`.
+This pipeline is organized around reusable implementation modules and thin command entrypoints, matching the LunarLander pipeline layout.
 
-## Files
-- `source_envs.yaml`: generated diagonal source maps (`diagonal_10x10` ... `diagonal_100x100`), with `max_episode_steps = 4 * grid_size`.
-- `downstream_envs.yaml`: downstream maps created from source by swapping `F/H`, with holes disallowed next to `S` and `G`.
-- `successful_ppo_settings.yaml`: successful PPO hyperparameters per environment size and evaluation outcomes.
-- `generate_source_envs.py`: regenerates `source_envs.yaml`.
-- `generate_downstream_envs.py`: regenerates `downstream_envs.yaml` from `source_envs.yaml`.
-- `sweep_scaled_ppo.py`: reruns the training sweep and rewrites `successful_ppo_settings.yaml`.
-- `train_policy_and_plot.py`: trains one selected layout from the stored config and saves the policy trajectory plot.
-- `evaluate_post_hoc.py`: evaluates saved source/downstream policies for a selected layout and seed, writes `post_hoc_eval.yaml`, and saves one trajectory figure per evaluated `(policy, environment)` pair.
+## `core/` vs `cli/`
 
-## Notes
-- All successful settings were validated with deterministic raw-environment evaluation (`20` episodes, mean reward `1.0`).
-- Training uses:
-  - coordinate observations (`row`, `col`, `task`), and
-  - dense reward shaping during training only.
-- Final success is measured on the original sparse-reward environment (no reward shaping).
+- `core/`: implementation modules for environment construction, training/adaptation, evaluation, analysis, and orchestration.
+- `cli/`: thin command entrypoints for direct script execution.
+- Top-level legacy scripts, such as `train_source_policy.py`, remain compatibility wrappers.
 
-## Reproduce
+## Canonical Settings Locations
+
+- Task pipelines: `settings/tasks/task_pipelines.yaml`
+- Task definitions: `settings/tasks/task_definitions.yaml`
+- Source environment maps: `settings/tasks/source_envs.yaml`
+- Downstream environment maps: `settings/tasks/downstream_envs.yaml`
+- Source training settings: `settings/source/train_source_policy_settings.yaml`
+- Adaptation settings (PPO): `settings/adaptation/ppo.yaml`
+- Adaptation settings (EWC): `settings/adaptation/ewc.yaml`
+- Adaptation settings (Rashomon): `settings/adaptation/rashomon.yaml`
+
+Legacy settings filenames in `settings/` are preserved as symlink shims.
+
+## Preferred Run Commands
+
+Run from repository root.
+
+Single source run:
+
 ```bash
-python experiments/pipelines/frozenlake_scaled/generate_source_envs.py
-python experiments/pipelines/frozenlake_scaled/generate_downstream_envs.py
-python experiments/pipelines/frozenlake_scaled/sweep_scaled_ppo.py --seed 0
-python experiments/pipelines/frozenlake_scaled/train_policy_and_plot.py --layout diagonal_30x30 --seed 0
-python experiments/pipelines/frozenlake_scaled/evaluate_post_hoc.py --layout diagonal_30x30 --seed 0 --policies both --eval-mode matching --episodes 1
-# Optional ablation: --activation relu (default is --activation tanh)
-# Optional speed-up: add --skip-plots to skip trajectory figure generation.
+python experiments/pipelines/frozenlake/run_experiment.py \
+  --mode source \
+  --pipeline diagonal_30x30 \
+  --seed 0
 ```
+
+Single downstream run:
+
+```bash
+python experiments/pipelines/frozenlake/run_experiment.py \
+  --mode downstream_ewc \
+  --pipeline diagonal_30x30 \
+  --seed 0
+```
+
+Generic multi-seed launcher:
+
+```bash
+python experiments/pipelines/frozenlake/cli/launch_multi_seed.py \
+  --mode downstream_ewc \
+  --pipeline diagonal_30x30 \
+  --seeds 0 1 2 3
+```
+
+Full source-plus-downstream launcher:
+
+```bash
+python experiments/pipelines/frozenlake/cli/launch_full_pipeline_multi_seed.py \
+  --pipeline diagonal_30x30 \
+  --seeds 0 1 2 3
+```
+
+`--pipeline` and `--layout` are aliases. New runs default to `artifacts/runs`; readers and launchers still resolve existing `outputs/` runs and legacy `source` policy directories.
+
