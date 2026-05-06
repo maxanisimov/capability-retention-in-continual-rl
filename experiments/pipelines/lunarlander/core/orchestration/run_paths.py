@@ -5,6 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
+NOADAPT_POLICY_SUBDIR = "noadapt"
+LEGACY_SOURCE_POLICY_SUBDIR = "source"
+
+
 def pipeline_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -46,7 +50,15 @@ def default_outputs_root() -> Path:
 
 
 def default_task_settings_file() -> Path:
-    return settings_root() / "tasks" / "task_settings.yaml"
+    return default_task_pipelines_file()
+
+
+def default_task_pipelines_file() -> Path:
+    return settings_root() / "tasks" / "task_pipelines.yaml"
+
+
+def default_task_definitions_file() -> Path:
+    return settings_root() / "tasks" / "task_definitions.yaml"
 
 
 def default_train_source_settings_file() -> Path:
@@ -69,24 +81,42 @@ def seed_run_dir(outputs_root: Path, task_setting: str, seed: int) -> Path:
     return outputs_root / task_setting / f"seed_{seed}"
 
 
+def _policy_subdir_candidates(policy_subdir: str) -> tuple[str, ...]:
+    if policy_subdir in {NOADAPT_POLICY_SUBDIR, LEGACY_SOURCE_POLICY_SUBDIR}:
+        return (NOADAPT_POLICY_SUBDIR, LEGACY_SOURCE_POLICY_SUBDIR)
+    return (policy_subdir,)
+
+
 def resolve_default_source_run_dir(outputs_root: Path, task_setting: str, seed: int) -> Path:
     """Prefer new layout; fall back to legacy layout if needed."""
-    preferred = seed_run_dir(outputs_root, task_setting, seed) / "source"
-    legacy = outputs_root / f"seed_{seed}" / "source"
-    if preferred.exists():
-        return preferred
-    if legacy.exists():
-        return legacy
+    preferred_candidates = [
+        seed_run_dir(outputs_root, task_setting, seed) / subdir
+        for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
+    ]
+    legacy_candidates = [
+        (outputs_root / f"seed_{seed}") / subdir
+        for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
+    ]
+
+    for candidate in [*preferred_candidates, *legacy_candidates]:
+        if candidate.exists():
+            return candidate
 
     global_legacy_root = legacy_outputs_root()
     if outputs_root != global_legacy_root:
-        global_legacy = seed_run_dir(global_legacy_root, task_setting, seed) / "source"
-        global_flat_legacy = global_legacy_root / f"seed_{seed}" / "source"
-        if global_legacy.exists():
-            return global_legacy
-        if global_flat_legacy.exists():
-            return global_flat_legacy
-    return legacy
+        global_candidates = [
+            seed_run_dir(global_legacy_root, task_setting, seed) / subdir
+            for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
+        ] + [
+            (global_legacy_root / f"seed_{seed}") / subdir
+            for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
+        ]
+        for candidate in global_candidates:
+            if candidate.exists():
+                return candidate
+
+    # Default to the canonical new location for fresh runs.
+    return seed_run_dir(outputs_root, task_setting, seed) / NOADAPT_POLICY_SUBDIR
 
 
 def resolve_policy_dir(
@@ -96,19 +126,31 @@ def resolve_policy_dir(
     policy_subdir: str,
 ) -> Path:
     """Prefer new layout; fall back to legacy layout if needed."""
-    preferred = outputs_root / train_task_setting / f"seed_{train_seed}" / policy_subdir
-    legacy = outputs_root / f"seed_{train_seed}" / policy_subdir
-    if preferred.exists():
-        return preferred
-    if legacy.exists():
-        return legacy
+    candidate_subdirs = _policy_subdir_candidates(policy_subdir)
+
+    preferred_candidates = [
+        outputs_root / train_task_setting / f"seed_{train_seed}" / subdir
+        for subdir in candidate_subdirs
+    ]
+    legacy_candidates = [
+        outputs_root / f"seed_{train_seed}" / subdir
+        for subdir in candidate_subdirs
+    ]
+    for candidate in [*preferred_candidates, *legacy_candidates]:
+        if candidate.exists():
+            return candidate
 
     global_legacy_root = legacy_outputs_root()
     if outputs_root != global_legacy_root:
-        global_legacy = global_legacy_root / train_task_setting / f"seed_{train_seed}" / policy_subdir
-        global_flat_legacy = global_legacy_root / f"seed_{train_seed}" / policy_subdir
-        if global_legacy.exists():
-            return global_legacy
-        if global_flat_legacy.exists():
-            return global_flat_legacy
-    return legacy
+        global_candidates = [
+            global_legacy_root / train_task_setting / f"seed_{train_seed}" / subdir
+            for subdir in candidate_subdirs
+        ] + [
+            global_legacy_root / f"seed_{train_seed}" / subdir
+            for subdir in candidate_subdirs
+        ]
+        for candidate in global_candidates:
+            if candidate.exists():
+                return candidate
+
+    return outputs_root / train_task_setting / f"seed_{train_seed}" / candidate_subdirs[0]

@@ -36,12 +36,20 @@ from experiments.pipelines.lunarlander.core.env.task_loading import (
     resolve_lunarlander_dynamics as _resolve_lunarlander_dynamics,
 )
 from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
+    NOADAPT_POLICY_SUBDIR,
     default_outputs_root,
     default_task_settings_file,
     seed_run_dir,
 )
 from experiments.utils.gymnasium_utils import plot_multi_episode_frames
-from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
+from experiments.utils.ppo_utils import PPOConfig, evaluate_with_success, ppo_train
+
+
+def _policy_subdir_for_task_role(task_role: str) -> str:
+    if task_role == "source":
+        return NOADAPT_POLICY_SUBDIR
+    return task_role
+
 
 def build_actor_critic(obs_dim: int, n_actions: int, hidden_size: int) -> tuple[torch.nn.Sequential, torch.nn.Sequential]:
     """Build MLP actor/critic with ReLU hidden activations."""
@@ -176,14 +184,16 @@ def main() -> None:
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Task settings YAML defining source/downstream env variants.",
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
-        "--task-setting",
+        "--pipeline",
         type=str,
+        dest="task_setting",
         default="default",
-        help="Task-setting key to read from --task-settings-file.",
+        help="Pipeline key to read from --task-settings-file.",
     )
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument(
         "--task-role",
         type=str,
@@ -197,12 +207,6 @@ def main() -> None:
         type=float,
         default=None,
         help="Override gravity. If omitted, uses task setting gravity; if that is null, uses Gym default.",
-    )
-    parser.add_argument(
-        "--task-id",
-        type=float,
-        default=None,
-        help="Task id appended to observations when --append-task-id is enabled.",
     )
     parser.add_argument(
         "--append-task-id",
@@ -236,17 +240,10 @@ def main() -> None:
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument(
-        "--early-stop",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable early stopping on periodic evaluation (default: enabled).",
-    )
     parser.add_argument("--early-stop-min-steps", type=int, default=0)
     parser.add_argument("--early-stop-reward-threshold", type=float, default=200.0)
     parser.add_argument("--early-stop-failure-rate-threshold", type=float, default=None)
-    parser.add_argument("--early-stop-deterministic-total-reward-threshold", type=float, default=None)
-    parser.add_argument("--early-stop-deterministic-eval-episodes", type=int, default=10)
+    parser.add_argument("--early-stop-success-rate-threshold", type=float, default=None)
     parser.add_argument(
         "--trajectory-episodes",
         type=int,
@@ -278,12 +275,17 @@ def main() -> None:
     if continuous:
         raise ValueError("This script only supports discrete actions (`continuous=False`).")
     default_task_id = 0.0 if args.task_role == "source" else 1.0
-    task_id = float(args.task_id) if args.task_id is not None else float(task_settings.get("task_id", default_task_id))
+    task_id = float(task_settings.get("task_id", default_task_id))
     append_task_id = (
         bool(args.append_task_id)
         if args.append_task_id is not None
         else bool(task_settings.get("append_task_id", True))
     )
+    task_pipelines_file = str(task_settings.get("_task_pipelines_file") or args.task_settings_file)
+    task_definitions_file_raw = task_settings.get("_task_definitions_file")
+    task_definitions_file = None if task_definitions_file_raw is None else str(task_definitions_file_raw)
+    resolved_pipeline_name = task_settings.get("_resolved_pipeline_name")
+    resolved_definition_name = task_settings.get("_resolved_definition_name")
     dynamics_cfg = _resolve_lunarlander_dynamics(
         task_settings,
         cfg_name=f"task_settings[{args.task_setting}:{args.task_role}]",
@@ -342,15 +344,17 @@ def main() -> None:
         lr=args.lr,
         max_grad_norm=args.max_grad_norm,
         device=args.device,
-        early_stop=args.early_stop,
         early_stop_min_steps=args.early_stop_min_steps,
         early_stop_reward_threshold=args.early_stop_reward_threshold,
         early_stop_failure_rate_threshold=args.early_stop_failure_rate_threshold,
-        early_stop_deterministic_total_reward_threshold=args.early_stop_deterministic_total_reward_threshold,
-        early_stop_deterministic_eval_episodes=args.early_stop_deterministic_eval_episodes,
+        early_stop_success_rate_threshold=args.early_stop_success_rate_threshold,
     )
 
-    print(f"Training {args.task_role} policy on {env_id} (discrete) | seed={args.seed} | device={args.device}")
+    policy_subdir = _policy_subdir_for_task_role(args.task_role)
+    print(
+        f"Training {policy_subdir} policy on {env_id} (discrete) | "
+        f"seed={args.seed} | device={args.device}"
+    )
     print(
         "  "
         f"gravity={gravity_value} | task_id={task_id} | append_task_id={append_task_id} | "
@@ -383,7 +387,7 @@ def main() -> None:
         render_mode=None,
         **env_kwargs,
     )
-    mean_reward, std_reward, failure_rate = evaluate(
+    mean_reward, std_reward, failure_rate, success_rate = evaluate_with_success(
         env=eval_env,
         actor=actor,
         episodes=args.eval_episodes_post_training,
@@ -401,9 +405,10 @@ def main() -> None:
     downstream_mean_reward: float | None = None
     downstream_std_reward: float | None = None
     downstream_failure_rate: float | None = None
+    downstream_success_rate: float | None = None
 
     run_dir = seed_run_dir(args.output_dir, args.task_setting, args.seed)
-    task_dir = run_dir / args.task_role
+    task_dir = run_dir / policy_subdir
     task_dir.mkdir(parents=True, exist_ok=True)
 
     actor_path = task_dir / "actor.pt"
@@ -433,6 +438,7 @@ def main() -> None:
     trajectory_downstream_plot_path: Path | None = None
     if args.task_role == "source":
         downstream_task_settings = _load_task_settings(args.task_settings_file, args.task_setting, "downstream")
+        downstream_resolved_definition_name = downstream_task_settings.get("_resolved_definition_name")
         downstream_eval_env_id = str(args.env_id or downstream_task_settings.get("env_id") or env_id)
         downstream_gravity_raw = downstream_task_settings.get("gravity")
         downstream_eval_gravity = None if downstream_gravity_raw is None else float(downstream_gravity_raw)
@@ -474,7 +480,12 @@ def main() -> None:
             render_mode=None,
             **downstream_eval_kwargs,
         )
-        downstream_mean_reward, downstream_std_reward, downstream_failure_rate = evaluate(
+        (
+            downstream_mean_reward,
+            downstream_std_reward,
+            downstream_failure_rate,
+            downstream_success_rate,
+        ) = evaluate_with_success(
             env=downstream_eval_env,
             actor=actor,
             episodes=args.eval_episodes_post_training,
@@ -526,8 +537,18 @@ def main() -> None:
         "mark_out_of_viewport_as_unsafe": bool(dynamics_cfg["mark_out_of_viewport_as_unsafe"]),
         "task_setting": args.task_setting,
         "task_settings_file": str(args.task_settings_file),
+        "policy_name": policy_subdir,
+        "task_pipelines_file": task_pipelines_file,
+        "task_definitions_file": task_definitions_file,
+        "resolved_pipeline_name": resolved_pipeline_name,
+        "resolved_source_definition_name": resolved_definition_name if args.task_role == "source" else None,
+        "resolved_downstream_definition_name": (
+            downstream_resolved_definition_name
+            if args.task_role == "source"
+            else resolved_definition_name
+        ),
         "seed": int(args.seed),
-        "policy_type": f"{args.task_role}_only",
+        "policy_type": "noadapt_only" if args.task_role == "source" else f"{args.task_role}_only",
         "algorithm": "ppo",
         "action_space": "discrete",
         "activation": "relu",
@@ -546,7 +567,6 @@ def main() -> None:
         "vf_coef": float(args.vf_coef),
         "lr": float(args.lr),
         "max_grad_norm": float(args.max_grad_norm),
-        "early_stop": bool(args.early_stop),
         "early_stop_min_steps": int(args.early_stop_min_steps),
         "early_stop_reward_threshold": (
             float(args.early_stop_reward_threshold) if args.early_stop_reward_threshold is not None else None
@@ -556,12 +576,11 @@ def main() -> None:
             if args.early_stop_failure_rate_threshold is not None
             else None
         ),
-        "early_stop_deterministic_total_reward_threshold": (
-            float(args.early_stop_deterministic_total_reward_threshold)
-            if args.early_stop_deterministic_total_reward_threshold is not None
+        "early_stop_success_rate_threshold": (
+            float(args.early_stop_success_rate_threshold)
+            if args.early_stop_success_rate_threshold is not None
             else None
         ),
-        "early_stop_deterministic_eval_episodes": int(args.early_stop_deterministic_eval_episodes),
         "trajectory_episodes": int(args.trajectory_episodes),
         "trajectory_max_frames_per_episode": int(args.trajectory_max_frames_per_episode),
         "downstream_eval_env_id": downstream_eval_env_id,
@@ -574,6 +593,7 @@ def main() -> None:
         f"{args.task_role}_mean_reward": float(mean_reward),
         f"{args.task_role}_std_reward": float(std_reward),
         f"{args.task_role}_failure_rate": float(failure_rate),
+        f"{args.task_role}_success_rate": float(success_rate),
         "downstream_eval_performed": bool(downstream_eval_performed),
     }
     if downstream_eval_performed:
@@ -582,6 +602,7 @@ def main() -> None:
                 "downstream_mean_reward": float(downstream_mean_reward),
                 "downstream_std_reward": float(downstream_std_reward),
                 "downstream_failure_rate": float(downstream_failure_rate),
+                "downstream_success_rate": float(downstream_success_rate),
             },
         )
     artifacts = {
@@ -604,12 +625,15 @@ def main() -> None:
 
     print(
         f"{args.task_role.capitalize()} eval over {args.eval_episodes_post_training} episodes: "
-        f"mean_reward={mean_reward:.2f} +/- {std_reward:.2f}",
+        f"mean_reward={mean_reward:.2f} +/- {std_reward:.2f}, "
+        f"failure_rate={failure_rate:.3f}, success_rate={success_rate:.3f}",
     )
     if downstream_eval_performed:
         print(
             f"Downstream eval over {args.eval_episodes_post_training} episodes: "
-            f"mean_reward={float(downstream_mean_reward):.2f} +/- {float(downstream_std_reward):.2f}",
+            f"mean_reward={float(downstream_mean_reward):.2f} +/- {float(downstream_std_reward):.2f}, "
+            f"failure_rate={float(downstream_failure_rate):.3f}, "
+            f"success_rate={float(downstream_success_rate):.3f}",
         )
     print(f"Saved actor: {actor_path}")
     print(f"Saved critic: {critic_path}")

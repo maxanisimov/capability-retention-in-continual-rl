@@ -1,7 +1,13 @@
 """Run full LunarLander pipeline across seeds with dependency-aware scheduling.
 
 Pipeline per seed:
-  source -> {downstream_unconstrained, downstream_ewc, downstream_rashomon}
+  source -> {
+    downstream_unconstrained,
+    downstream_ewc,
+    downstream_rashomon,
+    downstream_rashomon_expanded,
+    downstream_rashomon_plus,
+  }
 
 This launcher uses one global CPU-core pool and can overlap downstream jobs for
 completed seeds while other seeds are still training source policies.
@@ -22,11 +28,13 @@ from typing import TextIO
 import yaml
 
 from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
+    NOADAPT_POLICY_SUBDIR,
     default_adapt_ewc_settings_file,
     default_adapt_ppo_settings_file,
     default_outputs_root,
     default_task_settings_file,
     pipeline_root,
+    resolve_default_source_run_dir,
     seed_run_dir,
 )
 
@@ -36,6 +44,8 @@ DOWNSTREAM_MODES = (
     "downstream_unconstrained",
     "downstream_ewc",
     "downstream_rashomon",
+    "downstream_rashomon_expanded",
+    "downstream_rashomon_plus",
 )
 ALL_MODES = (SOURCE_MODE, *DOWNSTREAM_MODES)
 
@@ -44,12 +54,16 @@ MODE_TO_CLI = {
     "downstream_unconstrained": "adapt_unconstrained.py",
     "downstream_ewc": "adapt_ewc.py",
     "downstream_rashomon": "adapt_rashomon.py",
+    "downstream_rashomon_expanded": "adapt_rashomon_expanded.py",
+    "downstream_rashomon_plus": "adapt_rashomon_plus.py",
 }
 
 MODE_TO_DEFAULT_RUN_SUBDIR = {
     "downstream_unconstrained": "downstream_unconstrained",
     "downstream_ewc": "downstream_ewc",
     "downstream_rashomon": "downstream_rashomon",
+    "downstream_rashomon_expanded": "downstream_rashomon_expanded",
+    "downstream_rashomon_plus": "downstream_rashomon_plus",
 }
 
 MODE_TO_REQUIRED_ARTIFACTS = {
@@ -64,6 +78,31 @@ MODE_TO_REQUIRED_ARTIFACTS = {
         "rashomon_dataset.pt",
         "rashomon_bounded_model.pt",
         "rashomon_param_bounds.pt",
+        "rashomon_rollout_stats.yaml",
+    ),
+    "downstream_rashomon_expanded": (
+        "actor.pt",
+        "critic.pt",
+        "training_data.pt",
+        "run_summary.yaml",
+        "rashomon_dataset.pt",
+        "rashomon_bounded_model.pt",
+        "rashomon_param_bounds.pt",
+        "rashomon_union_interval_param_bounds.pt",
+        "rashomon_rollout_stats.yaml",
+    ),
+    "downstream_rashomon_plus": (
+        "actor.pt",
+        "critic.pt",
+        "training_data.pt",
+        "run_summary.yaml",
+        "rashomon_dataset.pt",
+        "rashomon_bounded_model.pt",
+        "rashomon_param_bounds.pt",
+        "second_rashomon_bounded_model.pt",
+        "second_rashomon_param_bounds.pt",
+        "rashomon_union_interval_param_bounds.pt",
+        "sampled_reference_actor.pt",
         "rashomon_rollout_stats.yaml",
     ),
 }
@@ -133,17 +172,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "multiple seeds with dependency-aware scheduling and CPU pinning."
         ),
     )
-    parser.add_argument(
-        "--task-setting",
-        type=str,
-        default="default",
-        help="Task-setting name from task_settings.yaml.",
-    )
+    parser.add_argument("--pipeline", type=str, dest="task_setting", default="default", help="Pipeline name.")
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument(
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Path to LunarLander task settings YAML.",
+        help="Path to task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--adapt-settings-file",
@@ -193,7 +228,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Base log directory for this launcher. Defaults to "
-            "<outputs-root>/<task-setting>/multi_seed_logs/full_pipeline."
+            "<outputs-root>/<pipeline>/multi_seed_logs/full_pipeline."
         ),
     )
     parser.add_argument(
@@ -243,13 +278,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--aggregate-task-setting",
+        "--aggregate-pipeline",
         type=str,
+        dest="aggregate_task_setting",
         default=None,
         help=(
-            "Task setting passed to aggregate_layout_metrics.py. "
-            "Defaults to --task-setting when omitted."
+            "Pipeline passed to aggregate_layout_metrics.py. "
+            "Defaults to --pipeline when omitted."
         ),
+    )
+    parser.add_argument(
+        "--aggregate-task-setting",
+        type=str,
+        dest="aggregate_task_setting",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)
 
@@ -277,18 +319,40 @@ def _worker_script(mode: str) -> Path:
 def _job_output_dir(outputs_root: Path, task_setting: str, seed: int, mode: str) -> Path:
     root = seed_run_dir(outputs_root, task_setting, seed)
     if mode == SOURCE_MODE:
-        return root / "source"
+        return root / NOADAPT_POLICY_SUBDIR
     return root / MODE_TO_DEFAULT_RUN_SUBDIR[mode]
 
 
+def _job_output_dir_candidates(outputs_root: Path, task_setting: str, seed: int, mode: str) -> list[Path]:
+    canonical = _job_output_dir(outputs_root, task_setting, seed, mode)
+    if mode != SOURCE_MODE:
+        return [canonical]
+    legacy = seed_run_dir(outputs_root, task_setting, seed) / "source"
+    if legacy == canonical:
+        return [canonical]
+    return [canonical, legacy]
+
+
 def _job_log_path(log_root: Path, seed: int, mode: str) -> Path:
-    return log_root / mode / f"seed_{seed}.log"
+    mode_dir = NOADAPT_POLICY_SUBDIR if mode == SOURCE_MODE else mode
+    return log_root / mode_dir / f"seed_{seed}.log"
+
+
+def _infer_task_definitions_file(task_settings_file: Path) -> Path | None:
+    if task_settings_file.name == "task_pipelines.yaml":
+        return task_settings_file.with_name("task_definitions.yaml")
+    candidate = task_settings_file.parent / "task_definitions.yaml"
+    if candidate.exists():
+        return candidate
+    return None
 
 
 def _is_job_complete(outputs_root: Path, task_setting: str, seed: int, mode: str) -> bool:
-    job_dir = _job_output_dir(outputs_root, task_setting, seed, mode)
     required = MODE_TO_REQUIRED_ARTIFACTS[mode]
-    return all((job_dir / artifact).exists() for artifact in required)
+    for job_dir in _job_output_dir_candidates(outputs_root, task_setting, seed, mode):
+        if all((job_dir / artifact).exists() for artifact in required):
+            return True
+    return False
 
 
 def _build_worker_cmd(args: argparse.Namespace, *, seed: int, mode: str) -> list[str]:
@@ -301,7 +365,7 @@ def _build_worker_cmd(args: argparse.Namespace, *, seed: int, mode: str) -> list
                 str(seed),
                 "--task-role",
                 "source",
-                "--task-setting",
+                "--pipeline",
                 str(args.task_setting),
                 "--task-settings-file",
                 str(args.task_settings_file),
@@ -315,7 +379,7 @@ def _build_worker_cmd(args: argparse.Namespace, *, seed: int, mode: str) -> list
 
     cmd.extend(
         [
-            "--task-setting",
+            "--pipeline",
             str(args.task_setting),
             "--seed",
             str(seed),
@@ -326,7 +390,7 @@ def _build_worker_cmd(args: argparse.Namespace, *, seed: int, mode: str) -> list
             "--outputs-root",
             str(args.outputs_root),
             "--source-run-dir",
-            str(_job_output_dir(args.outputs_root, args.task_setting, seed, SOURCE_MODE)),
+            str(resolve_default_source_run_dir(args.outputs_root, args.task_setting, seed)),
         ],
     )
     if mode in {"downstream_unconstrained", "downstream_ewc"}:
@@ -535,7 +599,7 @@ def _run_aggregate_metrics(args: argparse.Namespace) -> bool:
     cmd = [
         sys.executable,
         str(pipeline_root() / "cli" / "aggregate_layout_metrics.py"),
-        "--task-setting",
+        "--pipeline",
         str(task_setting),
         "--outputs-root",
         str(args.outputs_root),
@@ -591,10 +655,17 @@ def _finalize_running_job(job: Job, *, return_code: int) -> None:
 
 
 def _summarize_to_yaml(*, jobs: dict[str, Job], summary_path: Path, args: argparse.Namespace) -> None:
+    task_definitions_file = _infer_task_definitions_file(Path(args.task_settings_file))
     payload = {
         "run_settings": {
             "task_setting": str(args.task_setting),
             "task_settings_file": str(args.task_settings_file),
+            "task_pipelines_file": str(args.task_settings_file),
+            "task_definitions_file": (
+                str(task_definitions_file)
+                if task_definitions_file is not None
+                else None
+            ),
             "adapt_settings_file": str(args.adapt_settings_file),
             "ewc_settings_file": str(args.ewc_settings_file),
             "outputs_root": str(args.outputs_root),

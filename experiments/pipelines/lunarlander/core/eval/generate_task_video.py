@@ -21,6 +21,7 @@ from experiments.pipelines.lunarlander.core.eval.rollout_video import (
     _write_video,
 )
 from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
+    NOADAPT_POLICY_SUBDIR,
     default_outputs_root,
     default_task_settings_file,
     resolve_policy_dir,
@@ -89,6 +90,8 @@ def _resolve_actor_checkpoint(
     seed: int,
 ) -> tuple[Path | None, str]:
     policy_label = policy.strip()
+    if policy_label == "source":
+        policy_label = NOADAPT_POLICY_SUBDIR
     if policy_label.lower() == "random":
         return None, "random"
 
@@ -197,7 +200,14 @@ def main() -> None:
             "using a random policy (default) or a trained policy."
         ),
     )
-    parser.add_argument("--task-setting", type=str, required=True, help="Task-setting name in task_settings.yaml.")
+    parser.add_argument(
+        "--pipeline",
+        type=str,
+        dest="task_setting",
+        required=True,
+        help="Pipeline name, or task definition key when used with --task-role.",
+    )
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument(
         "--task-role",
         type=str,
@@ -211,7 +221,7 @@ def main() -> None:
         default="random",
         help=(
             "Policy identifier. Use 'random' (default), a policy subdir name under "
-            "outputs/<task-setting>/seed_<seed>/, or an explicit actor/policy path."
+            "outputs/<pipeline>/seed_<seed>/, or an explicit actor/policy path."
         ),
     )
     parser.add_argument("--seed", type=int, default=0, help="Rollout seed.")
@@ -226,7 +236,7 @@ def main() -> None:
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Task settings YAML path.",
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device for policy inference.")
     parser.add_argument(
@@ -330,4 +340,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

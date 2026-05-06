@@ -16,3 +16,9 @@ deterministic__default_to_twitchy_vehicle:
     env: deterministic__default
   downstream:
     env: deterministic__twitchy_vehicle
+deterministic__default_to_stochastic__default:
+  append_task_id: true
+  source:
+    env: deterministic__default
+  downstream:
+    env: default

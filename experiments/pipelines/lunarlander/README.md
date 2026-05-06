@@ -10,13 +10,15 @@ This pipeline is organized around a separation between reusable implementation c
 
 ## Canonical Settings Locations
 
-- Task definitions: `settings/tasks/task_settings.yaml`
+- Task definitions: `settings/tasks/task_definitions.yaml`
+- Task pipelines (source/downstream pairing + `append_task_id`): `settings/tasks/task_pipelines.yaml`
 - Source training settings: `settings/source/train_source_policy_settings.yaml`
 - Adaptation settings (PPO): `settings/adaptation/ppo.yaml`
 - Adaptation settings (EWC): `settings/adaptation/ewc.yaml`
 - Adaptation settings (Rashomon): `settings/adaptation/rashomon.yaml`
 
 Note: legacy settings filenames in `settings/` are preserved as symlink shims for backward compatibility.
+For all methods, task IDs are role-fixed (`source=0`, `downstream=1`) and no longer configured per-setting.
 
 ## Preferred Run Commands
 
@@ -27,7 +29,7 @@ Single run by mode:
 ```bash
 python experiments/pipelines/lunarlander/run_experiment.py \
   --mode source \
-  --task-setting default \
+  --pipeline default \
   --seed 0
 ```
 
@@ -36,7 +38,7 @@ Downstream adaptation (example):
 ```bash
 python experiments/pipelines/lunarlander/run_experiment.py \
   --mode downstream_unconstrained \
-  --task-setting default \
+  --pipeline default \
   --seed 0
 ```
 
@@ -45,9 +47,20 @@ Multi-seed launcher (generic):
 ```bash
 python experiments/pipelines/lunarlander/cli/launch_multi_seed.py \
   --mode downstream_ewc \
-  --task-setting default \
+  --pipeline default \
   --seeds 0 1 2 3
 ```
+
+Full pipeline multi-seed launcher (dependency-aware):
+
+```bash
+python experiments/pipelines/lunarlander/cli/launch_full_pipeline_multi_seed.py \
+  --pipeline default \
+  --seeds 0 1 2 3
+```
+
+By default, this full-pipeline launcher runs `aggregate_layout_metrics.py` at the end
+for the selected task setting. Use `--no-aggregate-metrics` to disable that step.
 
 Optional dry run to inspect resolved command:
 

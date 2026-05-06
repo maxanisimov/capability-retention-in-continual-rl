@@ -11,7 +11,7 @@ deterministic__default_to_twitchy_vehicle:
 deterministic__default_to_sluggish_vehicle:
   rashomon:
     rashomon_rollouts: 1
-    rashomon_n_iters: 1000 # More iterations so far lead to worse downstream performance 
+    rashomon_n_iters: 20000
     rashomon_min_hard_spec: 1.0
     rashomon_surrogate_aggregation: min
     inverse_temp_start: 10

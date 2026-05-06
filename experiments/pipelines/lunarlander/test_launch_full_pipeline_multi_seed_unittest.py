@@ -126,6 +126,8 @@ class LaunchFullPipelineResumeTests(unittest.TestCase):
             self.assertEqual(jobs["downstream_unconstrained:0"].state, fp.JOB_SKIPPED)
             self.assertEqual(jobs["downstream_ewc:0"].state, fp.JOB_SKIPPED)
             self.assertEqual(jobs["downstream_rashomon:0"].state, fp.JOB_READY)
+            self.assertEqual(jobs["downstream_rashomon_expanded:0"].state, fp.JOB_READY)
+            self.assertEqual(jobs["downstream_rashomon_plus:0"].state, fp.JOB_READY)
 
 
 class LaunchFullPipelineIntegrationTests(unittest.TestCase):
@@ -136,7 +138,7 @@ class LaunchFullPipelineIntegrationTests(unittest.TestCase):
                 with patch.object(fp.subprocess, "run") as aggregate_run:
                     rc = fp.main(
                         [
-                            "--task-setting",
+                            "--pipeline",
                             "dryrun_case",
                             "--outputs-root",
                             str(outputs_root),
@@ -158,7 +160,7 @@ class LaunchFullPipelineIntegrationTests(unittest.TestCase):
             self.assertTrue(summary_path.exists())
             summary = yaml.safe_load(summary_path.read_text(encoding="utf-8")) or {}
             jobs = summary.get("jobs", [])
-            self.assertEqual(len(jobs), 8)
+            self.assertEqual(len(jobs), 12)
             self.assertTrue(all(j["state"] == fp.JOB_SUCCEEDED for j in jobs))
 
     def test_main_smoke_non_dry_with_mocked_processes(self) -> None:
@@ -177,7 +179,7 @@ class LaunchFullPipelineIntegrationTests(unittest.TestCase):
                     ) as aggregate_run:
                         rc = fp.main(
                             [
-                                "--task-setting",
+                                "--pipeline",
                                 "smoke_case",
                                 "--outputs-root",
                                 str(outputs_root),
@@ -197,7 +199,7 @@ class LaunchFullPipelineIntegrationTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             log_root = outputs_root / "smoke_case" / "multi_seed_logs" / "full_pipeline"
             for mode in fp.ALL_MODES:
-                self.assertTrue((log_root / mode / "seed_0.log").exists())
+                self.assertTrue(fp._job_log_path(log_root, 0, mode).exists())
             summary_path = log_root / "summary.yaml"
             self.assertTrue(summary_path.exists())
 

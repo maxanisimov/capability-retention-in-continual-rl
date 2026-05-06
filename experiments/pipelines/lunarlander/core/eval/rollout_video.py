@@ -87,7 +87,7 @@ def _infer_default_role(policy_dir: Path, run_settings: dict[str, Any]) -> str:
     if isinstance(run_settings.get("task_role"), str):
         return str(run_settings["task_role"])
     folder_name = policy_dir.name
-    if folder_name == "source":
+    if folder_name in {"source", "noadapt"}:
         return "source"
     return "downstream"
 
@@ -293,7 +293,7 @@ def main() -> None:
         "--env-setting",
         type=str,
         default=None,
-        help="Optional task-setting name from task_settings.yaml to override run-summary env config.",
+        help="Optional task pipeline or task definition key to override run-summary env config.",
     )
     parser.add_argument(
         "--env-role",
@@ -306,7 +306,7 @@ def main() -> None:
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Task settings YAML file used when --env-setting is provided.",
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument("--seed", type=int, default=0, help="Initial rollout seed.")
     parser.add_argument("--episodes", type=int, default=1, help="Number of episodes to record in one video.")

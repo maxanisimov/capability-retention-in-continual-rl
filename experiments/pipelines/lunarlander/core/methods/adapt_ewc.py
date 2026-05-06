@@ -1,4 +1,4 @@
-"""Adapt source LunarLander policy to downstream task via EWC-PPO."""
+"""Adapt a NoAdapt LunarLander policy to downstream task via EWC-PPO."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
     seed_run_dir as _seed_run_dir,
 )
 from experiments.utils.ewc_ppo import EWCPPOConfig, compute_ewc_state, ewc_ppo_train
-from experiments.utils.ppo_utils import evaluate
+from experiments.utils.ppo_utils import evaluate_with_success
 
 
 def _load_yaml(path: Path) -> dict:
@@ -82,13 +82,15 @@ def neutralize_task_feature(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run downstream adaptation with EWC-PPO for LunarLander.")
-    parser.add_argument("--task-setting", type=str, default="default")
+    parser.add_argument("--pipeline", type=str, dest="task_setting", default="default")
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--adapt-settings-file",
@@ -111,13 +113,13 @@ def main() -> None:
         "--source-run-dir",
         type=Path,
         default=None,
-        help="Optional explicit source checkpoint directory. Defaults to outputs/<task_setting>/seed_<seed>/source",
+        help="Optional explicit NoAdapt checkpoint directory. Defaults to outputs/<pipeline>/seed_<seed>/noadapt",
     )
     parser.add_argument(
         "--run-subdir",
         type=str,
         default="downstream_ewc",
-        help="Subdirectory under outputs/<task_setting>/seed_<seed>/ where outputs are saved.",
+        help="Subdirectory under outputs/<pipeline>/seed_<seed>/ where outputs are saved.",
     )
     parser.add_argument(
         "--hidden-size",
@@ -139,14 +141,14 @@ def main() -> None:
     parser.add_argument(
         "--eval-episodes-during-training",
         type=int,
-        default=20,
-        help="Number of episodes per periodic evaluation during PPO training.",
+        default=None,
+        help="Optional override. Defaults to settings/adaptation/ppo.yaml for this pipeline.",
     )
     parser.add_argument(
         "--eval-episodes-post-training",
         type=int,
-        default=100,
-        help="Number of episodes for final post-training evaluation.",
+        default=None,
+        help="Optional override. Defaults to settings/adaptation/ppo.yaml downstream_eval.episodes_post_training.",
     )
     parser.add_argument(
         "--ewc-lambda-override",
@@ -168,8 +170,6 @@ def main() -> None:
     parser.add_argument("--env-id", type=str, default=None, help="Optional env-id override.")
     parser.add_argument("--source-gravity", type=float, default=None, help="Optional source gravity override.")
     parser.add_argument("--downstream-gravity", type=float, default=None, help="Optional downstream gravity override.")
-    parser.add_argument("--source-task-id", type=float, default=None, help="Optional source task-id override.")
-    parser.add_argument("--downstream-task-id", type=float, default=None, help="Optional downstream task-id override.")
     parser.add_argument(
         "--append-task-id",
         action=argparse.BooleanOptionalAction,
@@ -189,10 +189,6 @@ def main() -> None:
         help="Maximum frames shown per episode row (includes first and last frames).",
     )
     args = parser.parse_args()
-    if args.eval_episodes_during_training < 2:
-        raise ValueError("For LunarLander, --eval-episodes-during-training must be >= 2.")
-    if args.eval_episodes_post_training < 2:
-        raise ValueError("For LunarLander, --eval-episodes-post-training must be >= 2.")
 
     adapt_settings = _load_yaml(args.adapt_settings_file)
     ewc_settings = _load_yaml(args.ewc_settings_file)
@@ -221,6 +217,24 @@ def main() -> None:
         raise ValueError(f"Expected 'ppo' section for setting '{args.task_setting}' in {args.adapt_settings_file}.")
 
     adapt_ppo_cfg = adapt_cfg["ppo"]
+    downstream_eval_cfg = adapt_cfg.get("downstream_eval", {})
+    if not isinstance(downstream_eval_cfg, dict):
+        downstream_eval_cfg = {}
+    eval_episodes_during_training = int(
+        args.eval_episodes_during_training
+        if args.eval_episodes_during_training is not None
+        else adapt_ppo_cfg.get("eval_episodes_during_training", 20),
+    )
+    eval_episodes_post_training = int(
+        args.eval_episodes_post_training
+        if args.eval_episodes_post_training is not None
+        else downstream_eval_cfg.get("episodes_post_training", 100),
+    )
+    if eval_episodes_during_training <= 0:
+        raise ValueError("--eval-episodes-during-training (or resolved default) must be > 0.")
+    if eval_episodes_post_training <= 0:
+        raise ValueError("--eval-episodes-post-training (or resolved default) must be > 0.")
+
     if "ewc" in ewc_layout_cfg:
         adapt_ewc_cfg = ewc_layout_cfg["ewc"]
     elif any(k in ewc_layout_cfg for k in ("ewc_lambda", "lambda", "ewc_apply_to_critic")):
@@ -238,17 +252,19 @@ def main() -> None:
     source_gravity = None if source_gravity_raw is None else float(source_gravity_raw)
     downstream_gravity = None if downstream_gravity_raw is None else float(downstream_gravity_raw)
 
-    source_task_id = float(args.source_task_id) if args.source_task_id is not None else float(
-        adapt_cfg.get("source_task_id", source_cfg.get("task_id", 0.0)),
-    )
-    downstream_task_id = float(args.downstream_task_id) if args.downstream_task_id is not None else float(
-        adapt_cfg.get("downstream_task_id", downstream_cfg.get("task_id", 1.0)),
-    )
+    source_task_id = float(source_cfg.get("task_id", 0.0))
+    downstream_task_id = float(downstream_cfg.get("task_id", 1.0))
     append_task_id = (
         bool(args.append_task_id)
         if args.append_task_id is not None
         else bool(source_cfg.get("append_task_id", True))
     )
+    task_pipelines_file = str(source_cfg.get("_task_pipelines_file") or args.task_settings_file)
+    task_definitions_file_raw = source_cfg.get("_task_definitions_file")
+    task_definitions_file = None if task_definitions_file_raw is None else str(task_definitions_file_raw)
+    resolved_pipeline_name = source_cfg.get("_resolved_pipeline_name")
+    resolved_source_definition_name = source_cfg.get("_resolved_definition_name")
+    resolved_downstream_definition_name = downstream_cfg.get("_resolved_definition_name")
     source_dynamics = _resolve_lunarlander_dynamics(
         source_cfg,
         cfg_name=f"task_settings[{args.task_setting}:source]",
@@ -292,11 +308,11 @@ def main() -> None:
     need_critic_checkpoint = warm_critic or ewc_apply_to_critic
 
     if not actor_ckpt.exists():
-        raise FileNotFoundError(f"Source actor checkpoint not found: {actor_ckpt}")
+        raise FileNotFoundError(f"NoAdapt actor checkpoint not found: {actor_ckpt}")
     if need_critic_checkpoint and not critic_ckpt.exists():
-        raise FileNotFoundError(f"Source critic checkpoint not found: {critic_ckpt}")
+        raise FileNotFoundError(f"NoAdapt critic checkpoint not found: {critic_ckpt}")
     if not training_data_ckpt.exists():
-        raise FileNotFoundError(f"Source training data not found: {training_data_ckpt}")
+        raise FileNotFoundError(f"NoAdapt training data not found: {training_data_ckpt}")
 
     hidden_size = _load_source_hidden_size(source_run_dir, args.hidden_size)
 
@@ -365,19 +381,17 @@ def main() -> None:
         if args.total_timesteps_override is not None
         else int(adapt_ppo_cfg["total_timesteps"])
     )
-    early_stop_cfg_value = adapt_ppo_cfg.get("early_stop", True)
-    early_stop_enabled = True if early_stop_cfg_value is None else bool(early_stop_cfg_value)
-    early_stop_reward_threshold_cfg = adapt_ppo_cfg.get("early_stop_reward_threshold", 200.0)
+    early_stop_reward_threshold_cfg = adapt_ppo_cfg.get("early_stop_reward_threshold", None)
     early_stop_reward_threshold = (
         float(early_stop_reward_threshold_cfg)
         if early_stop_reward_threshold_cfg is not None
-        else 200.0
+        else None
     )
 
     ppo_cfg = EWCPPOConfig(
         seed=int(adapt_ppo_cfg.get("seed", args.seed)),
         total_timesteps=total_timesteps,
-        eval_episodes=int(args.eval_episodes_during_training),
+        eval_episodes=eval_episodes_during_training,
         rollout_steps=int(adapt_ppo_cfg["rollout_steps"]),
         update_epochs=int(adapt_ppo_cfg["update_epochs"]),
         minibatch_size=int(adapt_ppo_cfg["minibatch_size"]),
@@ -389,17 +403,10 @@ def main() -> None:
         lr=float(adapt_ppo_cfg["lr"]),
         max_grad_norm=float(adapt_ppo_cfg["max_grad_norm"]),
         device=args.device,
-        early_stop=early_stop_enabled,
         early_stop_min_steps=int(adapt_ppo_cfg.get("early_stop_min_steps", 0)),
         early_stop_reward_threshold=early_stop_reward_threshold,
         early_stop_failure_rate_threshold=adapt_ppo_cfg.get("early_stop_failure_rate_threshold", None),
-        early_stop_deterministic_total_reward_threshold=adapt_ppo_cfg.get(
-            "early_stop_deterministic_total_reward_threshold",
-            None,
-        ),
-        early_stop_deterministic_eval_episodes=int(
-            adapt_ppo_cfg.get("early_stop_deterministic_eval_episodes", 20),
-        ),
+        early_stop_success_rate_threshold=adapt_ppo_cfg.get("early_stop_success_rate_threshold", None),
         ewc_lambda=ewc_lambda,
         ewc_apply_to_critic=ewc_apply_to_critic,
     )
@@ -431,14 +438,12 @@ def main() -> None:
         return_training_data=True,
     )
 
-    eval_episodes_post_training = int(args.eval_episodes_post_training)
-
     source_eval_env = _make_lunarlander_env(
         env_id,
         render_mode=None,
         **source_env_kwargs,
     )
-    source_mean_reward, source_std_reward, source_failure_rate = evaluate(
+    source_mean_reward, source_std_reward, source_failure_rate, source_success_rate = evaluate_with_success(
         source_eval_env,
         actor,
         episodes=eval_episodes_post_training,
@@ -452,7 +457,12 @@ def main() -> None:
         render_mode=None,
         **downstream_env_kwargs,
     )
-    downstream_mean_reward, downstream_std_reward, downstream_failure_rate = evaluate(
+    (
+        downstream_mean_reward,
+        downstream_std_reward,
+        downstream_failure_rate,
+        downstream_success_rate,
+    ) = evaluate_with_success(
         downstream_eval_env,
         actor,
         episodes=eval_episodes_post_training,
@@ -523,15 +533,21 @@ def main() -> None:
         "warm_start_critic": warm_critic,
         "task_feature_neutralization": do_task_neutralization,
         "task_feature_index": int(task_feature_index) if do_task_neutralization else None,
-        "eval_episodes_during_training": int(args.eval_episodes_during_training),
+        "eval_episodes_during_training": int(eval_episodes_during_training),
         "eval_episodes_post_training": int(eval_episodes_post_training),
         "trajectory_episodes": int(args.trajectory_episodes),
         "trajectory_max_frames_per_episode": int(args.trajectory_max_frames_per_episode),
         "ewc_lambda": float(ewc_lambda),
         "ewc_apply_to_critic": ewc_apply_to_critic,
         "fisher_sample_size": int(fisher_sample_size),
+        "noadapt_checkpoint_dir": str(source_run_dir),
         "source_checkpoint_dir": str(source_run_dir),
         "task_settings_file": str(args.task_settings_file),
+        "task_pipelines_file": task_pipelines_file,
+        "task_definitions_file": task_definitions_file,
+        "resolved_pipeline_name": resolved_pipeline_name,
+        "resolved_source_definition_name": resolved_source_definition_name,
+        "resolved_downstream_definition_name": resolved_downstream_definition_name,
         "adapt_settings_file": str(args.adapt_settings_file),
         "ewc_settings_file": str(args.ewc_settings_file),
     }
@@ -539,9 +555,11 @@ def main() -> None:
         "source_mean_reward": float(source_mean_reward),
         "source_std_reward": float(source_std_reward),
         "source_failure_rate": float(source_failure_rate),
+        "source_success_rate": float(source_success_rate),
         "downstream_mean_reward": float(downstream_mean_reward),
         "downstream_std_reward": float(downstream_std_reward),
         "downstream_failure_rate": float(downstream_failure_rate),
+        "downstream_success_rate": float(downstream_success_rate),
     }
     artifacts = {
         "actor_path": str(actor_path),
@@ -560,11 +578,13 @@ def main() -> None:
 
     print(
         f"Source eval ({eval_episodes_post_training} ep): mean_reward={source_mean_reward:.3f}, "
-        f"std={source_std_reward:.3f}, failure_rate={source_failure_rate:.3f}",
+        f"std={source_std_reward:.3f}, failure_rate={source_failure_rate:.3f}, "
+        f"success_rate={source_success_rate:.3f}",
     )
     print(
         f"Downstream eval ({eval_episodes_post_training} ep): mean_reward={downstream_mean_reward:.3f}, "
-        f"std={downstream_std_reward:.3f}, failure_rate={downstream_failure_rate:.3f}",
+        f"std={downstream_std_reward:.3f}, failure_rate={downstream_failure_rate:.3f}, "
+        f"success_rate={downstream_success_rate:.3f}",
     )
     print(f"Saved actor: {actor_path}")
     print(f"Saved critic: {critic_path}")

@@ -18,6 +18,7 @@ from experiments.pipelines.lunarlander.core.env.task_loading import (
     _resolve_lunarlander_dynamics,
 )
 from experiments.pipelines.lunarlander.core.eval.evaluate_policy import (
+    LEGACY_POLICY_ALIASES,
     POLICY_TO_SUBDIR,
     _build_actor_from_state_dict,
     _resolve_actor_path,
@@ -30,14 +31,14 @@ from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
 )
 
 LATEX_POLICY_ROW_ORDER = [
-    "source",
+    "noadapt",
     "downstream_unconstrained",
     "downstream_ewc",
     "downstream_rashomon",
 ]
 
 POLICY_DISPLAY_NAMES = {
-    "source": "Source",
+    "noadapt": "NoAdapt",
     "downstream_unconstrained": "Unconstrained Adaptation",
     "downstream_ewc": "EWC",
     "downstream_rashomon": "Rashomon",
@@ -161,6 +162,11 @@ def _format_mean_std(mean: float | None, std: float | None, precision: int) -> s
 
 def _policy_display_name(policy_name: str) -> str:
     return POLICY_DISPLAY_NAMES.get(policy_name, policy_name.replace("_", " ").title())
+
+
+def _normalize_policy_name(policy_name: str) -> str:
+    normalized = policy_name.strip()
+    return LEGACY_POLICY_ALIASES.get(normalized, normalized)
 
 
 def _metric_mean_std(aggregate: dict[str, Any] | None, mean_key: str, std_key: str) -> tuple[float | None, float | None]:
@@ -292,16 +298,20 @@ def main() -> None:
         "--policy-name",
         type=str,
         default=None,
-        choices=sorted(POLICY_TO_SUBDIR.keys()),
-        help="Single policy checkpoint group to evaluate.",
+        help=(
+            "Single policy checkpoint group to evaluate "
+            "(noadapt/downstream_unconstrained/downstream_ewc/downstream_rashomon)."
+        ),
     )
     parser.add_argument(
         "--policy-names",
         type=str,
         nargs="+",
         default=None,
-        choices=sorted(POLICY_TO_SUBDIR.keys()),
-        help="Multiple policy checkpoint groups to evaluate in one run.",
+        help=(
+            "Multiple policy checkpoint groups to evaluate in one run "
+            "(supports legacy alias: source -> noadapt)."
+        ),
     )
     parser.add_argument(
         "--all-policies",
@@ -343,7 +353,7 @@ def main() -> None:
         choices=["source", "downstream"],
         default=None,
         help=(
-            "Task role to evaluate on. Defaults to source for source policy, "
+            "Task role to evaluate on. Defaults to source for noadapt policy, "
             "downstream otherwise. Mutually exclusive with --all-env-roles."
         ),
     )
@@ -358,7 +368,7 @@ def main() -> None:
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Task settings YAML with source/downstream environment configs.",
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--outputs-root",
@@ -429,6 +439,11 @@ def main() -> None:
         raise ValueError(
             "Provide --policy-name/--policy-names, or use --all-policies/--all-seeds.",
         )
+    selected_policies = list(dict.fromkeys([_normalize_policy_name(name) for name in selected_policies]))
+    invalid = [name for name in selected_policies if name not in POLICY_TO_SUBDIR]
+    if invalid:
+        valid = ", ".join(sorted(POLICY_TO_SUBDIR.keys()))
+        raise ValueError(f"Unknown policy name(s): {invalid}. Expected one of: {valid}.")
 
     train_task_setting = args.train_task_setting or args.env_setting
     report_metrics = list(dict.fromkeys([str(m) for m in args.metrics]))
@@ -441,7 +456,7 @@ def main() -> None:
         else:
             env_role = args.env_role
             if env_role is None:
-                env_role = "source" if policy_name == "source" else "downstream"
+                env_role = "source" if policy_name == "noadapt" else "downstream"
             env_roles = [env_role]
 
         if args.all_seeds:
@@ -464,8 +479,10 @@ def main() -> None:
             gravity_raw = env_cfg.get("gravity")
             gravity = None if gravity_raw is None else float(gravity_raw)
             task_id_default = 0.0 if env_role == "source" else 1.0
-            task_id = float(env_cfg.get("task_id", task_id_default))
-            append_task_id = bool(env_cfg.get("append_task_id", True))
+            task_id_raw = env_cfg.get("task_id")
+            task_id = task_id_default if task_id_raw is None else float(task_id_raw)
+            append_task_id_raw = env_cfg.get("append_task_id")
+            append_task_id = True if append_task_id_raw is None else bool(append_task_id_raw)
             continuous = bool(env_cfg.get("continuous", False))
             if continuous:
                 raise ValueError("Only discrete-action LunarLander is supported in this evaluator.")

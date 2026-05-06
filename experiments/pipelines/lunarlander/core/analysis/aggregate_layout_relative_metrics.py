@@ -1,4 +1,4 @@
-"""Aggregate LunarLander per-policy metrics across seeds and export CSV + LaTeX."""
+"""Aggregate LunarLander adaptation metrics relative to NoAdapt across seeds."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from experiments.pipelines.lunarlander.core.orchestration.run_paths import defau
 
 
 POLICY_ORDER = [
-    "noadapt",
     "downstream_unconstrained",
     "downstream_ewc",
     "downstream_rashomon",
@@ -50,13 +49,12 @@ RAW_TO_AGG_METRIC = {
 DEFAULT_METRIC_GROUPS = ["total_reward", "success_rate"]
 
 PREFERRED_METRIC_ORDER = [
-    "source_total_reward",
-    "source_success_rate",
-    "downstream_total_reward",
-    "downstream_success_rate",
-    "downstream_minus_source_total_reward",
-    "source_failure_rate",
-    "downstream_failure_rate",
+    "relative_source_total_reward",
+    "relative_source_success_rate",
+    "relative_downstream_total_reward",
+    "relative_downstream_success_rate",
+    "relative_source_failure_rate",
+    "relative_downstream_failure_rate",
 ]
 
 
@@ -64,6 +62,10 @@ def _normalize_policy_dir_name(policy_name: str) -> str:
     if policy_name == "source":
         return "noadapt"
     return policy_name
+
+
+def _is_baseline_policy(policy_name: str) -> bool:
+    return _normalize_policy_dir_name(policy_name) == "noadapt"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -108,7 +110,6 @@ def _extract_task_metrics(
     summary: dict[str, Any],
     *,
     raw_to_agg_metric: dict[str, str],
-    compute_relative_to_source: bool,
 ) -> dict[str, float]:
     results = summary.get("run_results")
     if not isinstance(results, dict):
@@ -116,29 +117,11 @@ def _extract_task_metrics(
         results = summary
 
     out: dict[str, float] = {}
-    source_total_reward: float | None = None
-    downstream_total_reward: float | None = None
-
     for raw_key, agg_key in raw_to_agg_metric.items():
         as_float = _safe_float(results.get(raw_key))
         if as_float is None:
             continue
         out[agg_key] = as_float
-        if agg_key == "source_total_reward":
-            source_total_reward = as_float
-        if agg_key == "downstream_total_reward":
-            downstream_total_reward = as_float
-
-    # Relative downstream performance per seed:
-    # (downstream actor reward) - (source actor reward)
-    if (
-        compute_relative_to_source
-        and source_total_reward is not None
-        and downstream_total_reward is not None
-    ):
-        out["downstream_minus_source_total_reward"] = (
-            downstream_total_reward - source_total_reward
-        )
     return out
 
 
@@ -226,7 +209,7 @@ def _build_latex_table_from_csv(csv_path: Path, *, task_setting: str) -> str:
             sorted_rows.append(row)
 
     # For each metric column, select the best mean according to metric semantics:
-    # highest total reward, lowest failure rate.
+    # highest total reward/success rate, lowest failure rate.
     best_mean_by_metric: dict[str, float] = {}
     for metric in metric_names:
         rule = _metric_selection_rule(metric)
@@ -284,8 +267,8 @@ def _build_latex_table_from_csv(csv_path: Path, *, task_setting: str) -> str:
         [
             r"\bottomrule",
             r"\end{tabular}",
-            rf"\caption{{LunarLander ({_escape_latex(task_setting)}): aggregated metrics across seeds.}}",
-            rf"\label{{tab:lunarlander_{_escape_latex(task_setting)}_aggregated_metrics}}",
+            rf"\caption{{LunarLander ({_escape_latex(task_setting)}): adaptation metrics relative to NoAdapt across seeds.}}",
+            rf"\label{{tab:lunarlander_{_escape_latex(task_setting)}_relative_metrics}}",
             r"\end{table}",
         ],
     )
@@ -295,7 +278,7 @@ def _build_latex_table_from_csv(csv_path: Path, *, task_setting: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate source/downstream run_summary metrics per policy across seeds "
+            "Aggregate adaptation policy metrics relative to NoAdapt per seed "
             "for one LunarLander pipeline, then export CSV and LaTeX."
         ),
     )
@@ -323,7 +306,7 @@ def main() -> None:
         "--policies",
         nargs="+",
         default=None,
-        help="Optional policy directory filter.",
+        help="Optional adaptation policy directory filter.",
     )
     parser.add_argument(
         "--metric-groups",
@@ -331,29 +314,21 @@ def main() -> None:
         choices=sorted(RAW_TO_AGG_METRIC.keys()),
         default=list(DEFAULT_METRIC_GROUPS),
         help=(
-            "Metric groups to aggregate. "
+            "Metric groups to aggregate relative to NoAdapt. "
             "Default: total_reward success_rate."
-        ),
-    )
-    parser.add_argument(
-        "--compute-relative-to-source",
-        action="store_true",
-        help=(
-            "Also compute downstream_minus_source_total_reward from per-seed "
-            "downstream and source total rewards."
         ),
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
         default=None,
-        help="Optional CSV path. Default: outputs/<pipeline>/aggregate_layout_metrics.csv",
+        help="Optional CSV path. Default: outputs/<pipeline>/aggregate_layout_relative_metrics.csv",
     )
     parser.add_argument(
         "--output-tex",
         type=Path,
         default=None,
-        help="Optional LaTeX path. Default: outputs/<pipeline>/aggregate_layout_metrics.tex",
+        help="Optional LaTeX path. Default: outputs/<pipeline>/aggregate_layout_relative_metrics.tex",
     )
     args = parser.parse_args()
 
@@ -364,20 +339,29 @@ def main() -> None:
     layout_dir = args.outputs_root / task_setting
     if not layout_dir.exists():
         raise FileNotFoundError(f"Pipeline outputs directory not found: {layout_dir}")
+
     selected_policies = (
         None
         if args.policies is None
         else list(dict.fromkeys(_normalize_policy_dir_name(policy) for policy in args.policies))
     )
+    if selected_policies is not None:
+        selected_policies = [policy for policy in selected_policies if not _is_baseline_policy(policy)]
+        if not selected_policies:
+            raise ValueError("--policies must include at least one adaptation policy (not noadapt/source).")
 
     selected_metric_groups = list(args.metric_groups)
     raw_to_agg_metric: dict[str, str] = {}
     for metric_group in selected_metric_groups:
         raw_to_agg_metric.update(RAW_TO_AGG_METRIC[metric_group])
+    base_metric_names = set(raw_to_agg_metric.values())
+    selected_relative_metric_names = {f"relative_{metric_name}" for metric_name in base_metric_names}
 
+    # Baseline (NoAdapt) per seed: seed -> metric -> value
+    baseline_seed_metrics: dict[int, dict[str, float]] = {}
+    # Raw adaptation per-seed metrics before relative subtraction:
     # policy -> seed -> metric -> value
-    policy_seed_metrics: dict[str, dict[int, dict[str, float]]] = {}
-    discovered_metric_names: set[str] = set()
+    policy_seed_raw_metrics: dict[str, dict[int, dict[str, float]]] = {}
     total_found = 0
 
     for seed_dir in sorted(layout_dir.glob("seed_*"), key=lambda p: p.name):
@@ -391,48 +375,108 @@ def main() -> None:
             total_found += 1
             raw_policy = summary_path.parent.name
             policy = _normalize_policy_dir_name(raw_policy)
-            if selected_policies is not None and policy not in selected_policies:
-                continue
 
             summary = _load_yaml(summary_path)
-            metrics = _extract_task_metrics(
-                summary,
-                raw_to_agg_metric=raw_to_agg_metric,
-                compute_relative_to_source=bool(args.compute_relative_to_source),
-            )
+            metrics = _extract_task_metrics(summary, raw_to_agg_metric=raw_to_agg_metric)
             if not metrics:
                 print(
                     "[skip] No usable selected metrics "
-                    f"(metric_groups={selected_metric_groups}, "
-                    f"compute_relative_to_source={bool(args.compute_relative_to_source)}) "
-                    f"in {summary_path}",
+                    f"(metric_groups={selected_metric_groups}) in {summary_path}",
                 )
                 continue
 
-            policy_seed_metrics.setdefault(policy, {})
-            if seed in policy_seed_metrics[policy]:
+            if _is_baseline_policy(policy):
+                if seed in baseline_seed_metrics:
+                    print(
+                        f"[warn] Duplicate NoAdapt summary for seed={seed}; "
+                        f"overwriting with {summary_path}",
+                    )
+                baseline_seed_metrics[seed] = metrics
+                continue
+
+            if selected_policies is not None and policy not in selected_policies:
+                continue
+
+            policy_seed_raw_metrics.setdefault(policy, {})
+            if seed in policy_seed_raw_metrics[policy]:
                 print(
                     f"[warn] Duplicate summary for policy={policy} seed={seed}; "
                     f"overwriting with {summary_path}",
                 )
-            policy_seed_metrics[policy][seed] = metrics
-            discovered_metric_names.update(metrics.keys())
+            policy_seed_raw_metrics[policy][seed] = metrics
 
     if total_found == 0:
         raise FileNotFoundError(f"No run_summary.yaml files found under {layout_dir}/seed_*/")
-    if not policy_seed_metrics:
-        raise RuntimeError("No usable task metrics were found in discovered run summaries.")
+    if not baseline_seed_metrics:
+        raise RuntimeError(
+            "No NoAdapt/source run summaries with usable metrics were found; "
+            "cannot compute relative adaptation metrics.",
+        )
+    if not policy_seed_raw_metrics:
+        raise RuntimeError("No adaptation policies with usable metrics were found.")
 
-    policy_names = sorted(policy_seed_metrics.keys())
+    # Relative metrics per seed:
+    # policy -> seed -> relative_metric -> delta
+    policy_seed_relative_metrics: dict[str, dict[int, dict[str, float]]] = {}
+
+    for policy, seed_map in sorted(policy_seed_raw_metrics.items()):
+        for seed, policy_metrics in sorted(seed_map.items()):
+            baseline_metrics = baseline_seed_metrics.get(seed)
+            if baseline_metrics is None:
+                print(
+                    f"[warn] Missing NoAdapt/source baseline for seed={seed}; "
+                    f"skipping policy={policy} seed={seed}",
+                )
+                continue
+
+            relative_metrics: dict[str, float] = {}
+            for metric_name in sorted(base_metric_names):
+                policy_value = policy_metrics.get(metric_name)
+                baseline_value = baseline_metrics.get(metric_name)
+                if policy_value is None or baseline_value is None:
+                    print(
+                        "[warn] Missing metric pair for relative computation: "
+                        f"policy={policy}, seed={seed}, metric={metric_name}, "
+                        f"policy_has_metric={policy_value is not None}, "
+                        f"baseline_has_metric={baseline_value is not None}",
+                    )
+                    continue
+                relative_name = f"relative_{metric_name}"
+                relative_metrics[relative_name] = policy_value - baseline_value
+
+            if not relative_metrics:
+                print(
+                    f"[warn] No relative metrics computed for policy={policy} seed={seed}; "
+                    "skipping this seed.",
+                )
+                continue
+
+            policy_seed_relative_metrics.setdefault(policy, {})
+            policy_seed_relative_metrics[policy][seed] = relative_metrics
+
+    if not policy_seed_relative_metrics:
+        raise RuntimeError("No relative policy metrics were computed.")
+
+    policy_names = sorted(policy_seed_relative_metrics.keys())
     if selected_policies is not None:
-        policy_names = [policy for policy in selected_policies if policy in policy_seed_metrics]
+        policy_names = [policy for policy in selected_policies if policy in policy_seed_relative_metrics]
+    else:
+        ordered: list[str] = []
+        for policy in POLICY_ORDER:
+            if policy in policy_seed_relative_metrics:
+                ordered.append(policy)
+        for policy in policy_names:
+            if policy not in set(ordered):
+                ordered.append(policy)
+        policy_names = ordered
+
     if not policy_names:
-        raise RuntimeError("No policies matched the selection with usable metrics.")
+        raise RuntimeError("No policies matched the selection with usable relative metrics.")
 
-    ordered_metrics = _ordered_metrics(discovered_metric_names)
+    ordered_metrics = _ordered_metrics(selected_relative_metric_names)
 
-    output_csv = args.output_csv or (layout_dir / "aggregate_layout_metrics.csv")
-    output_tex = args.output_tex or (layout_dir / "aggregate_layout_metrics.tex")
+    output_csv = args.output_csv or (layout_dir / "aggregate_layout_relative_metrics.csv")
+    output_tex = args.output_tex or (layout_dir / "aggregate_layout_relative_metrics.tex")
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     output_tex.parent.mkdir(parents=True, exist_ok=True)
 
@@ -446,7 +490,7 @@ def main() -> None:
         writer.writeheader()
 
         for policy in policy_names:
-            seed_map = policy_seed_metrics[policy]
+            seed_map = policy_seed_relative_metrics[policy]
             row: dict[str, object] = {
                 "task_setting": task_setting,
                 "policy": policy,
@@ -465,8 +509,8 @@ def main() -> None:
     latex = _build_latex_table_from_csv(output_csv, task_setting=task_setting)
     output_tex.write_text(latex + "\n", encoding="utf-8")
 
-    print(f"Wrote aggregate metrics CSV: {output_csv}")
-    print(f"Wrote aggregate metrics LaTeX table: {output_tex}")
+    print(f"Wrote relative aggregate metrics CSV: {output_csv}")
+    print(f"Wrote relative aggregate metrics LaTeX table: {output_tex}")
 
 
 if __name__ == "__main__":

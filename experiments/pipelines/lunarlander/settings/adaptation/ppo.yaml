@@ -19,6 +19,7 @@ default:
     vf_coef: 0.5
     lr: 0.0003
     max_grad_norm: 0.5
+    pgd_projection_distance_norm: l2
     device: cpu
     early_stop_min_steps: 0
     early_stop_reward_threshold: null
@@ -46,6 +47,7 @@ deterministic__default_to_sluggish_vehicle:
     vf_coef: 0.5
     lr: 0.0003
     max_grad_norm: 0.5
+    pgd_projection_distance_norm: l2
     device: cpu
     early_stop_min_steps: 0
     early_stop_reward_threshold: null
@@ -73,6 +75,7 @@ deterministic__default_to_twitchy_vehicle:
     vf_coef: 0.5
     lr: 0.0003
     max_grad_norm: 0.5
+    pgd_projection_distance_norm: l2
     device: cpu
     early_stop_min_steps: 0
     early_stop_reward_threshold: null
@@ -100,6 +103,7 @@ deterministic__default_to_underpowered_vehicle:
     vf_coef: 0.5
     lr: 0.0003
     max_grad_norm: 0.5
+    pgd_projection_distance_norm: l2
     device: cpu
     early_stop_min_steps: 0
     early_stop_reward_threshold: null

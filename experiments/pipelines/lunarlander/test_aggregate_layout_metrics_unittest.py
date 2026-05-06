@@ -60,7 +60,7 @@ class AggregateLayoutMetricsTests(unittest.TestCase):
                 "sys.argv",
                 [
                     "aggregate_layout_metrics.py",
-                    "--task-setting",
+                    "--pipeline",
                     task_setting,
                     "--outputs-root",
                     str(outputs_root),
@@ -122,7 +122,7 @@ class AggregateLayoutMetricsTests(unittest.TestCase):
                 "sys.argv",
                 [
                     "aggregate_layout_metrics.py",
-                    "--task-setting",
+                    "--pipeline",
                     task_setting,
                     "--outputs-root",
                     str(outputs_root),

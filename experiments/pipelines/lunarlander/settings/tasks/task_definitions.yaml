@@ -1,6 +1,6 @@
 ### Stochastic tasks
 default:
-  env_id: LunarLander-v3
+  env_id: LunarLander-v4
   continuous: false
   gravity: null
   enable_wind: false
@@ -21,7 +21,7 @@ default:
   action_noise_mode: noop
   mark_out_of_viewport_as_unsafe: false
 dynamics_shift:
-  env_id: LunarLander-v3
+  env_id: LunarLander-v4
   continuous: false
   gravity: -6.0
   enable_wind: true

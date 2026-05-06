@@ -22,6 +22,7 @@ from experiments.pipelines.lunarlander.core.methods.source_train import (
     build_actor_critic,
 )
 from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
+    NOADAPT_POLICY_SUBDIR,
     default_outputs_root,
     default_task_settings_file,
     resolve_policy_dir as _resolve_policy_dir,
@@ -30,10 +31,13 @@ from experiments.utils.ppo_utils import evaluate
 
 
 POLICY_TO_SUBDIR = {
-    "source": "source",
+    "noadapt": NOADAPT_POLICY_SUBDIR,
     "downstream_unconstrained": "downstream_unconstrained",
     "downstream_ewc": "downstream_ewc",
     "downstream_rashomon": "downstream_rashomon",
+}
+LEGACY_POLICY_ALIASES = {
+    "source": "noadapt",
 }
 
 
@@ -94,8 +98,10 @@ def main() -> None:
         "--policy-name",
         type=str,
         required=True,
-        choices=sorted(POLICY_TO_SUBDIR.keys()),
-        help="Policy checkpoint group to evaluate.",
+        help=(
+            "Policy checkpoint group to evaluate "
+            "(noadapt/downstream_unconstrained/downstream_ewc/downstream_rashomon)."
+        ),
     )
     parser.add_argument(
         "--env-setting",
@@ -132,7 +138,7 @@ def main() -> None:
         type=str,
         choices=["source", "downstream"],
         default=None,
-        help="Task role to evaluate on. Defaults to source for source policy, downstream otherwise.",
+        help="Task role to evaluate on. Defaults to source for noadapt policy, downstream otherwise.",
     )
     parser.add_argument(
         "--trajectory-max-frames-per-episode",
@@ -145,7 +151,7 @@ def main() -> None:
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Task settings YAML with source/downstream environment configs.",
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--outputs-root",
@@ -165,12 +171,18 @@ def main() -> None:
             f"--eval-episodes-post-training must be > 0, got {eval_episodes_post_training}.",
         )
 
+    policy_name = str(args.policy_name).strip()
+    policy_name = LEGACY_POLICY_ALIASES.get(policy_name, policy_name)
+    if policy_name not in POLICY_TO_SUBDIR:
+        valid = ", ".join(sorted(POLICY_TO_SUBDIR.keys()))
+        raise ValueError(f"Unknown --policy-name '{args.policy_name}'. Expected one of: {valid}.")
+
     env_role = args.env_role
     if env_role is None:
-        env_role = "source" if args.policy_name == "source" else "downstream"
+        env_role = "source" if policy_name == "noadapt" else "downstream"
     train_task_setting = args.train_task_setting or args.env_setting
 
-    policy_subdir = POLICY_TO_SUBDIR[args.policy_name]
+    policy_subdir = POLICY_TO_SUBDIR[policy_name]
     policy_dir = _resolve_policy_dir(
         args.outputs_root,
         train_task_setting,
@@ -180,7 +192,7 @@ def main() -> None:
     if not policy_dir.exists():
         raise FileNotFoundError(f"Policy directory does not exist: {policy_dir}")
 
-    actor_path = _resolve_actor_path(policy_dir, args.policy_name)
+    actor_path = _resolve_actor_path(policy_dir, policy_name)
     actor_state = torch.load(actor_path, map_location="cpu")
     if not isinstance(actor_state, dict):
         raise ValueError(f"Expected actor checkpoint state_dict dict at {actor_path}.")
@@ -193,8 +205,10 @@ def main() -> None:
     gravity_raw = env_cfg.get("gravity")
     gravity = None if gravity_raw is None else float(gravity_raw)
     task_id_default = 0.0 if env_role == "source" else 1.0
-    task_id = float(env_cfg.get("task_id", task_id_default))
-    append_task_id = bool(env_cfg.get("append_task_id", True))
+    task_id_raw = env_cfg.get("task_id")
+    task_id = task_id_default if task_id_raw is None else float(task_id_raw)
+    append_task_id_raw = env_cfg.get("append_task_id")
+    append_task_id = True if append_task_id_raw is None else bool(append_task_id_raw)
     continuous = bool(env_cfg.get("continuous", False))
     if continuous:
         raise ValueError("Only discrete-action LunarLander is supported in this evaluator.")
@@ -249,7 +263,7 @@ def main() -> None:
 
     summary: dict[str, Any] = {
         "train_seed": int(args.train_seed),
-        "policy_name": str(args.policy_name),
+        "policy_name": str(policy_name),
         "policy_dir": str(policy_dir),
         "actor_path": str(actor_path),
         "task_settings_file": str(args.task_settings_file),

@@ -516,13 +516,15 @@ def main() -> None:
             "policy from old bounds, recomputing bounds, unioning interval sets, and adapting with PGD."
         ),
     )
-    parser.add_argument("--task-setting", type=str, default="default")
+    parser.add_argument("--pipeline", type=str, dest="task_setting", default="default")
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--adapt-settings-file",
@@ -543,7 +545,7 @@ def main() -> None:
         "--source-run-dir",
         type=Path,
         default=None,
-        help="Optional explicit source run directory.",
+        help="Optional explicit NoAdapt run directory.",
     )
     parser.add_argument(
         "--unconstrained-run-subdir",
@@ -571,7 +573,7 @@ def main() -> None:
         "--run-subdir",
         type=str,
         default="downstream_rashomon_union_expanded",
-        help="Output subdir under outputs/<task_setting>/seed_<seed>/.",
+        help="Output subdir under outputs/<pipeline>/seed_<seed>/.",
     )
     parser.add_argument(
         "--analysis-top-k",
@@ -614,8 +616,6 @@ def main() -> None:
     parser.add_argument("--env-id", type=str, default=None)
     parser.add_argument("--source-gravity", type=float, default=None)
     parser.add_argument("--downstream-gravity", type=float, default=None)
-    parser.add_argument("--source-task-id", type=float, default=None)
-    parser.add_argument("--downstream-task-id", type=float, default=None)
     parser.add_argument(
         "--append-task-id",
         action=argparse.BooleanOptionalAction,
@@ -665,17 +665,19 @@ def main() -> None:
     source_gravity = None if source_gravity_raw is None else float(source_gravity_raw)
     downstream_gravity = None if downstream_gravity_raw is None else float(downstream_gravity_raw)
 
-    source_task_id = float(args.source_task_id) if args.source_task_id is not None else float(
-        source_task_cfg.get("task_id", 0.0),
-    )
-    downstream_task_id = float(args.downstream_task_id) if args.downstream_task_id is not None else float(
-        downstream_task_cfg.get("task_id", 1.0),
-    )
+    source_task_id = float(source_task_cfg.get("task_id", 0.0))
+    downstream_task_id = float(downstream_task_cfg.get("task_id", 1.0))
     append_task_id = (
         bool(args.append_task_id)
         if args.append_task_id is not None
         else bool(source_task_cfg.get("append_task_id", True))
     )
+    task_pipelines_file = str(source_task_cfg.get("_task_pipelines_file") or args.task_settings_file)
+    task_definitions_file_raw = source_task_cfg.get("_task_definitions_file")
+    task_definitions_file = None if task_definitions_file_raw is None else str(task_definitions_file_raw)
+    resolved_pipeline_name = source_task_cfg.get("_resolved_pipeline_name")
+    resolved_source_definition_name = source_task_cfg.get("_resolved_definition_name")
+    resolved_downstream_definition_name = downstream_task_cfg.get("_resolved_definition_name")
 
     source_dynamics = _resolve_lunarlander_dynamics(
         source_task_cfg,
@@ -731,14 +733,14 @@ def main() -> None:
             preferred_subdir=args.rashomon_run_subdir,
         )
 
-    print(f"Using source run dir: {source_run_dir}")
+    print(f"Using NoAdapt run dir: {source_run_dir}")
     print(f"Using unconstrained run dir: {unconstrained_dir}")
     print(f"Using EWC run dir: {ewc_dir}")
     print(f"Using Rashomon run dir: {rashomon_run_dir}")
 
     # Load actors for analysis.
     actor_dirs = {
-        "source": source_run_dir,
+        "noadapt": source_run_dir,
         "downstream_unconstrained": unconstrained_dir,
         "downstream_ewc": ewc_dir,
         "downstream_rashomon": rashomon_run_dir,
@@ -987,6 +989,7 @@ def main() -> None:
                 "seed": int(args.seed),
                 "device": str(args.device),
                 "outputs_root": str(args.outputs_root),
+                "noadapt_run_dir": str(source_run_dir),
                 "source_run_dir": str(source_run_dir),
                 "unconstrained_run_dir": str(unconstrained_dir),
                 "ewc_run_dir": str(ewc_dir),
@@ -1005,6 +1008,11 @@ def main() -> None:
                 "eval_episodes_during_training": int(eval_episodes_during_training),
                 "eval_episodes_post_training": int(eval_episodes_post_training),
                 "task_settings_file": str(args.task_settings_file),
+                "task_pipelines_file": task_pipelines_file,
+                "task_definitions_file": task_definitions_file,
+                "resolved_pipeline_name": resolved_pipeline_name,
+                "resolved_source_definition_name": resolved_source_definition_name,
+                "resolved_downstream_definition_name": resolved_downstream_definition_name,
                 "adapt_settings_file": str(args.adapt_settings_file),
                 "rashomon_settings_file": str(args.rashomon_settings_file),
                 "expansion_skipped_due_to_perfect_downstream_success": True,
@@ -1113,7 +1121,7 @@ def main() -> None:
         seed=sample_seed,
     )
     reference_actor, sampled_reference_state_dict = _build_reference_actor_from_sampled_params(
-        source_actor_for_template=actors["source"]["actor"],
+        source_actor_for_template=actors["noadapt"]["actor"],
         sampled_param_list=sampled_param_list,
         device=args.device,
     )
@@ -1298,9 +1306,9 @@ def main() -> None:
     source_actor_ckpt = source_run_dir / "actor.pt"
     source_critic_ckpt = source_run_dir / "critic.pt"
     if not source_actor_ckpt.exists():
-        raise FileNotFoundError(f"Source actor checkpoint not found: {source_actor_ckpt}")
+        raise FileNotFoundError(f"NoAdapt actor checkpoint not found: {source_actor_ckpt}")
     if args.warm_start_critic and not source_critic_ckpt.exists():
-        raise FileNotFoundError(f"Source critic checkpoint not found: {source_critic_ckpt}")
+        raise FileNotFoundError(f"NoAdapt critic checkpoint not found: {source_critic_ckpt}")
 
     hidden_size = _load_source_hidden_size(source_run_dir, args.hidden_size)
     source_env_for_dim = _make_lunarlander_env(
@@ -1501,6 +1509,7 @@ def main() -> None:
             "seed": int(args.seed),
             "device": str(args.device),
             "outputs_root": str(args.outputs_root),
+            "noadapt_run_dir": str(source_run_dir),
             "source_run_dir": str(source_run_dir),
             "unconstrained_run_dir": str(unconstrained_dir),
             "ewc_run_dir": str(ewc_dir),
@@ -1526,6 +1535,11 @@ def main() -> None:
             "eval_episodes_post_training": int(eval_episodes_post_training),
             "ppo_config": asdict(ppo_cfg),
             "task_settings_file": str(args.task_settings_file),
+            "task_pipelines_file": task_pipelines_file,
+            "task_definitions_file": task_definitions_file,
+            "resolved_pipeline_name": resolved_pipeline_name,
+            "resolved_source_definition_name": resolved_source_definition_name,
+            "resolved_downstream_definition_name": resolved_downstream_definition_name,
             "adapt_settings_file": str(args.adapt_settings_file),
             "rashomon_settings_file": str(args.rashomon_settings_file),
             "recompute_rashomon_config": recompute_rashomon_cfg,

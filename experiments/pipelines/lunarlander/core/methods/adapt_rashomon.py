@@ -34,12 +34,14 @@ from experiments.pipelines.lunarlander.core.methods.source_train import (
     build_actor_critic,
 )
 from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
+    default_adapt_ppo_settings_file,
+    default_adapt_rashomon_settings_file,
     default_outputs_root,
     default_task_settings_file,
     resolve_default_source_run_dir as _resolve_default_source_run_dir,
     seed_run_dir as _seed_run_dir,
 )
-from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
+from experiments.utils.ppo_utils import PPOConfig, evaluate_with_success, ppo_train
 from src.trainer.IntervalTrainer import IntervalTrainer
 
 
@@ -50,6 +52,38 @@ def _certificate_to_float(certificate: object) -> float:
         vals = [float(v) for v in certificate if v is not None]
         return min(vals) if vals else float("-inf")
     return float(certificate)  # type: ignore[arg-type]
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"YAML file not found: {path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected YAML mapping in {path}, got {type(data)}.")
+    return data
+
+
+def _resolve_setting_cfg(
+    settings: dict[str, Any],
+    setting_name: str,
+    *,
+    settings_name: str,
+) -> dict[str, Any]:
+    if setting_name in settings:
+        cfg = settings[setting_name]
+    elif "default" in settings:
+        cfg = settings["default"]
+    else:
+        raise ValueError(
+            f"Setting '{setting_name}' not found in {settings_name}, and no 'default' key exists.",
+        )
+    if not isinstance(cfg, dict):
+        raise ValueError(
+            f"Expected mapping for setting '{setting_name}' in {settings_name}, got {type(cfg)}.",
+        )
+    return cfg
 
 
 def _load_source_hidden_size(source_run_dir: Path, arg_hidden_size: int | None) -> int:
@@ -91,7 +125,7 @@ def create_source_rollout_rashomon_dataset(
     n_actions: int,
     rashomon_rollouts: int,
 ) -> tuple[TensorDataset, list[int]]:
-    """Roll out source policy `rashomon_rollouts` times and collect state-action pairs."""
+    """Roll out the NoAdapt policy `rashomon_rollouts` times and collect state-action pairs."""
     if rashomon_rollouts <= 0:
         raise ValueError(f"rashomon_rollouts must be > 0, got {rashomon_rollouts}.")
 
@@ -146,6 +180,49 @@ def create_source_rollout_rashomon_dataset(
     return TensorDataset(obs_tensor, label_tensor), rollout_lengths
 
 
+def _compute_surrogate_threshold_from_dataset(rashomon_dataset: TensorDataset) -> float:
+    if len(rashomon_dataset) == 0:
+        raise RuntimeError("Rashomon dataset is empty.")
+
+    n_valid_actions = rashomon_dataset.tensors[1].sum(dim=1).tolist()
+    max_valid_actions = max(n_valid_actions) if n_valid_actions else 0.0
+    if max_valid_actions <= 0:
+        raise RuntimeError("Rashomon dataset has no valid-action labels.")
+    return float(max_valid_actions / (1.0 + max_valid_actions))
+
+
+def _assert_actor_satisfies_surrogate_constraint(
+    *,
+    actor: torch.nn.Module,
+    rashomon_dataset: TensorDataset,
+    inverse_temp: int,
+    surrogate_threshold: float,
+    context: str,
+    tol: float = 1e-8,
+) -> float:
+    """Assert actor satisfies the surrogate valid-action-mass constraint."""
+    if inverse_temp <= 0:
+        raise ValueError(f"inverse_temp must be > 0, got {inverse_temp}.")
+
+    actor.eval()
+    with torch.no_grad():
+        obs = rashomon_dataset.tensors[0]
+        action_mask = rashomon_dataset.tensors[1]
+        actor_device = next(actor.parameters()).device
+        logits = actor(obs.to(actor_device))
+        probs = torch.softmax(logits * int(inverse_temp), dim=1)
+        valid_action_mass = (probs * action_mask.to(actor_device)).sum(dim=1)
+        min_valid_action_mass = float(valid_action_mass.min().item())
+
+    if min_valid_action_mass < float(surrogate_threshold) - float(tol):
+        raise AssertionError(
+            f"{context}: surrogate constraint failed for inverse_temp={inverse_temp}. "
+            f"min_valid_action_mass={min_valid_action_mass:.6f} < "
+            f"surrogate_threshold={float(surrogate_threshold):.6f} (tol={tol:.2e}).",
+        )
+    return min_valid_action_mass
+
+
 def compute_rashomon_bounds(
     *,
     actor: torch.nn.Module,
@@ -159,15 +236,7 @@ def compute_rashomon_bounds(
     checkpoint: int,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], object, int, float, list[float], int]:
     """Compute Rashomon parameter bounds for a state-action dataset."""
-    if len(rashomon_dataset) == 0:
-        raise RuntimeError("Rashomon dataset is empty.")
-
-    n_valid_actions = rashomon_dataset.tensors[1].sum(dim=1).tolist()
-    max_valid_actions = max(n_valid_actions) if n_valid_actions else 0.0
-    if max_valid_actions <= 0:
-        raise RuntimeError("Rashomon dataset has no valid-action labels.")
-
-    surrogate_threshold = float(max_valid_actions / (1.0 + max_valid_actions))
+    surrogate_threshold = _compute_surrogate_threshold_from_dataset(rashomon_dataset)
 
     actor.eval()
     with torch.no_grad():
@@ -193,7 +262,9 @@ def compute_rashomon_bounds(
 
     interval_trainer = IntervalTrainer(
         model=actor,
-        min_acc_limit=surrogate_threshold,
+        # min_acc_limit=surrogate_threshold,
+        min_soft_acc_limit=surrogate_threshold,
+        min_hard_acc_limit=min_hard_spec,
         seed=seed,
         n_iters=rashomon_n_iters,  # type: ignore[arg-type]
         min_acc_increment=0,
@@ -230,27 +301,274 @@ def compute_rashomon_bounds(
     )
 
 
+def _sample_reference_network_from_bounds(
+    *,
+    reference_network: torch.nn.Module,
+    bounds_l: list[torch.Tensor],
+    bounds_u: list[torch.Tensor],
+    seed: int,
+    upper_prob: float = 0.5,
+) -> tuple[torch.nn.Module, dict[str, Any]]:
+    """Sample a reference network by selecting per-parameter lower/upper bounds."""
+    if len(bounds_l) != len(bounds_u):
+        raise ValueError(
+            f"Bounds length mismatch: lower={len(bounds_l)} upper={len(bounds_u)}.",
+        )
+    if not (0.0 <= upper_prob <= 1.0):
+        raise ValueError(f"upper_prob must be in [0, 1], got {upper_prob}.")
+
+    sampled_network = copy.deepcopy(reference_network)
+    sampled_network.eval()
+    sampled_params = list(sampled_network.parameters())
+    if len(sampled_params) != len(bounds_l):
+        raise ValueError(
+            "Parameter count mismatch between reference network and Rashomon bounds. "
+            f"params={len(sampled_params)} bounds={len(bounds_l)}.",
+        )
+
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(int(seed))
+    n_total = 0
+    n_upper = 0
+
+    with torch.no_grad():
+        for p_idx, (param, lower, upper) in enumerate(zip(sampled_params, bounds_l, bounds_u)):
+            lower_cpu = lower.detach().cpu()
+            upper_cpu = upper.detach().cpu()
+            if tuple(lower_cpu.shape) != tuple(param.shape) or tuple(upper_cpu.shape) != tuple(param.shape):
+                raise ValueError(
+                    f"Bounds shape mismatch at parameter index {p_idx}: "
+                    f"param={tuple(param.shape)}, lower={tuple(lower_cpu.shape)}, upper={tuple(upper_cpu.shape)}",
+                )
+
+            choose_upper = torch.rand(lower_cpu.shape, generator=gen) < upper_prob
+            sampled_cpu = torch.where(choose_upper, upper_cpu, lower_cpu)
+            param.copy_(sampled_cpu.to(device=param.device, dtype=param.dtype))
+
+            n_total += int(choose_upper.numel())
+            n_upper += int(choose_upper.sum().item())
+
+    sample_stats = {
+        "seed": int(seed),
+        "upper_prob": float(upper_prob),
+        "n_total": int(n_total),
+        "n_upper": int(n_upper),
+        "n_lower": int(n_total - n_upper),
+        "upper_fraction": float(n_upper / n_total) if n_total > 0 else 0.0,
+    }
+    return sampled_network, sample_stats
+
+
+def compute_nonconvex_rashomon_bounds(
+    *,
+    actor: torch.nn.Module,
+    rashomon_dataset: TensorDataset,
+    seed: int,
+    n_iters: int,
+    min_hard_spec: float,
+    aggregation: str,
+    inverse_temp_start: int,
+    inverse_temp_max: int,
+    checkpoint: int,
+    n_convex_sets_budget: int,
+    return_checkpoints: bool = False,
+) -> tuple[list[list[torch.Tensor]], list[list[torch.Tensor]], list[dict[str, Any]] | None]:
+    """Build a non-convex Rashomon set as a budgeted union of convex Rashomon sets.
+
+    `n_iters` is the total iteration budget across all convex-set computations.
+    Each convex Rashomon set receives `int(n_iters / n_convex_sets_budget)` iterations.
+
+    Procedure:
+      1. Build the first convex Rashomon set around the initial reference network.
+      2. Fix inverse temperature to that first set's selected (minimum feasible) value.
+      3. Build all subsequent convex sets with the same fixed inverse temperature.
+      4. Sample each next reference network from lower/upper bounds (Bernoulli(0.5)).
+      5. Assert each sampled reference satisfies the same surrogate constraint.
+      6. Repeat until `n_convex_sets_budget` convex sets are built.
+
+    Returns:
+      (all_bounds_l, all_bounds_u, checkpoints_or_none)
+      where `all_bounds_l[set_idx][param_idx]` and `all_bounds_u[set_idx][param_idx]`
+      are the bounds for each convex Rashomon set in the union.
+    """
+    if n_convex_sets_budget <= 0:
+        raise ValueError(f"n_convex_sets_budget must be > 0, got {n_convex_sets_budget}.")
+    if n_iters <= 0:
+        raise ValueError(f"n_iters must be > 0, got {n_iters}.")
+
+    fixed_n_iters = int(n_iters / n_convex_sets_budget)
+    if fixed_n_iters <= 0:
+        raise ValueError(
+            "n_iters / n_convex_sets_budget must provide at least one iteration per convex set; "
+            f"got n_iters={n_iters}, n_convex_sets_budget={n_convex_sets_budget}.",
+        )
+    fixed_checkpoint = int(checkpoint)
+    fixed_min_hard_spec = float(min_hard_spec)
+    fixed_aggregation = str(aggregation)
+    fixed_dataset = rashomon_dataset
+
+    current_reference = copy.deepcopy(actor).to("cpu")
+    current_reference.eval()
+
+    all_bounds_l: list[list[torch.Tensor]] = []
+    all_bounds_u: list[list[torch.Tensor]] = []
+    checkpoints: list[dict[str, Any]] | None = [] if return_checkpoints else None
+    fixed_inverse_temp: int | None = None
+    fixed_surrogate_threshold: float | None = None
+
+    for set_idx in range(int(n_convex_sets_budget)):
+        if fixed_inverse_temp is None:
+            run_inverse_temp_start = int(inverse_temp_start)
+            run_inverse_temp_max = int(inverse_temp_max)
+        else:
+            run_inverse_temp_start = int(fixed_inverse_temp)
+            run_inverse_temp_max = int(fixed_inverse_temp)
+            # Sanity check: every new reference sampled from previous Rashomon set
+            # must satisfy the same surrogate constraint under fixed inverse temperature.
+            assert fixed_surrogate_threshold is not None
+            _assert_actor_satisfies_surrogate_constraint(
+                actor=current_reference,
+                rashomon_dataset=fixed_dataset,
+                inverse_temp=int(fixed_inverse_temp),
+                surrogate_threshold=float(fixed_surrogate_threshold),
+                context=f"reference_before_set_{set_idx}",
+            )
+
+        (
+            bounds_l,
+            bounds_u,
+            bounded_model,
+            selected_inverse_temp,
+            surrogate_threshold,
+            cert_values,
+            selected_cert_idx,
+        ) = compute_rashomon_bounds(
+            actor=copy.deepcopy(current_reference).to("cpu"),
+            rashomon_dataset=fixed_dataset,
+            seed=int(seed + set_idx),
+            rashomon_n_iters=fixed_n_iters,
+            min_hard_spec=fixed_min_hard_spec,
+            aggregation=fixed_aggregation,
+            inverse_temp_start=run_inverse_temp_start,
+            inverse_temp_max=run_inverse_temp_max,
+            checkpoint=fixed_checkpoint,
+        )
+
+        if fixed_inverse_temp is None:
+            # Freeze certification temperature after first set.
+            fixed_inverse_temp = int(selected_inverse_temp)
+            fixed_surrogate_threshold = float(surrogate_threshold)
+        else:
+            assert fixed_surrogate_threshold is not None
+            if int(selected_inverse_temp) != int(fixed_inverse_temp):
+                raise AssertionError(
+                    "Inverse temperature changed across convex sets despite fixed-temperature mode. "
+                    f"expected={fixed_inverse_temp}, got={selected_inverse_temp}.",
+                )
+            if abs(float(surrogate_threshold) - float(fixed_surrogate_threshold)) > 1e-12:
+                raise AssertionError(
+                    "Surrogate min-accuracy limit changed across convex sets. "
+                    f"expected={fixed_surrogate_threshold:.12f}, got={float(surrogate_threshold):.12f}.",
+                )
+
+        set_bounds_l = [p.detach().cpu().clone() for p in bounds_l]
+        set_bounds_u = [p.detach().cpu().clone() for p in bounds_u]
+        all_bounds_l.append(set_bounds_l)
+        all_bounds_u.append(set_bounds_u)
+
+        if checkpoints is not None:
+            checkpoints.append(
+                {
+                    "set_idx": int(set_idx),
+                    "seed": int(seed + set_idx),
+                    "n_iters": int(fixed_n_iters),
+                    "total_n_iters_budget": int(n_iters),
+                    "n_iters_per_convex_set": int(fixed_n_iters),
+                    "n_convex_sets_budget": int(n_convex_sets_budget),
+                    "selected_inverse_temperature": int(selected_inverse_temp),
+                    "surrogate_threshold": float(surrogate_threshold),
+                    "certificates": [float(v) for v in cert_values],
+                    "selected_certificate_index": int(selected_cert_idx),
+                    "selected_certificate": float(cert_values[selected_cert_idx]),
+                    "bounded_model": bounded_model,
+                    "certification_spec": {
+                        "inverse_temperature": int(selected_inverse_temp),
+                        "min_acc_limit": float(surrogate_threshold),
+                        "min_hard_spec": float(fixed_min_hard_spec),
+                        "aggregation": str(fixed_aggregation),
+                    },
+                },
+            )
+
+        if set_idx >= int(n_convex_sets_budget) - 1:
+            continue
+
+        sampled_reference, sample_stats = _sample_reference_network_from_bounds(
+            reference_network=current_reference,
+            bounds_l=set_bounds_l,
+            bounds_u=set_bounds_u,
+            seed=int(seed + n_convex_sets_budget + set_idx),
+            upper_prob=0.5,
+        )
+        current_reference = sampled_reference.to("cpu")
+        current_reference.eval()
+        assert fixed_inverse_temp is not None
+        assert fixed_surrogate_threshold is not None
+        min_valid_action_mass = _assert_actor_satisfies_surrogate_constraint(
+            actor=current_reference,
+            rashomon_dataset=fixed_dataset,
+            inverse_temp=int(fixed_inverse_temp),
+            surrogate_threshold=float(fixed_surrogate_threshold),
+            context=f"sampled_reference_after_set_{set_idx}",
+        )
+        if checkpoints is not None:
+            checkpoints[-1]["next_reference_sampling"] = sample_stats
+            checkpoints[-1]["next_reference_sampling"]["min_valid_action_mass"] = float(min_valid_action_mass)
+            checkpoints[-1]["next_reference_sampling"]["surrogate_threshold"] = float(fixed_surrogate_threshold)
+            checkpoints[-1]["next_reference_sampling"]["inverse_temperature"] = int(fixed_inverse_temp)
+
+    return all_bounds_l, all_bounds_u, checkpoints
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run downstream LunarLander adaptation with rollout Rashomon bounds and PPO-PGD.",
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Torch device passed to PPO training.",
+    )
     parser.add_argument(
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
-        "--task-setting",
+        "--adapt-settings-file",
+        type=Path,
+        default=default_adapt_ppo_settings_file(),
+        help="Shared downstream PPO settings YAML used for training/eval defaults.",
+    )
+    parser.add_argument(
+        "--rashomon-settings-file",
+        type=Path,
+        default=default_adapt_rashomon_settings_file(),
+        help="Rashomon-set construction settings YAML.",
+    )
+    parser.add_argument(
+        "--pipeline",
         type=str,
+        dest="task_setting",
         default="default",
     )
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument("--env-id", type=str, default=None, help="Optional env-id override.")
     parser.add_argument("--source-gravity", type=float, default=None, help="Optional source gravity override.")
     parser.add_argument("--downstream-gravity", type=float, default=None, help="Optional downstream gravity override.")
-    parser.add_argument("--source-task-id", type=float, default=None, help="Optional source task-id override.")
-    parser.add_argument("--downstream-task-id", type=float, default=None, help="Optional downstream task-id override.")
     parser.add_argument(
         "--append-task-id",
         action=argparse.BooleanOptionalAction,
@@ -261,7 +579,7 @@ def main() -> None:
         "--source-run-dir",
         type=Path,
         default=None,
-        help="Optional explicit source checkpoint directory. Defaults to outputs/<task_setting>/seed_<seed>/source",
+        help="Optional explicit NoAdapt checkpoint directory. Defaults to outputs/<pipeline>/seed_<seed>/noadapt",
     )
     parser.add_argument(
         "--outputs-root",
@@ -272,7 +590,7 @@ def main() -> None:
         "--run-subdir",
         type=str,
         default="downstream_rashomon",
-        help="Subdirectory under outputs/<task_setting>/seed_<seed>/ where outputs are saved.",
+        help="Subdirectory under outputs/<pipeline>/seed_<seed>/ where outputs are saved.",
     )
     parser.add_argument(
         "--hidden-size",
@@ -298,40 +616,44 @@ def main() -> None:
     )
 
     # PPO adaptation hyperparameters
-    parser.add_argument("--total-timesteps", type=int, default=200_000)
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=None,
+        help="Optional override. Defaults to settings/adaptation/ppo.yaml for this pipeline.",
+    )
+    parser.add_argument(
+        "--total-timesteps-override",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--eval-episodes-during-training",
         type=int,
-        default=20,
-        help="Number of episodes per periodic evaluation during PPO training.",
+        default=None,
+        help="Optional override. Defaults to settings/adaptation/ppo.yaml for this pipeline.",
     )
     parser.add_argument(
         "--eval-episodes-post-training",
         type=int,
-        default=100,
-        help="Number of episodes for final post-training evaluation.",
+        default=None,
+        help="Optional override. Defaults to settings/adaptation/ppo.yaml downstream_eval.episodes_post_training.",
     )
-    parser.add_argument("--rollout-steps", type=int, default=2048)
-    parser.add_argument("--update-epochs", type=int, default=10)
-    parser.add_argument("--minibatch-size", type=int, default=256)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--clip-coef", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.01)
-    parser.add_argument("--vf-coef", type=float, default=0.5)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
-    parser.add_argument(
-        "--early-stop",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable early stopping on periodic evaluation (default: enabled).",
-    )
-    parser.add_argument("--early-stop-min-steps", type=int, default=0)
-    parser.add_argument("--early-stop-reward-threshold", type=float, default=200.0)
+    parser.add_argument("--rollout-steps", type=int, default=None)
+    parser.add_argument("--update-epochs", type=int, default=None)
+    parser.add_argument("--minibatch-size", type=int, default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--gae-lambda", type=float, default=None)
+    parser.add_argument("--clip-coef", type=float, default=None)
+    parser.add_argument("--ent-coef", type=float, default=None)
+    parser.add_argument("--vf-coef", type=float, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--max-grad-norm", type=float, default=None)
+    parser.add_argument("--early-stop-min-steps", type=int, default=None)
+    parser.add_argument("--early-stop-reward-threshold", type=float, default=None)
     parser.add_argument("--early-stop-failure-rate-threshold", type=float, default=None)
-    parser.add_argument("--early-stop-deterministic-total-reward-threshold", type=float, default=None)
-    parser.add_argument("--early-stop-deterministic-eval-episodes", type=int, default=20)
+    parser.add_argument("--early-stop-success-rate-threshold", type=float, default=None)
     parser.add_argument(
         "--trajectory-episodes",
         type=int,
@@ -349,35 +671,208 @@ def main() -> None:
     parser.add_argument(
         "--rashomon-rollouts",
         type=int,
-        default=100,
-        help="Number of source-task rollouts used to build the Rashomon dataset.",
+        default=None,
+        help="Optional override. Defaults to settings/adaptation/rashomon.yaml for this pipeline.",
     )
-    parser.add_argument("--rashomon-n-iters", type=int, default=50_000)
-    parser.add_argument("--rashomon-min-hard-spec", type=float, default=1.0)
+    parser.add_argument("--rashomon-n-iters", type=int, default=None)
+    parser.add_argument("--rashomon-min-hard-spec", type=float, default=None)
     parser.add_argument(
         "--rashomon-surrogate-aggregation",
         type=str,
         choices=["mean", "min"],
-        default="min",
+        default=None,
     )
-    parser.add_argument("--inverse-temp-start", type=int, default=10)
-    parser.add_argument("--inverse-temp-max", type=int, default=1000)
-    parser.add_argument("--rashomon-checkpoint", type=int, default=100)
+    parser.add_argument("--inverse-temp-start", type=int, default=None)
+    parser.add_argument("--inverse-temp-max", type=int, default=None)
+    parser.add_argument("--rashomon-checkpoint", type=int, default=None)
     args = parser.parse_args()
 
-    if args.eval_episodes_during_training < 2:
-        raise ValueError("For LunarLander, --eval-episodes-during-training must be >= 2.")
-    if args.eval_episodes_post_training < 2:
-        raise ValueError("For LunarLander, --eval-episodes-post-training must be >= 2.")
-    if args.rashomon_rollouts <= 0:
-        raise ValueError("--rashomon-rollouts must be > 0.")
-    if args.inverse_temp_start <= 0 or args.inverse_temp_max < args.inverse_temp_start:
-        raise ValueError(
-            "Invalid inverse-temperature range. Require 0 < inverse-temp-start <= inverse-temp-max.",
-        )
+    if args.enable_task_neutralization and args.disable_task_neutralization:
+        raise ValueError("Cannot set both --enable-task-neutralization and --disable-task-neutralization.")
+    if args.total_timesteps is not None and args.total_timesteps_override is not None:
+        raise ValueError("Use only one of --total-timesteps and --total-timesteps-override.")
 
     source_task_cfg = _load_task_settings(args.task_settings_file, args.task_setting, "source")
     downstream_task_cfg = _load_task_settings(args.task_settings_file, args.task_setting, "downstream")
+
+    adapt_settings = _load_yaml(args.adapt_settings_file)
+    adapt_cfg = _resolve_setting_cfg(
+        adapt_settings,
+        args.task_setting,
+        settings_name=str(args.adapt_settings_file),
+    )
+    adapt_ppo_cfg = adapt_cfg.get("ppo", {})
+    if not isinstance(adapt_ppo_cfg, dict):
+        raise ValueError(
+            f"Expected 'ppo' mapping for setting '{args.task_setting}' in {args.adapt_settings_file}.",
+        )
+    downstream_eval_cfg = adapt_cfg.get("downstream_eval", {})
+    if not isinstance(downstream_eval_cfg, dict):
+        downstream_eval_cfg = {}
+
+    rashomon_settings = _load_yaml(args.rashomon_settings_file)
+    rashomon_setting_cfg = _resolve_setting_cfg(
+        rashomon_settings,
+        args.task_setting,
+        settings_name=str(args.rashomon_settings_file),
+    )
+    rashomon_cfg = rashomon_setting_cfg.get("rashomon", {})
+    if not isinstance(rashomon_cfg, dict):
+        raise ValueError(
+            f"Expected 'rashomon' mapping for setting '{args.task_setting}' in {args.rashomon_settings_file}.",
+        )
+
+    device = str(args.device)
+    total_timesteps_arg = (
+        args.total_timesteps
+        if args.total_timesteps is not None
+        else args.total_timesteps_override
+    )
+    total_timesteps = int(
+        total_timesteps_arg
+        if total_timesteps_arg is not None
+        else adapt_ppo_cfg.get("total_timesteps", 200_000),
+    )
+    eval_episodes_during_training = int(
+        args.eval_episodes_during_training
+        if args.eval_episodes_during_training is not None
+        else adapt_ppo_cfg.get("eval_episodes_during_training", 20),
+    )
+    eval_episodes_post_training = int(
+        args.eval_episodes_post_training
+        if args.eval_episodes_post_training is not None
+        else downstream_eval_cfg.get("episodes_post_training", 100),
+    )
+    rollout_steps = int(
+        args.rollout_steps
+        if args.rollout_steps is not None
+        else adapt_ppo_cfg.get("rollout_steps", 2048),
+    )
+    update_epochs = int(
+        args.update_epochs
+        if args.update_epochs is not None
+        else adapt_ppo_cfg.get("update_epochs", 10),
+    )
+    minibatch_size = int(
+        args.minibatch_size
+        if args.minibatch_size is not None
+        else adapt_ppo_cfg.get("minibatch_size", 256),
+    )
+    gamma = float(args.gamma if args.gamma is not None else adapt_ppo_cfg.get("gamma", 0.99))
+    gae_lambda = float(
+        args.gae_lambda
+        if args.gae_lambda is not None
+        else adapt_ppo_cfg.get("gae_lambda", 0.95),
+    )
+    clip_coef = float(
+        args.clip_coef
+        if args.clip_coef is not None
+        else adapt_ppo_cfg.get("clip_coef", 0.2),
+    )
+    ent_coef = float(args.ent_coef if args.ent_coef is not None else adapt_ppo_cfg.get("ent_coef", 0.01))
+    vf_coef = float(args.vf_coef if args.vf_coef is not None else adapt_ppo_cfg.get("vf_coef", 0.5))
+    lr = float(args.lr if args.lr is not None else adapt_ppo_cfg.get("lr", 3e-4))
+    max_grad_norm = float(
+        args.max_grad_norm
+        if args.max_grad_norm is not None
+        else adapt_ppo_cfg.get("max_grad_norm", 0.5),
+    )
+    early_stop_min_steps = int(
+        args.early_stop_min_steps
+        if args.early_stop_min_steps is not None
+        else adapt_ppo_cfg.get("early_stop_min_steps", 0),
+    )
+    early_stop_reward_threshold_raw = (
+        args.early_stop_reward_threshold
+        if args.early_stop_reward_threshold is not None
+        else adapt_ppo_cfg.get("early_stop_reward_threshold", None)
+    )
+    early_stop_failure_rate_threshold_raw = (
+        args.early_stop_failure_rate_threshold
+        if args.early_stop_failure_rate_threshold is not None
+        else adapt_ppo_cfg.get("early_stop_failure_rate_threshold", None)
+    )
+    early_stop_success_rate_threshold_raw = (
+        args.early_stop_success_rate_threshold
+        if args.early_stop_success_rate_threshold is not None
+        else adapt_ppo_cfg.get("early_stop_success_rate_threshold", None)
+    )
+    early_stop_reward_threshold = (
+        float(early_stop_reward_threshold_raw)
+        if early_stop_reward_threshold_raw is not None
+        else None
+    )
+    early_stop_failure_rate_threshold = (
+        float(early_stop_failure_rate_threshold_raw)
+        if early_stop_failure_rate_threshold_raw is not None
+        else None
+    )
+    early_stop_success_rate_threshold = (
+        float(early_stop_success_rate_threshold_raw)
+        if early_stop_success_rate_threshold_raw is not None
+        else None
+    )
+
+    rashomon_rollouts = int(
+        args.rashomon_rollouts
+        if args.rashomon_rollouts is not None
+        else rashomon_cfg.get("rashomon_rollouts", 1),
+    )
+    rashomon_n_iters = int(
+        args.rashomon_n_iters
+        if args.rashomon_n_iters is not None
+        else rashomon_cfg.get("rashomon_n_iters", 50_000),
+    )
+    rashomon_min_hard_spec = float(
+        args.rashomon_min_hard_spec
+        if args.rashomon_min_hard_spec is not None
+        else rashomon_cfg.get("rashomon_min_hard_spec", 1.0),
+    )
+    rashomon_surrogate_aggregation = str(
+        args.rashomon_surrogate_aggregation
+        if args.rashomon_surrogate_aggregation is not None
+        else rashomon_cfg.get("rashomon_surrogate_aggregation", "min"),
+    )
+    inverse_temp_start = int(
+        args.inverse_temp_start
+        if args.inverse_temp_start is not None
+        else rashomon_cfg.get("inverse_temp_start", 10),
+    )
+    inverse_temp_max = int(
+        args.inverse_temp_max
+        if args.inverse_temp_max is not None
+        else rashomon_cfg.get("inverse_temp_max", 1000),
+    )
+    rashomon_checkpoint = int(
+        args.rashomon_checkpoint
+        if args.rashomon_checkpoint is not None
+        else rashomon_cfg.get("rashomon_checkpoint", 100),
+    )
+
+    if total_timesteps <= 0:
+        raise ValueError("--total-timesteps (or resolved default) must be > 0.")
+    if eval_episodes_during_training <= 0:
+        raise ValueError("--eval-episodes-during-training (or resolved default) must be > 0.")
+    if eval_episodes_post_training <= 0:
+        raise ValueError("--eval-episodes-post-training (or resolved default) must be > 0.")
+    if rollout_steps <= 0:
+        raise ValueError("--rollout-steps (or resolved default) must be > 0.")
+    if update_epochs <= 0:
+        raise ValueError("--update-epochs (or resolved default) must be > 0.")
+    if minibatch_size <= 0:
+        raise ValueError("--minibatch-size (or resolved default) must be > 0.")
+    if rashomon_rollouts <= 0:
+        raise ValueError("--rashomon-rollouts (or resolved default) must be > 0.")
+    if rashomon_n_iters <= 0:
+        raise ValueError("--rashomon-n-iters (or resolved default) must be > 0.")
+    if rashomon_surrogate_aggregation not in {"mean", "min"}:
+        raise ValueError(
+            "--rashomon-surrogate-aggregation (or resolved default) must be one of: mean, min.",
+        )
+    if inverse_temp_start <= 0 or inverse_temp_max < inverse_temp_start:
+        raise ValueError(
+            "Invalid inverse-temperature range. Require 0 < inverse-temp-start <= inverse-temp-max.",
+        )
 
     env_id = str(
         args.env_id
@@ -394,17 +889,19 @@ def main() -> None:
     source_gravity = None if source_gravity_raw is None else float(source_gravity_raw)
     downstream_gravity = None if downstream_gravity_raw is None else float(downstream_gravity_raw)
 
-    source_task_id = float(args.source_task_id) if args.source_task_id is not None else float(
-        source_task_cfg.get("task_id", 0.0),
-    )
-    downstream_task_id = float(args.downstream_task_id) if args.downstream_task_id is not None else float(
-        downstream_task_cfg.get("task_id", 1.0),
-    )
+    source_task_id = float(source_task_cfg.get("task_id", 0.0))
+    downstream_task_id = float(downstream_task_cfg.get("task_id", 1.0))
     append_task_id = (
         bool(args.append_task_id)
         if args.append_task_id is not None
         else bool(source_task_cfg.get("append_task_id", True))
     )
+    task_pipelines_file = str(source_task_cfg.get("_task_pipelines_file") or args.task_settings_file)
+    task_definitions_file_raw = source_task_cfg.get("_task_definitions_file")
+    task_definitions_file = None if task_definitions_file_raw is None else str(task_definitions_file_raw)
+    resolved_pipeline_name = source_task_cfg.get("_resolved_pipeline_name")
+    resolved_source_definition_name = source_task_cfg.get("_resolved_definition_name")
+    resolved_downstream_definition_name = downstream_task_cfg.get("_resolved_definition_name")
     source_dynamics = _resolve_lunarlander_dynamics(
         source_task_cfg,
         cfg_name=f"task_settings[{args.task_setting}:source]",
@@ -440,9 +937,9 @@ def main() -> None:
     critic_ckpt = source_run_dir / "critic.pt"
 
     if not actor_ckpt.exists():
-        raise FileNotFoundError(f"Source actor checkpoint not found: {actor_ckpt}")
+        raise FileNotFoundError(f"NoAdapt actor checkpoint not found: {actor_ckpt}")
     if args.warm_start_critic and not critic_ckpt.exists():
-        raise FileNotFoundError(f"Source critic checkpoint not found: {critic_ckpt}")
+        raise FileNotFoundError(f"NoAdapt critic checkpoint not found: {critic_ckpt}")
 
     hidden_size = _load_source_hidden_size(source_run_dir, args.hidden_size)
 
@@ -477,14 +974,14 @@ def main() -> None:
             env=source_rollout_env,
             seed=args.seed,
             n_actions=n_actions,
-            rashomon_rollouts=args.rashomon_rollouts,
+            rashomon_rollouts=rashomon_rollouts,
         )
     finally:
         source_rollout_env.close()
 
     print(
         f"Built source rollout Rashomon dataset: {len(rashomon_dataset)} samples "
-        f"from {args.rashomon_rollouts} rollouts.",
+        f"from {rashomon_rollouts} rollouts.",
     )
 
     (
@@ -499,17 +996,17 @@ def main() -> None:
         actor=copy.deepcopy(source_actor),
         rashomon_dataset=rashomon_dataset,
         seed=args.seed,
-        rashomon_n_iters=int(args.rashomon_n_iters),
-        min_hard_spec=float(args.rashomon_min_hard_spec),
-        aggregation=str(args.rashomon_surrogate_aggregation),
-        inverse_temp_start=int(args.inverse_temp_start),
-        inverse_temp_max=int(args.inverse_temp_max),
-        checkpoint=int(args.rashomon_checkpoint),
+        rashomon_n_iters=rashomon_n_iters,
+        min_hard_spec=rashomon_min_hard_spec,
+        aggregation=rashomon_surrogate_aggregation,
+        inverse_temp_start=inverse_temp_start,
+        inverse_temp_max=inverse_temp_max,
+        checkpoint=rashomon_checkpoint,
     )
 
     print(
-        f"Rashomon bounds ready: aggregation={args.rashomon_surrogate_aggregation} | "
-        f"min_hard_spec={args.rashomon_min_hard_spec:.3f} | selected_cert={cert_values[selected_cert_idx]:.4f} "
+        f"Rashomon bounds ready: aggregation={rashomon_surrogate_aggregation} | "
+        f"min_hard_spec={rashomon_min_hard_spec:.3f} | selected_cert={cert_values[selected_cert_idx]:.4f} "
         f"(idx={selected_cert_idx}) | inverse_temp={selected_inverse_temp}",
     )
 
@@ -525,38 +1022,24 @@ def main() -> None:
             neutralize_task_feature(source_critic, task_feature_index, downstream_task_id)
 
     ppo_cfg = PPOConfig(
-        seed=int(args.seed),
-        total_timesteps=int(args.total_timesteps),
-        eval_episodes=int(args.eval_episodes_during_training),
-        rollout_steps=int(args.rollout_steps),
-        update_epochs=int(args.update_epochs),
-        minibatch_size=int(args.minibatch_size),
-        gamma=float(args.gamma),
-        gae_lambda=float(args.gae_lambda),
-        clip_coef=float(args.clip_coef),
-        ent_coef=float(args.ent_coef),
-        vf_coef=float(args.vf_coef),
-        lr=float(args.lr),
-        max_grad_norm=float(args.max_grad_norm),
-        device=args.device,
-        early_stop=bool(args.early_stop),
-        early_stop_min_steps=int(args.early_stop_min_steps),
-        early_stop_reward_threshold=(
-            float(args.early_stop_reward_threshold)
-            if args.early_stop_reward_threshold is not None
-            else None
-        ),
-        early_stop_failure_rate_threshold=(
-            float(args.early_stop_failure_rate_threshold)
-            if args.early_stop_failure_rate_threshold is not None
-            else None
-        ),
-        early_stop_deterministic_total_reward_threshold=(
-            float(args.early_stop_deterministic_total_reward_threshold)
-            if args.early_stop_deterministic_total_reward_threshold is not None
-            else None
-        ),
-        early_stop_deterministic_eval_episodes=int(args.early_stop_deterministic_eval_episodes),
+        seed=int(adapt_ppo_cfg.get("seed", args.seed)),
+        total_timesteps=total_timesteps,
+        eval_episodes=eval_episodes_during_training,
+        rollout_steps=rollout_steps,
+        update_epochs=update_epochs,
+        minibatch_size=minibatch_size,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
+        clip_coef=clip_coef,
+        ent_coef=ent_coef,
+        vf_coef=vf_coef,
+        lr=lr,
+        max_grad_norm=max_grad_norm,
+        device=device,
+        early_stop_min_steps=early_stop_min_steps,
+        early_stop_reward_threshold=early_stop_reward_threshold,
+        early_stop_failure_rate_threshold=early_stop_failure_rate_threshold,
+        early_stop_success_rate_threshold=early_stop_success_rate_threshold,
     )
 
     print(
@@ -587,18 +1070,17 @@ def main() -> None:
         return_training_data=True,
     )
 
-    eval_episodes_post_training = int(args.eval_episodes_post_training)
     source_eval_env = _make_lunarlander_env(
         env_id,
         render_mode=None,
         **source_env_kwargs,
     )
-    source_mean_reward, source_std_reward, source_failure_rate = evaluate(
+    source_mean_reward, source_std_reward, source_failure_rate, source_success_rate = evaluate_with_success(
         source_eval_env,
         actor,
         episodes=eval_episodes_post_training,
         deterministic=True,
-        device=args.device,
+        device=device,
     )
     source_eval_env.close()
 
@@ -607,12 +1089,17 @@ def main() -> None:
         render_mode=None,
         **downstream_env_kwargs,
     )
-    downstream_mean_reward, downstream_std_reward, downstream_failure_rate = evaluate(
+    (
+        downstream_mean_reward,
+        downstream_std_reward,
+        downstream_failure_rate,
+        downstream_success_rate,
+    ) = evaluate_with_success(
         downstream_eval_env,
         actor,
         episodes=eval_episodes_post_training,
         deterministic=True,
-        device=args.device,
+        device=device,
     )
     downstream_eval_env.close()
 
@@ -648,7 +1135,7 @@ def main() -> None:
     actor_for_plot.eval()
 
     rollout_stats: dict[str, Any] = {
-        "rashomon_rollouts": int(args.rashomon_rollouts),
+        "rashomon_rollouts": int(rashomon_rollouts),
         "total_state_action_pairs": int(len(rashomon_dataset)),
         "rollout_lengths": [int(x) for x in rollout_lengths],
         "rollout_length_min": int(min(rollout_lengths)),
@@ -703,19 +1190,43 @@ def main() -> None:
         "task_feature_neutralization": bool(do_task_neutralization),
         "task_feature_index": int(task_feature_index) if do_task_neutralization else None,
         "hidden_size": int(hidden_size),
-        "eval_episodes_during_training": int(args.eval_episodes_during_training),
+        "device": device,
+        "total_timesteps": int(total_timesteps),
+        "eval_episodes_during_training": int(eval_episodes_during_training),
         "eval_episodes_post_training": int(eval_episodes_post_training),
+        "rollout_steps": int(rollout_steps),
+        "update_epochs": int(update_epochs),
+        "minibatch_size": int(minibatch_size),
+        "gamma": float(gamma),
+        "gae_lambda": float(gae_lambda),
+        "clip_coef": float(clip_coef),
+        "ent_coef": float(ent_coef),
+        "vf_coef": float(vf_coef),
+        "lr": float(lr),
+        "max_grad_norm": float(max_grad_norm),
+        "early_stop_min_steps": int(early_stop_min_steps),
+        "early_stop_reward_threshold": early_stop_reward_threshold,
+        "early_stop_failure_rate_threshold": early_stop_failure_rate_threshold,
+        "early_stop_success_rate_threshold": early_stop_success_rate_threshold,
         "trajectory_episodes": int(args.trajectory_episodes),
         "trajectory_max_frames_per_episode": int(args.trajectory_max_frames_per_episode),
-        "rashomon_rollouts": int(args.rashomon_rollouts),
-        "rashomon_n_iters": int(args.rashomon_n_iters),
-        "surrogate_aggregation": str(args.rashomon_surrogate_aggregation),
-        "inverse_temp_start": int(args.inverse_temp_start),
-        "inverse_temp_max": int(args.inverse_temp_max),
-        "rashomon_checkpoint": int(args.rashomon_checkpoint),
+        "rashomon_rollouts": int(rashomon_rollouts),
+        "rashomon_n_iters": int(rashomon_n_iters),
+        "surrogate_aggregation": str(rashomon_surrogate_aggregation),
+        "inverse_temp_start": int(inverse_temp_start),
+        "inverse_temp_max": int(inverse_temp_max),
+        "rashomon_checkpoint": int(rashomon_checkpoint),
+        "noadapt_checkpoint_dir": str(source_run_dir),
         "source_checkpoint_dir": str(source_run_dir),
         "task_setting": args.task_setting,
         "task_settings_file": str(args.task_settings_file),
+        "adapt_settings_file": str(args.adapt_settings_file),
+        "rashomon_settings_file": str(args.rashomon_settings_file),
+        "task_pipelines_file": task_pipelines_file,
+        "task_definitions_file": task_definitions_file,
+        "resolved_pipeline_name": resolved_pipeline_name,
+        "resolved_source_definition_name": resolved_source_definition_name,
+        "resolved_downstream_definition_name": resolved_downstream_definition_name,
     }
     run_results = {
         "rashomon_dataset_size": int(len(rashomon_dataset)),
@@ -727,9 +1238,11 @@ def main() -> None:
         "source_mean_reward": float(source_mean_reward),
         "source_std_reward": float(source_std_reward),
         "source_failure_rate": float(source_failure_rate),
+        "source_success_rate": float(source_success_rate),
         "downstream_mean_reward": float(downstream_mean_reward),
         "downstream_std_reward": float(downstream_std_reward),
         "downstream_failure_rate": float(downstream_failure_rate),
+        "downstream_success_rate": float(downstream_success_rate),
     }
     artifacts = {
         "actor_path": str(actor_path),
@@ -754,11 +1267,13 @@ def main() -> None:
 
     print(
         f"Source eval ({eval_episodes_post_training} ep): mean_reward={source_mean_reward:.3f}, "
-        f"std={source_std_reward:.3f}, failure_rate={source_failure_rate:.3f}",
+        f"std={source_std_reward:.3f}, failure_rate={source_failure_rate:.3f}, "
+        f"success_rate={source_success_rate:.3f}",
     )
     print(
         f"Downstream eval ({eval_episodes_post_training} ep): mean_reward={downstream_mean_reward:.3f}, "
-        f"std={downstream_std_reward:.3f}, failure_rate={downstream_failure_rate:.3f}",
+        f"std={downstream_std_reward:.3f}, failure_rate={downstream_failure_rate:.3f}, "
+        f"success_rate={downstream_success_rate:.3f}",
     )
     print(f"Saved actor: {actor_path}")
     print(f"Saved critic: {critic_path}")

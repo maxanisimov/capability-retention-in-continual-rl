@@ -91,11 +91,13 @@ File: `experiments/pipelines/lunarlander/rollout_policy_video.py`
 - Added support for reading/writing these dynamics fields from run metadata.
 - When reconstructing env config for rollout, these values are passed to `_make_lunarlander_env(...)`.
 
-File: `experiments/pipelines/lunarlander/settings/task_settings.yaml`
+Files:
+- `experiments/pipelines/lunarlander/settings/tasks/task_definitions.yaml`
+- `experiments/pipelines/lunarlander/settings/tasks/task_pipelines.yaml`
 
-- Added nullable keys under each role:
-  - `initial_random_strength: null`
-  - `dispersion_strength: null`
+- Task definitions now contain reusable environment hyperparameters only.
+- Task pipelines now pair source/downstream definitions and expose shared `append_task_id`.
+- Task IDs are role-fixed by loader logic (`source=0`, `downstream=1`).
 
 ## Usage
 
@@ -114,25 +116,31 @@ env = gym.make(
 )
 ```
 
-### Task settings YAML
+### Task settings YAML (split schema)
 ```yaml
-my_setting:
+my_setting__source:
   env_id: LunarLander-v4
   continuous: false
+  gravity: null
+  enable_wind: false
+  wind_power: null
+  turbulence_power: null
+  initial_random_strength: 0.0
+  dispersion_strength: 0.0
+  action_repeat: 1
+  action_delay: 0
+  action_noise_prob: 0.0
+  action_noise_mode: noop
+  mark_out_of_viewport_as_unsafe: false
+```
+
+```yaml
+my_setting:
   append_task_id: true
   source:
-    task_id: 0.0
-    gravity: null
-    enable_wind: false
-    wind_power: null
-    turbulence_power: null
-    initial_random_strength: 0.0
-    dispersion_strength: 0.0
-    action_repeat: 1
-    action_delay: 0
-    action_noise_prob: 0.0
-    action_noise_mode: noop
-    mark_out_of_viewport_as_unsafe: false
+    env: my_setting__source
+  downstream:
+    env: my_setting__downstream
 ```
 
 ## Notes and Limitations

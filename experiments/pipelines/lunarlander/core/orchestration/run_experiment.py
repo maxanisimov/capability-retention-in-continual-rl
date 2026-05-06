@@ -19,6 +19,7 @@ MODE_TO_SCRIPT = {
     "downstream_unconstrained": "adapt_unconstrained.py",
     "downstream_ewc": "adapt_ewc.py",
     "downstream_rashomon": "adapt_rashomon.py",
+    "downstream_rashomon_expanded": "adapt_rashomon_expanded.py",
 }
 
 
@@ -26,7 +27,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run a LunarLander experiment by mode with a single interface for "
-            "task-setting and seed."
+            "pipeline and seed."
         ),
     )
     parser.add_argument(
@@ -37,17 +38,13 @@ def main() -> None:
         help="Experiment mode to run.",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
-    parser.add_argument(
-        "--task-setting",
-        type=str,
-        default="default",
-        help="Environment configuration name from task_settings.yaml.",
-    )
+    parser.add_argument("--pipeline", type=str, dest="task_setting", default="default", help="Pipeline name.")
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument(
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Task settings YAML containing source/downstream environment configs.",
+        help="Task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--device",
@@ -71,7 +68,7 @@ def main() -> None:
         "--source-run-dir",
         type=Path,
         default=None,
-        help="Optional explicit source run directory for downstream adaptation.",
+        help="Optional explicit NoAdapt run directory for downstream adaptation.",
     )
     parser.add_argument(
         "--dry-run",
@@ -88,7 +85,7 @@ def main() -> None:
         str(script_path),
         "--seed",
         str(args.seed),
-        "--task-setting",
+        "--pipeline",
         str(args.task_setting),
         "--task-settings-file",
         str(args.task_settings_file),

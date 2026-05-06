@@ -13,11 +13,13 @@ import time
 from typing import TextIO
 
 from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
+    NOADAPT_POLICY_SUBDIR,
     default_adapt_ewc_settings_file,
     default_adapt_ppo_settings_file,
     default_outputs_root,
     default_task_settings_file,
     pipeline_root,
+    resolve_default_source_run_dir,
 )
 
 
@@ -26,12 +28,20 @@ MODE_TO_CLI = {
     "downstream_unconstrained": "adapt_unconstrained.py",
     "downstream_ewc": "adapt_ewc.py",
     "downstream_rashomon": "adapt_rashomon.py",
+    "downstream_rashomon_nonconvex": "adapt_rashomon_nonconvex.py",
+    "downstream_rashomon_expanded": "adapt_rashomon_expanded.py",
+    "downstream_rashomon_plus": "adapt_rashomon_plus.py",
+    "expand_rashomon_set": "expand_rashomon_set.py",
 }
 
 MODE_TO_DEFAULT_RUN_SUBDIR = {
     "downstream_unconstrained": "downstream_unconstrained",
     "downstream_ewc": "downstream_ewc",
     "downstream_rashomon": "downstream_rashomon",
+    "downstream_rashomon_nonconvex": "downstream_rashomon_nonconvex",
+    "downstream_rashomon_expanded": "downstream_rashomon_expanded",
+    "downstream_rashomon_plus": "downstream_rashomon_plus",
+    "expand_rashomon_set": "downstream_rashomon_union_expanded",
 }
 
 
@@ -68,17 +78,13 @@ def _parse_args() -> tuple[argparse.Namespace, list[str]]:
         choices=sorted(MODE_TO_CLI.keys()),
         help="Experiment mode to launch across seeds.",
     )
-    parser.add_argument(
-        "--task-setting",
-        type=str,
-        default="default",
-        help="Task-setting name from task_settings.yaml.",
-    )
+    parser.add_argument("--pipeline", type=str, dest="task_setting", default="default", help="Pipeline name.")
+    parser.add_argument("--task-setting", type=str, dest="task_setting", help=argparse.SUPPRESS)
     parser.add_argument(
         "--task-settings-file",
         type=Path,
         default=default_task_settings_file(),
-        help="Path to LunarLander task settings YAML.",
+        help="Path to task pipeline settings YAML (legacy monolithic task settings YAML is also supported).",
     )
     parser.add_argument(
         "--adapt-settings-file",
@@ -127,20 +133,24 @@ def _parse_args() -> tuple[argparse.Namespace, list[str]]:
         default=None,
         help=(
             "Optional root used to derive per-seed source checkpoints as "
-            "<source-run-root>/<task-setting>/seed_<seed>/source for downstream modes."
+            "<source-run-root>/<pipeline>/seed_<seed>/noadapt for downstream modes."
         ),
     )
     parser.add_argument(
         "--run-subdir",
         type=str,
         default=None,
-        help="Override downstream run subdirectory under outputs/<task-setting>/seed_<seed>/.",
+        help="Override downstream run subdirectory under outputs/<pipeline>/seed_<seed>/.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device passed to worker runs.")
     parser.add_argument(
         "--disable-task-neutralization",
         action="store_true",
-        help="Forward --disable-task-neutralization to downstream modes.",
+        help=(
+            "Disable task neutralization in downstream modes. "
+            "For expand_rashomon_set mode this forwards --no-task-neutralization; "
+            "for other downstream modes it forwards --disable-task-neutralization."
+        ),
     )
     parser.add_argument(
         "--total-timesteps-override",
@@ -198,7 +208,7 @@ def _build_worker_cmd(
                 str(seed),
                 "--task-role",
                 "source",
-                "--task-setting",
+                "--pipeline",
                 str(args.task_setting),
                 "--task-settings-file",
                 str(args.task_settings_file),
@@ -211,7 +221,7 @@ def _build_worker_cmd(
     else:
         cmd.extend(
             [
-                "--task-setting",
+                "--pipeline",
                 str(args.task_setting),
                 "--seed",
                 str(seed),
@@ -224,7 +234,7 @@ def _build_worker_cmd(
             ],
         )
 
-        if args.mode in {"downstream_unconstrained", "downstream_ewc"}:
+        if args.mode in {"downstream_unconstrained", "downstream_ewc", "expand_rashomon_set"}:
             cmd.extend(["--adapt-settings-file", str(args.adapt_settings_file)])
         if args.mode == "downstream_ewc":
             cmd.extend(["--ewc-settings-file", str(args.ewc_settings_file)])
@@ -234,10 +244,13 @@ def _build_worker_cmd(
             cmd.extend(["--run-subdir", str(run_subdir)])
 
         if args.source_run_root is not None:
-            source_run_dir = args.source_run_root / args.task_setting / f"seed_{seed}" / "source"
+            source_run_dir = resolve_default_source_run_dir(args.source_run_root, args.task_setting, seed)
             cmd.extend(["--source-run-dir", str(source_run_dir)])
         if args.disable_task_neutralization:
-            cmd.append("--disable-task-neutralization")
+            if args.mode == "expand_rashomon_set":
+                cmd.append("--no-task-neutralization")
+            else:
+                cmd.append("--disable-task-neutralization")
         if args.total_timesteps_override is not None:
             cmd.extend(["--total-timesteps-override", str(args.total_timesteps_override)])
 
@@ -288,7 +301,7 @@ def _start_seed_run(
 
 
 def _default_log_dir(args: argparse.Namespace) -> Path:
-    mode_suffix = "source" if args.mode == "source" else args.mode
+    mode_suffix = NOADAPT_POLICY_SUBDIR if args.mode == "source" else args.mode
     base = args.output_dir if args.mode == "source" else args.outputs_root
     return base / args.task_setting / "multi_seed_logs" / mode_suffix
 
@@ -317,7 +330,7 @@ def main() -> int:
     failures: list[tuple[int, int, int, Path]] = []
 
     print(
-        f"Launching {len(seeds)} runs for mode={args.mode} task-setting={args.task_setting} "
+        f"Launching {len(seeds)} runs for mode={args.mode} pipeline={args.task_setting} "
         f"with {len(core_pool)} available core(s): {core_pool}",
     )
     if len(core_pool) < len(seeds):
