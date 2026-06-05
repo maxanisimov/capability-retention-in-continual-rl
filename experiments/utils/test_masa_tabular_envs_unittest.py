@@ -11,6 +11,7 @@ try:
 
     import experiments.utils.masa_tabular_envs  # noqa: F401
     from experiments.utils.masa_tabular_envs.factory import make_custom_masa_env
+    from experiments.utils.masa_tabular_envs.frozen_lake import CustomFrozenLake
     from experiments.utils.masa_tabular_envs.gridworlds import CustomColourBombGridWorld, CustomColourGridWorld
     from experiments.utils.masa_tabular_envs.media_streaming import CustomMediaStreaming
     from experiments.utils.masa_tabular_envs.pacman import CustomMiniPacman, CustomPacman
@@ -22,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only without RL extr
 @unittest.skipIf(gym is None, "gymnasium is not installed")
 class CustomMasaTabularEnvTests(unittest.TestCase):
     ENV_IDS = [
+        "CustomFrozenLake-v0",
         "CustomBridgeCrossing-v0",
         "CustomBridgeCrossingV2-v0",
         "CustomColourGridWorld-v0",
@@ -60,6 +62,55 @@ class CustomMasaTabularEnvTests(unittest.TestCase):
         try:
             self.assertAlmostEqual(env.unwrapped._slip_prob, 0.12)  # noqa: SLF001
             self.assertEqual(env.spec.max_episode_steps, 7)
+        finally:
+            env.close()
+
+    def test_factory_creates_custom_frozen_lake(self) -> None:
+        env = make_custom_masa_env(
+            "CustomFrozenLake-v0",
+            max_episode_steps=9,
+            env_kwargs={"desc": ["SF", "HG"], "is_slippery": False},
+        )
+        try:
+            obs, info = env.reset(seed=1)
+            self.assertTrue(env.observation_space.contains(obs))
+            self.assertEqual(env.spec.max_episode_steps, 9)
+            self.assertEqual(env.unwrapped.nrow, 2)
+            self.assertEqual(env.unwrapped.ncol, 2)
+        finally:
+            env.close()
+
+    def test_frozen_lake_matches_gymnasium_transition_model(self) -> None:
+        cases = [
+            {"desc": ["SF", "HG"], "is_slippery": False},
+            {"desc": ["SFF", "FHF", "FFG"], "is_slippery": True},
+            {"desc": ["SFF", "FHF", "FFG"], "is_slippery": True, "success_rate": 0.7},
+            {"desc": ["SF", "HG"], "is_slippery": False, "reward_schedule": (3, -2, -0.5)},
+        ]
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                custom = CustomFrozenLake(**kwargs)
+                reference = gym.make("FrozenLake-v1", **kwargs)
+                try:
+                    self.assertEqual(custom.P, reference.unwrapped.P)
+                    matrix = custom.get_transition_matrix()
+                    self.assertEqual(matrix.shape, (custom.nrow * custom.ncol, custom.nrow * custom.ncol, 4))
+                    self.assertTrue(np.allclose(matrix.sum(axis=0), 1.0))
+                    successors = custom.get_successor_states_dict()
+                    self.assertIsNotNone(successors)
+                finally:
+                    custom.close()
+                    reference.close()
+
+    def test_frozen_lake_labels_and_costs(self) -> None:
+        env = CustomFrozenLake(desc=["SF", "HG"], is_slippery=False)
+        try:
+            self.assertEqual(env.label_fn(0), {"start"})
+            self.assertEqual(env.label_fn(1), {"frozen"})
+            self.assertEqual(env.label_fn(2), {"hole"})
+            self.assertEqual(env.label_fn(3), {"goal"})
+            self.assertEqual(env.cost_fn(env.label_fn(2)), 1.0)
+            self.assertEqual(env.cost_fn(env.label_fn(3)), 0.0)
         finally:
             env.close()
 
@@ -121,6 +172,33 @@ class CustomMasaTabularEnvTests(unittest.TestCase):
             self.assertEqual(frame.shape[-1], 3)
         finally:
             pacman.close()
+
+    def test_frozen_lake_render_matches_gymnasium(self) -> None:
+        kwargs = {"desc": ["SF", "HG"], "is_slippery": False}
+        custom_ansi = CustomFrozenLake(render_mode="ansi", **kwargs)
+        reference_ansi = gym.make("FrozenLake-v1", render_mode="ansi", **kwargs)
+        try:
+            custom_ansi.reset(seed=1)
+            reference_ansi.reset(seed=1)
+            self.assertEqual(custom_ansi.render(), reference_ansi.render())
+        finally:
+            custom_ansi.close()
+            reference_ansi.close()
+
+        try:
+            import pygame  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("pygame is not installed")
+
+        custom_rgb = CustomFrozenLake(render_mode="rgb_array", **kwargs)
+        reference_rgb = gym.make("FrozenLake-v1", render_mode="rgb_array", **kwargs)
+        try:
+            custom_rgb.reset(seed=1)
+            reference_rgb.reset(seed=1)
+            self.assertTrue(np.array_equal(custom_rgb.render(), reference_rgb.render()))
+        finally:
+            custom_rgb.close()
+            reference_rgb.close()
 
     def test_colour_bomb_uses_masa_renderer_and_marks_bombs(self) -> None:
         env = CustomColourBombGridWorld(render_mode="ansi")

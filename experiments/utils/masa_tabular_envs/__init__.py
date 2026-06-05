@@ -5,6 +5,7 @@ from __future__ import annotations
 from gymnasium.envs.registration import register
 
 from experiments.utils.masa_tabular_envs.factory import make_custom_masa_env
+from experiments.utils.masa_tabular_envs.frozen_lake import CustomFrozenLake
 from experiments.utils.masa_tabular_envs.gridworlds import (
     CustomBridgeCrossing,
     CustomBridgeCrossingV2,
@@ -28,6 +29,10 @@ def _safe_register(env_id: str, entry_point: str) -> None:
         pass
 
 
+_safe_register(
+    "CustomFrozenLake-v0",
+    "experiments.utils.masa_tabular_envs.frozen_lake:CustomFrozenLake",
+)
 _safe_register(
     "CustomBridgeCrossing-v0",
     "experiments.utils.masa_tabular_envs.gridworlds:CustomBridgeCrossing",
@@ -75,6 +80,7 @@ _safe_register(
 
 
 __all__ = [
+    "CustomFrozenLake",
     "CustomBridgeCrossing",
     "CustomBridgeCrossingV2",
     "CustomColourGridWorld",
