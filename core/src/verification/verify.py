@@ -246,3 +246,63 @@ def bound_multi_label_soft_accuracy(
         return correct_probs.mean()
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")
+
+def bound_multi_label_accuracy_margin(
+    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True, aggregation: str = 'min'
+) -> torch.Tensor:
+    """
+    Compute a soft margin for certifying multi-label accuracy.
+
+    For each sample, this computes the softmax probability mass assigned to
+    valid actions and subtracts the threshold ``k / (k + 1)``, where ``k`` is
+    the number of valid actions for that sample. A positive margin is a
+    sufficient condition that at least one valid action has higher softmax
+    probability than every invalid action.
+
+    When ``lower`` is True, the probability mass is computed from worst-case
+    interval logits: valid actions use their lower bounds and invalid actions
+    use their upper bounds. When ``lower`` is False, the best-case interval
+    logits are used instead.
+
+    Args:
+        logits: IntervalTensor containing logit bounds
+        targets: Multi-hot tensor of shape (batch_size, n_classes) where 1 indicates
+                a valid action and 0 indicates an invalid action.
+        T: Temperature parameter for softmax. As T approaches infinity, the
+            softmax margin approaches an argmax-style margin.
+        lower: Whether to compute the worst-case lower-bound margin (True) or
+            best-case upper-bound margin (False).
+        aggregation: Method to aggregate per-sample margins ('mean' or 'min').
+    Returns:
+        Aggregated margin. Values >= 0 indicate the chosen aggregate clears the
+        soundness threshold; negative values indicate a threshold violation.
+    """
+    logits_l, logits_u = logits
+
+    valid_mask = targets.bool()
+    valid_mask_float = valid_mask.float()
+
+    if lower:
+        # Worst-case: minimise probability on valid actions
+        # valid logits at lower bound, invalid logits at upper bound
+        worst_case_logits = valid_mask_float * logits_l + (1 - valid_mask_float) * logits_u
+        probabilities = torch.nn.functional.softmax(worst_case_logits * T, dim=1)
+    else:
+        # Best-case: maximise probability on valid actions
+        best_case_logits = valid_mask_float * logits_u + (1 - valid_mask_float) * logits_l
+        probabilities = torch.nn.functional.softmax(best_case_logits * T, dim=1)
+
+    # Sum probability mass on valid actions
+    correct_probs = (probabilities * valid_mask_float).sum(dim=1)
+
+    adm_set_cardinalities = valid_mask.sum(dim=1)
+    sound_thresholds = adm_set_cardinalities / (1 + adm_set_cardinalities)
+
+    margins = correct_probs - sound_thresholds
+
+    if aggregation == 'min':
+        return margins.min()
+    elif aggregation == 'mean':
+        return margins.mean()
+    else:
+        raise ValueError(f"Unsupported aggregation method: {aggregation}")

@@ -77,6 +77,7 @@ def _get_min_acc(
     multi_label: bool = False,
     soft_acc_temperature: float = SOFT_ACC_TEMP,
     aggregation: str = "mean",
+    multi_label_soft_metric: str = "soft_accuracy",
 ) -> torch.Tensor:
     """
     Compute the minimum accuracy of the model on the given data using IBP.
@@ -92,6 +93,8 @@ def _get_min_acc(
         multi_label: If True, treats y as containing multiple valid labels per sample
         soft_acc_temperature: Temperature for softmax in soft accuracy computation
         aggregation: Aggregation method for multi-label accuracy ('mean' or 'min')
+        multi_label_soft_metric: Soft metric to use for multi-label constraints
+            ('soft_accuracy' or 'accuracy_margin')
 
     Returns:
         Accuracy bound tensor
@@ -102,9 +105,18 @@ def _get_min_acc(
 
     if multi_label:
         if soft:
-            acc = verify.bound_multi_label_soft_accuracy(
-                logits, y, T=soft_acc_temperature, lower=lower, aggregation=aggregation,
-            )
+            if multi_label_soft_metric == "soft_accuracy":
+                acc = verify.bound_multi_label_soft_accuracy(
+                    logits, y, T=soft_acc_temperature, lower=lower, aggregation=aggregation,
+                )
+            elif multi_label_soft_metric == "accuracy_margin":
+                acc = verify.bound_multi_label_accuracy_margin(
+                    logits, y, T=soft_acc_temperature, lower=lower, aggregation=aggregation,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported multi-label soft metric: {multi_label_soft_metric}"
+                )
         else:
             acc = verify.bound_multi_label_accuracy(
                 logits, y, lower=lower, aggregation=aggregation,
@@ -198,6 +210,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         multi_label: bool = False,
         soft_acc_temperature: float = SOFT_ACC_TEMP,
         aggregation: str = "mean",
+        multi_label_soft_metric: str = "soft_accuracy",
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -218,6 +231,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.multi_label = multi_label
         self.soft_acc_temperature = soft_acc_temperature
         self.aggregation = aggregation
+        self.multi_label_soft_metric = multi_label_soft_metric
         self.penalty_updater = (
             cooper.penalty_coefficients.MultiplicativePenaltyCoefficientUpdater(
                 growth_factor=1.01, violation_tolerance=0.05
@@ -301,6 +315,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 multi_label=self.multi_label,
                 soft_acc_temperature=self.soft_acc_temperature,
                 aggregation=self.aggregation,
+                multi_label_soft_metric=self.multi_label_soft_metric,
             )
             min_acc = _get_min_acc(
                 self.bounded_model,
@@ -442,6 +457,7 @@ def compute_rashomon_set(
     multi_label: bool = False,
     soft_acc_temperature: float = SOFT_ACC_TEMP,
     aggregation: str = "mean",
+    multi_label_soft_metric: str = "soft_accuracy",
 ) -> tuple[list[IntervalBoundedModel], list[float]]:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -476,6 +492,8 @@ def compute_rashomon_set(
         custom_objective (Callable, optional): Custom objective function to use instead of the default one.
         param_select_fn (Callable, optional): Function to select parameters that we wish to compute rashomon sets over.
             If None, all parameters are used.
+        multi_label_soft_metric (str): Soft metric used for multi-label constraints.
+            Options are "soft_accuracy" and "accuracy_margin".
 
     Returns:
         bmodel (agt.bounded_models.IntervalBoundedModel): The optimized bounded model.
@@ -582,6 +600,7 @@ def compute_rashomon_set(
             bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask,
             multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
             aggregation=aggregation,
+            multi_label_soft_metric=multi_label_soft_metric,
         )
     if torch.isnan(initial_defect):
         raise ValueError("Initial bmodel results in NaN defect for the constraint.")
@@ -597,6 +616,7 @@ def compute_rashomon_set(
             outer_bbox, X_cert, y_cert, soft=True, context_mask=context_mask,
             multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
             aggregation=aggregation,
+            multi_label_soft_metric=multi_label_soft_metric,
         )
         outer_min_acc = _get_min_acc(
             outer_bbox, X_cert, y_cert, soft=False, context_mask=context_mask,
@@ -629,6 +649,7 @@ def compute_rashomon_set(
         multi_label=multi_label,
         soft_acc_temperature=soft_acc_temperature,
         aggregation=aggregation,
+        multi_label_soft_metric=multi_label_soft_metric,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -665,7 +686,7 @@ def compute_rashomon_set(
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
         f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}",
+        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation, multi_label_soft_metric=multi_label_soft_metric):.2f}",
     )
     primal_lr_scheduler, dual_lr_scheduler = get_lr_schedulers(
         primal_optimizer, dual_optimizer, cmp
@@ -710,7 +731,7 @@ def compute_rashomon_set(
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
         f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}",
+        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation, multi_label_soft_metric=multi_label_soft_metric):.2f}",
     )
 
     # Remove the hooks created for masking
