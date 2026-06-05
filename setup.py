@@ -28,6 +28,7 @@ setup(
         "rl": [
             "gymnasium>=1.0.0",
             "highway-env>=1.10.0",
+            "pygame>=2.6.1",
             "sb3-contrib>=2.7.0",
             "stable-baselines3>=2.7.0",
         ],
