@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle, Patch
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 
 def _get_scalar_param(param_bounds: list, tensor_index: int, flat_index: int) -> float:
     return float(param_bounds[tensor_index].flatten()[flat_index].item())
@@ -577,6 +578,8 @@ def plot_param_bounds_per_checkpoint(
     num_checkpoints_to_plot: int = 5,
     n_rows: int = 1,
     figsize: tuple[float, float] | None = None,
+    suptitle: str | None = None,
+    rashomon_set_label: str | None = None,
 ):
     """Plot 2D/3D Rashomon sets per checkpoint for 2 or 3 selected parameters."""
     n_params = len(param_indices)
@@ -632,12 +635,16 @@ def plot_param_bounds_per_checkpoint(
             # constrained_layout=True,
         )
 
+    if suptitle is None:
+        suptitle = "Rashomon set across checkpoints\n" + ", ".join([f"param{i + 1}={param_indices[i]}" for i in range(n_params)])
     fig.suptitle(
-        "Rashomon set across checkpoints\n"
-        + ", ".join([f"param{i + 1}={param_indices[i]}" for i in range(n_params)]),
+        suptitle,
         fontsize=13,
         y=1.03,
     )
+
+    if rashomon_set_label is None:
+        rashomon_set_label = 'Rashomon set'
 
     for i, ax in enumerate(axes.flat):
         if i >= n_plots:
@@ -671,7 +678,7 @@ def plot_param_bounds_per_checkpoint(
                 facecolor="tab:blue",
                 linewidth=1.5,
                 alpha=0.2,
-                label="Rashomon set" if i == 0 else None,
+                label=rashomon_set_label if i == 0 else None,
             )
             ax.add_patch(rect)
 
@@ -720,14 +727,24 @@ def plot_param_bounds_per_checkpoint(
             ax.set_xlim(mins[0] - pads[0], maxs[0] + pads[0])
             ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
             ax.set_zlim(mins[2] - pads[2], maxs[2] + pads[2])
-            ax.set_title(f"checkpoint #{ckpt_label}", fontsize=9)
-            ax.set_xlabel(f"param1 {param_indices[0]}", fontsize=9)
-            ax.set_ylabel(f"param2 {param_indices[1]}", fontsize=9)
-            ax.set_zlabel(f"param3 {param_indices[2]}", fontsize=9, labelpad=4)
+
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=2))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=2))
+            ax.zaxis.set_major_locator(MaxNLocator(nbins=2))
+
+            ax.xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+            ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+            ax.zaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+
+            ax.set_title(f"Checkpoint #{ckpt_label}", fontsize=9)
+            # ax.set_xlabel(f"param1 {param_indices[0]}", fontsize=9)
+            ax.set_xlabel(r"$\theta_{" + str(param_indices[0]) + r"}$", fontsize=9)
+            ax.set_ylabel(r"$\theta_{" + str(param_indices[1]) + r"}$", fontsize=9)
+            ax.set_zlabel(r"$\theta_{" + str(param_indices[2]) + r"}$", fontsize=9, labelpad=4)
             ax.tick_params(axis="z", pad=1)
             ax.set_box_aspect((1, 1, 1))  # keep 3D box compact and balanced
 
-    legend_handles = [Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label="Rashomon set")]
+    legend_handles = [Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label=rashomon_set_label)]
     if scatter_points is not None:
         for scatter_point_info in scatter_points:
             if 'label' in scatter_point_info and scatter_point_info['label'] is not None:
