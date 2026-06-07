@@ -20,6 +20,11 @@ from experiments.utils.masa_tabular_envs.media_streaming import (
     CustomMediaStreamingV3,
 )
 from experiments.utils.masa_tabular_envs.pacman import CustomMiniPacman, CustomPacman
+from experiments.utils.masa_tabular_envs.visualisation import (
+    plot_tabular_shield,
+    print_allowed_actions,
+    render_tabular_shield_background,
+)
 
 
 def _safe_register(env_id: str, entry_point: str) -> None:
@@ -93,4 +98,7 @@ __all__ = [
     "CustomMiniPacman",
     "CustomPacman",
     "make_custom_masa_env",
+    "plot_tabular_shield",
+    "print_allowed_actions",
+    "render_tabular_shield_background",
 ]
