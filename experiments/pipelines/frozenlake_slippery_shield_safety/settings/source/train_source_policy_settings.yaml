@@ -1,0 +1,132 @@
+diagonal_4x4:
+  raw_eval:
+    episodes: 100
+    mean_reward: null
+    std_reward: null
+    failure_rate: 0.2
+    success_rate: 0.8
+  ppo:
+    total_timesteps: 50000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_min_steps: 5
+    early_stop_reward_threshold: null
+    early_stop_failure_rate_threshold: 0.2
+    early_stop_deterministic_total_reward_threshold: null
+    early_stop_deterministic_eval_episodes: 100
+    eval_episodes: 100
+    early_stop_success_rate_threshold: 0.8
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+  activation: relu
+diagonal_6x6:
+  raw_eval:
+    episodes: 100
+    mean_reward: null
+    std_reward: null
+    failure_rate: 0.2
+    success_rate: 0.8
+  ppo:
+    total_timesteps: 100000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_min_steps: 5
+    early_stop_reward_threshold: null
+    early_stop_failure_rate_threshold: 0.2
+    early_stop_deterministic_total_reward_threshold: null
+    early_stop_deterministic_eval_episodes: 100
+    eval_episodes: 100
+    early_stop_success_rate_threshold: 0.8
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+  activation: relu
+route_switch_6x6:
+  raw_eval:
+    episodes: 100
+    mean_reward: null
+    std_reward: null
+    failure_rate: 0.2
+    success_rate: 0.8
+  ppo:
+    total_timesteps: 100000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_min_steps: 5
+    early_stop_reward_threshold: null
+    early_stop_failure_rate_threshold: 0.2
+    early_stop_deterministic_total_reward_threshold: null
+    early_stop_deterministic_eval_episodes: 100
+    eval_episodes: 100
+    early_stop_success_rate_threshold: 0.8
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+  activation: relu
+old_route_blocked_6x6:
+  raw_eval:
+    episodes: 100
+    mean_reward: null
+    std_reward: null
+    failure_rate: 0.2
+    success_rate: 0.8
+  ppo:
+    total_timesteps: 100000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_min_steps: 5
+    early_stop_reward_threshold: null
+    early_stop_failure_rate_threshold: 0.2
+    early_stop_deterministic_total_reward_threshold: null
+    early_stop_deterministic_eval_episodes: 100
+    eval_episodes: 100
+    early_stop_success_rate_threshold: 0.8
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+  activation: relu

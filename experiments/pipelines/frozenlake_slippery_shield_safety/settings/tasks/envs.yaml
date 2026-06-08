@@ -1,0 +1,64 @@
+diagonal_4x4:
+  max_episode_steps: 16
+  source_map:
+  - SFHH
+  - FFFH
+  - HFFF
+  - HFFG
+  downstream_map:
+  - SFFH
+  - FHFH
+  - FFFF
+  - HFFG
+  is_slippery: true
+diagonal_6x6:
+  max_episode_steps: 36
+  source_map:
+  - SFHHHH
+  - FFFHHH
+  - HFFFHH
+  - HFFFHH
+  - HHFFFF
+  - HHHFFG
+  downstream_map:
+  - SFFHHH
+  - FHFHHH
+  - FFFFHH
+  - HFFFHH
+  - HHFFFF
+  - HHHFFG
+  is_slippery: true
+route_switch_6x6:
+  max_episode_steps: 36
+  source_map:
+  - SFFFFH
+  - HHHHFH
+  - HHHHFH
+  - HHHHFH
+  - HHHHFH
+  - HHHHFG
+  downstream_map:
+  - SHHHHH
+  - FHHHHH
+  - FHHHHH
+  - FHHHHH
+  - FFFFFF
+  - HHHHHG
+  is_slippery: true
+old_route_blocked_6x6:
+  max_episode_steps: 36
+  source_map:
+  - SFFHHH
+  - HHFHHH
+  - HHFFFH
+  - HHHHFH
+  - HHHHFH
+  - HHHHFG
+  downstream_map:
+  - SFHHHH
+  - FFHHHH
+  - FHHHHH
+  - FFFFFF
+  - HHHHHF
+  - HHHHFG
+  is_slippery: true

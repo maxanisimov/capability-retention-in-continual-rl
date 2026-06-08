@@ -1,0 +1,103 @@
+"""Unit tests for FrozenLake shield safety Rashomon dataset construction."""
+
+from __future__ import annotations
+
+import unittest
+
+import torch
+
+from experiments.pipelines.frozenlake_shield_safety.core.config import SOURCE_MAP
+from experiments.pipelines.frozenlake_shield_safety.core.env import obs_to_state_index
+from experiments.pipelines.frozenlake_shield_safety.core.safety import (
+    create_rashomon_dataset,
+    create_shield_rashomon_dataset,
+    frozenlake_cost_fn,
+    frozenlake_label_fn,
+    frozenlake_transition_matrix,
+    synthesise_frozenlake_shield,
+)
+
+
+class FrozenLakeSafetyDatasetTests(unittest.TestCase):
+    def test_transition_matrix_shape_and_probabilities(self) -> None:
+        matrix = frozenlake_transition_matrix(SOURCE_MAP)
+
+        self.assertEqual(matrix.shape, (16, 16, 4))
+        self.assertTrue(torch.tensor(matrix).ge(0.0).all().item())
+        torch.testing.assert_close(
+            torch.tensor(matrix.sum(axis=0), dtype=torch.float64),
+            torch.ones((16, 4), dtype=torch.float64),
+        )
+
+    def test_holes_are_unsafe_labels(self) -> None:
+        self.assertEqual(frozenlake_label_fn(SOURCE_MAP, 2), {"unsafe"})
+        self.assertEqual(frozenlake_cost_fn(frozenlake_label_fn(SOURCE_MAP, 2)), 1.0)
+        self.assertEqual(frozenlake_label_fn(SOURCE_MAP, 15), set())
+        self.assertEqual(frozenlake_cost_fn(frozenlake_label_fn(SOURCE_MAP, 15)), 0.0)
+
+    def test_deterministic_shield_dataset_schema_and_representative_masks(self) -> None:
+        shield, info = synthesise_frozenlake_shield(SOURCE_MAP, shield_type="deterministic")
+        payload = create_shield_rashomon_dataset(SOURCE_MAP, task_num=0.0, shield=shield)
+
+        self.assertEqual(shield.shape, (16, 4))
+        self.assertEqual(len(info.winning_states), 11)
+        self.assertEqual(set(payload.keys()), {"state", "actions"})
+        self.assertEqual(payload["state"].dtype, torch.float32)
+        self.assertEqual(payload["actions"].dtype, torch.float32)
+        self.assertEqual(tuple(payload["state"].shape), (10, 3))
+        self.assertEqual(tuple(payload["actions"].shape), (10, 4))
+
+        masks_by_state = {
+            obs_to_state_index(obs.numpy(), SOURCE_MAP): actions
+            for obs, actions in zip(payload["state"], payload["actions"], strict=True)
+        }
+
+        torch.testing.assert_close(masks_by_state[0], torch.tensor([1.0, 1.0, 1.0, 1.0]))
+        torch.testing.assert_close(masks_by_state[1], torch.tensor([1.0, 1.0, 0.0, 1.0]))
+        torch.testing.assert_close(masks_by_state[6], torch.tensor([1.0, 1.0, 0.0, 0.0]))
+        torch.testing.assert_close(masks_by_state[11], torch.tensor([1.0, 1.0, 1.0, 0.0]))
+
+    def test_probabilistic_shield_records_action_risk(self) -> None:
+        shield, info = synthesise_frozenlake_shield(
+            SOURCE_MAP,
+            shield_type="probabilistic",
+            risk_threshold=0.0,
+        )
+
+        self.assertEqual(shield.shape, (16, 4))
+        self.assertIsNotNone(info.action_risk)
+        self.assertEqual(info.action_risk.shape, (16, 4))
+
+    def test_dataset_schema_and_representative_masks(self) -> None:
+        payload = create_rashomon_dataset(SOURCE_MAP, task_num=0.0)
+
+        self.assertEqual(set(payload.keys()), {"state", "actions"})
+        self.assertEqual(payload["state"].dtype, torch.float32)
+        self.assertEqual(payload["actions"].dtype, torch.float32)
+        self.assertEqual(tuple(payload["state"].shape), (10, 3))
+        self.assertEqual(tuple(payload["actions"].shape), (10, 4))
+
+        masks_by_state = {
+            obs_to_state_index(obs.numpy(), SOURCE_MAP): actions
+            for obs, actions in zip(payload["state"], payload["actions"], strict=True)
+        }
+
+        torch.testing.assert_close(masks_by_state[0], torch.tensor([1.0, 1.0, 1.0, 1.0]))
+        torch.testing.assert_close(masks_by_state[1], torch.tensor([1.0, 1.0, 0.0, 1.0]))
+        torch.testing.assert_close(masks_by_state[6], torch.tensor([1.0, 1.0, 0.0, 0.0]))
+        torch.testing.assert_close(masks_by_state[11], torch.tensor([1.0, 1.0, 1.0, 0.0]))
+
+    def test_dataset_excludes_holes_and_goal(self) -> None:
+        payload = create_rashomon_dataset(SOURCE_MAP, task_num=0.0)
+        included = {
+            obs_to_state_index(obs.numpy(), SOURCE_MAP)
+            for obs in payload["state"]
+        }
+        holes_and_goal = {2, 3, 7, 8, 12, 15}
+
+        self.assertTrue(included.isdisjoint(holes_and_goal))
+        self.assertEqual(included, {0, 1, 4, 5, 6, 9, 10, 11, 13, 14})
+
+
+if __name__ == "__main__":
+    unittest.main()
