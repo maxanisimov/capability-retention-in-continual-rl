@@ -44,6 +44,7 @@ class PipelineConfig:
     downstream_map: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["downstream_map"])
     max_episode_steps: int = int(TASKS_SETTINGS["max_episode_steps"])
     is_slippery: bool = bool(TASKS_SETTINGS.get("is_slippery", True))
+    success_rate: float = float(TASKS_SETTINGS.get("success_rate", 1.0 / 3.0))
     source_task_num: float = float(REFERENCE_SETTINGS["adaptation_ppo"]["source_task_num"])
     downstream_task_num: float = float(REFERENCE_SETTINGS["adaptation_ppo"]["downstream_task_num"])
     reference_layout: str = LAYOUT
@@ -137,6 +138,7 @@ def get_pipeline_config(layout: str) -> PipelineConfig:
         downstream_map=tuple(str(r) for r in tasks["downstream_map"]),
         max_episode_steps=int(tasks["max_episode_steps"]),
         is_slippery=bool(tasks.get("is_slippery", True)),
+        success_rate=float(tasks.get("success_rate", 1.0 / 3.0)),
         source_task_num=float(s["adaptation_ppo"]["source_task_num"]),
         downstream_task_num=float(s["adaptation_ppo"]["downstream_task_num"]),
         reference_layout=layout,

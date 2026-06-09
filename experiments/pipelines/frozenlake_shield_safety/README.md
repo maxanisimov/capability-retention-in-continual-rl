@@ -13,9 +13,10 @@ Small deterministic `diagonal_4x4` continual-learning pipeline with shield-gener
 - PPO training uses dense reward shaping, while early stopping and final
   evaluation use sparse deterministic rewards. Success rate is reported but is
   not an early-stop criterion.
-- Shield synthesis defaults to the deterministic almost-sure shield. Use
-  `--shield-type probabilistic` with `--shield-risk-threshold` to generate
-  risk-thresholded masks.
+- Shield synthesis defaults to the deterministic almost-sure shield. With
+  `--shield-type probabilistic`, source safety targets use the minimum-risk
+  actions from value iteration; `--shield-risk-threshold` remains available for
+  thresholded shield synthesis and visualisation ablations.
 
 Run from the repository root with the project environment active:
 

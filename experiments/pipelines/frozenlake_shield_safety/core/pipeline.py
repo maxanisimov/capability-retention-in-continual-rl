@@ -34,8 +34,10 @@ from experiments.pipelines.frozenlake_shield_safety.core.safety import (
     create_shield_rashomon_dataset,
     finetune_on_allowed_actions,
     greedy_action,
+    min_risk_shield_from_action_risk,
     rollout_greedy_policy,
     safe_action_mask_for_state,
+    shield_allowed_action_risk_stats,
     shield_allowed_action_stats,
     synthesise_frozenlake_shield,
     to_tensor_dataset,
@@ -491,11 +493,16 @@ def _load_source_shield_metadata(source_dir: Path) -> dict[str, Any]:
     settings = data["run_settings"]
     keys = (
         "dataset_source",
+        "shield_dataset_generation_mode",
         "shield_type",
         "shield_risk_threshold",
         "shield_theta",
         "shield_max_vi_steps",
         "unsafe_cost_threshold",
+        "dataset_allowed_action_risk_count",
+        "dataset_allowed_action_risk_min",
+        "dataset_allowed_action_risk_max",
+        "dataset_allowed_action_risk_mean",
         "shield_trainable_state_count",
         "shield_trainable_allowed_actions_min",
         "shield_trainable_allowed_actions_max",
@@ -577,13 +584,34 @@ def train_source(args: argparse.Namespace) -> Path:
         max_vi_steps=shield_max_vi_steps,
         unsafe_cost_threshold=unsafe_cost_threshold,
     )
+    shield_dataset_generation_mode = "deterministic_shield"
+    if shield_type == "probabilistic":
+        if shield_info.action_risk is None:
+            raise RuntimeError("Probabilistic shield synthesis did not return action_risk.")
+        shield = min_risk_shield_from_action_risk(
+            cfg.source_map,
+            shield_info.action_risk,
+            theta=shield_theta,
+        )
+        shield_dataset_generation_mode = "probabilistic_min_risk"
     rashomon_payload = create_shield_rashomon_dataset(
         cfg.source_map,
         task_num=cfg.source_task_num,
         shield=shield,
     )
     validate_rashomon_payload(rashomon_payload)
+    if int(rashomon_payload["state"].shape[0]) == 0:
+        raise RuntimeError(
+            "Shield dataset generation produced no trainable source safety states. "
+            "Check that the source map has traversable nonterminal states and that "
+            "probabilistic synthesis returned action-risk metadata.",
+        )
     shield_stats = shield_allowed_action_stats(cfg.source_map, shield, rashomon_payload)
+    allowed_action_risk_stats = shield_allowed_action_risk_stats(
+        cfg.source_map,
+        shield,
+        shield_info.action_risk,
+    )
     finetune_result = finetune_on_allowed_actions(
         actor,
         rashomon_payload,
@@ -658,6 +686,7 @@ def train_source(args: argparse.Namespace) -> Path:
         "early_stop_eval_shaped": False,
         "ppo": _ppo_config_dict(ppo_cfg),
         "dataset_source": "synthesized_shield",
+        "shield_dataset_generation_mode": shield_dataset_generation_mode,
         "shield_type": shield_type,
         "shield_risk_threshold": shield_risk_threshold,
         "shield_theta": shield_theta,
@@ -666,6 +695,7 @@ def train_source(args: argparse.Namespace) -> Path:
         "rashomon_dataset_size": int(rashomon_payload["state"].shape[0]),
         "outputs_root": str(args.outputs_root),
         **shield_stats,
+        **allowed_action_risk_stats,
         **_shield_info_summary(shield_info),
     }
     artifacts = {

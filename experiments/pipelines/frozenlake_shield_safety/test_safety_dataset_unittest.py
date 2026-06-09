@@ -14,6 +14,8 @@ from experiments.pipelines.frozenlake_shield_safety.core.safety import (
     frozenlake_cost_fn,
     frozenlake_label_fn,
     frozenlake_transition_matrix,
+    min_risk_shield_from_action_risk,
+    shield_allowed_action_risk_stats,
     synthesise_frozenlake_shield,
 )
 
@@ -67,6 +69,52 @@ class FrozenLakeSafetyDatasetTests(unittest.TestCase):
         self.assertEqual(shield.shape, (16, 4))
         self.assertIsNotNone(info.action_risk)
         self.assertEqual(info.action_risk.shape, (16, 4))
+
+    def test_min_risk_shield_includes_ties_within_theta(self) -> None:
+        action_risk = torch.ones((16, 4), dtype=torch.float64).numpy()
+        action_risk[0] = [0.2, 0.2 + 5e-11, 0.2 + 2e-10, 0.7]
+
+        shield = min_risk_shield_from_action_risk(SOURCE_MAP, action_risk, theta=1e-10)
+
+        torch.testing.assert_close(torch.tensor(shield[0]), torch.tensor([1, 1, 0, 0]))
+        torch.testing.assert_close(torch.tensor(shield[2]), torch.tensor([0, 0, 0, 0]))
+        torch.testing.assert_close(torch.tensor(shield[15]), torch.tensor([0, 0, 0, 0]))
+
+    def test_min_risk_probabilistic_dataset_is_threshold_independent(self) -> None:
+        payloads = []
+        for threshold in (0.0, 1.0):
+            _thresholded_shield, info = synthesise_frozenlake_shield(
+                SOURCE_MAP,
+                shield_type="probabilistic",
+                risk_threshold=threshold,
+            )
+            self.assertIsNotNone(info.action_risk)
+            shield = min_risk_shield_from_action_risk(SOURCE_MAP, info.action_risk, theta=1e-10)
+            payloads.append(create_shield_rashomon_dataset(SOURCE_MAP, task_num=0.0, shield=shield))
+
+        torch.testing.assert_close(payloads[0]["state"], payloads[1]["state"])
+        torch.testing.assert_close(payloads[0]["actions"], payloads[1]["actions"])
+
+    def test_allowed_action_risk_stats_report_dataset_risks(self) -> None:
+        _thresholded_shield, info = synthesise_frozenlake_shield(
+            SOURCE_MAP,
+            shield_type="probabilistic",
+            risk_threshold=0.0,
+        )
+        self.assertIsNotNone(info.action_risk)
+        shield = min_risk_shield_from_action_risk(SOURCE_MAP, info.action_risk, theta=1e-10)
+
+        stats = shield_allowed_action_risk_stats(SOURCE_MAP, shield, info.action_risk)
+
+        self.assertGreater(stats["dataset_allowed_action_risk_count"], 0)
+        self.assertLessEqual(
+            stats["dataset_allowed_action_risk_min"],
+            stats["dataset_allowed_action_risk_mean"],
+        )
+        self.assertLessEqual(
+            stats["dataset_allowed_action_risk_mean"],
+            stats["dataset_allowed_action_risk_max"],
+        )
 
     def test_dataset_schema_and_representative_masks(self) -> None:
         payload = create_rashomon_dataset(SOURCE_MAP, task_num=0.0)

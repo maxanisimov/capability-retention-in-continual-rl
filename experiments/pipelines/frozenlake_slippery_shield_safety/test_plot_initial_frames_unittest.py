@@ -21,6 +21,8 @@ class FrozenLakeShieldSafetyInitialFramePlotTests(unittest.TestCase):
         self.assertEqual(downstream_cfg["max_episode_steps"], 36)
         self.assertTrue(source_cfg["is_slippery"])
         self.assertTrue(downstream_cfg["is_slippery"])
+        self.assertAlmostEqual(source_cfg["success_rate"], 1.0 / 3.0)
+        self.assertAlmostEqual(downstream_cfg["success_rate"], 1.0 / 3.0)
 
     def test_parser_defaults_to_dedicated_initial_frame_directory(self) -> None:
         args = build_parser().parse_args([])

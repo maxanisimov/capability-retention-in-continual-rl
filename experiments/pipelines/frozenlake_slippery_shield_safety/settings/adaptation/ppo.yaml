@@ -38,7 +38,7 @@ diagonal_4x4:
     early_stop_deterministic_eval_episodes: 100
     early_stop_min_steps: 5
     early_stop_reward_threshold: null
-    early_stop_failure_rate_threshold: 0.2
+    early_stop_failure_rate_threshold: null
     early_stop_success_rate_threshold: 0.8
 diagonal_6x6:
   source_task_num: 0.0
@@ -122,7 +122,7 @@ route_switch_6x6:
     early_stop_deterministic_eval_episodes: 100
     early_stop_min_steps: 5
     early_stop_reward_threshold: null
-    early_stop_failure_rate_threshold: 0.2
+    early_stop_failure_rate_threshold: null
     early_stop_success_rate_threshold: 0.8
 old_route_blocked_6x6:
   source_task_num: 0.0
@@ -164,5 +164,5 @@ old_route_blocked_6x6:
     early_stop_deterministic_eval_episodes: 100
     early_stop_min_steps: 5
     early_stop_reward_threshold: null
-    early_stop_failure_rate_threshold: 0.2
+    early_stop_failure_rate_threshold: null
     early_stop_success_rate_threshold: 0.8

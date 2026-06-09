@@ -31,10 +31,12 @@ def _task_cfg_from_pipeline_map(
     *,
     max_episode_steps: int,
     is_slippery: bool,
+    success_rate: float,
 ) -> dict[str, Any]:
     return {
         "env_map": [str(row) for row in env_map],
         "is_slippery": bool(is_slippery),
+        "success_rate": float(success_rate),
         "max_episode_steps": int(max_episode_steps),
     }
 
@@ -45,11 +47,13 @@ def source_downstream_task_cfgs(layout: str) -> tuple[dict[str, Any], dict[str, 
         cfg.source_map,
         max_episode_steps=cfg.max_episode_steps,
         is_slippery=cfg.is_slippery,
+        success_rate=cfg.success_rate,
     )
     downstream_cfg = _task_cfg_from_pipeline_map(
         cfg.downstream_map,
         max_episode_steps=cfg.max_episode_steps,
         is_slippery=cfg.is_slippery,
+        success_rate=cfg.success_rate,
     )
     return source_cfg, downstream_cfg
 
@@ -105,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--layout",
         dest="layout",
         default="diagonal_4x4",
-        help="Pipeline layout to render, e.g. diagonal_10x10.",
+        help="Pipeline layout to render, e.g. diagonal_6x6.",
     )
     parser.add_argument(
         "--output-dir",

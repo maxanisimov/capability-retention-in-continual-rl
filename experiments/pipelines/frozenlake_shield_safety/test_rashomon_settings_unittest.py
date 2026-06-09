@@ -14,6 +14,7 @@ from experiments.pipelines.frozenlake_shield_safety.core.pipeline import (
     adapt_downstream,
     _downstream_ppo_config,
     _ewc_ppo_config,
+    _load_source_shield_metadata,
     main as pipeline_main,
     _rashomon_ppo_config,
     _source_ppo_config,
@@ -172,6 +173,30 @@ class FrozenLakeSafetyReferenceSettingsTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FileNotFoundError, "Source Rashomon dataset not found"):
                 adapt_downstream(args, mode="downstream_rashomon")
+
+    def test_source_shield_metadata_includes_min_risk_dataset_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_dir = Path(tmp_dir)
+            (source_dir / "run_summary.yaml").write_text(
+                "\n".join(
+                    [
+                        "run_settings:",
+                        "  dataset_source: synthesized_shield",
+                        "  shield_dataset_generation_mode: probabilistic_min_risk",
+                        "  dataset_allowed_action_risk_count: 7",
+                        "  dataset_allowed_action_risk_min: 0.0",
+                        "  dataset_allowed_action_risk_max: 0.05",
+                        "  dataset_allowed_action_risk_mean: 0.01",
+                    ],
+                ),
+                encoding="utf-8",
+            )
+
+            metadata = _load_source_shield_metadata(source_dir)
+
+        self.assertEqual(metadata["source_shield_dataset_generation_mode"], "probabilistic_min_risk")
+        self.assertEqual(metadata["source_dataset_allowed_action_risk_count"], 7)
+        self.assertEqual(metadata["source_dataset_allowed_action_risk_max"], 0.05)
 
 
 if __name__ == "__main__":

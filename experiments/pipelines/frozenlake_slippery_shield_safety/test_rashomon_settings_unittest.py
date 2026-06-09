@@ -14,6 +14,7 @@ from experiments.pipelines.frozenlake_slippery_shield_safety.core.pipeline impor
     adapt_downstream,
     _downstream_ppo_config,
     _ewc_ppo_config,
+    _load_source_shield_metadata,
     main as pipeline_main,
     _rashomon_ppo_config,
     _source_ppo_config,
@@ -59,6 +60,7 @@ class FrozenLakeSafetyReferenceSettingsTests(unittest.TestCase):
 
         self.assertEqual(cfg.reference_layout, LAYOUT)
         self.assertTrue(cfg.is_slippery)
+        self.assertAlmostEqual(cfg.success_rate, 1.0 / 3.0)
         self.assertEqual(cfg.hidden, expected["hidden"])
         self.assertEqual(cfg.activation, reference["source"]["activation"])
         self.assert_ppo_matches(ppo_cfg, expected)
@@ -147,6 +149,8 @@ class FrozenLakeSafetyReferenceSettingsTests(unittest.TestCase):
                         "50",
                         "--unsafe-cost-threshold",
                         "0.75",
+                        "--success-rate",
+                        "0.8",
                         "--dry-run",
                     ],
                 )
@@ -158,6 +162,7 @@ class FrozenLakeSafetyReferenceSettingsTests(unittest.TestCase):
         self.assertIn("shield_theta=1e-08", output)
         self.assertIn("shield_max_vi_steps=50", output)
         self.assertIn("unsafe_cost_threshold=0.75", output)
+        self.assertIn("success_rate=0.8", output)
 
     def test_rashomon_adaptation_reports_missing_source_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -172,6 +177,32 @@ class FrozenLakeSafetyReferenceSettingsTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FileNotFoundError, "Source Rashomon dataset not found"):
                 adapt_downstream(args, mode="downstream_rashomon")
+
+    def test_source_shield_metadata_includes_min_risk_dataset_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_dir = Path(tmp_dir)
+            (source_dir / "run_summary.yaml").write_text(
+                "\n".join(
+                    [
+                        "run_settings:",
+                        "  dataset_source: synthesized_shield",
+                        "  shield_dataset_generation_mode: probabilistic_min_risk",
+                        "  success_rate: 0.8",
+                        "  dataset_allowed_action_risk_count: 7",
+                        "  dataset_allowed_action_risk_min: 0.0",
+                        "  dataset_allowed_action_risk_max: 0.05",
+                        "  dataset_allowed_action_risk_mean: 0.01",
+                    ],
+                ),
+                encoding="utf-8",
+            )
+
+            metadata = _load_source_shield_metadata(source_dir)
+
+        self.assertEqual(metadata["source_shield_dataset_generation_mode"], "probabilistic_min_risk")
+        self.assertEqual(metadata["source_success_rate"], 0.8)
+        self.assertEqual(metadata["source_dataset_allowed_action_risk_count"], 7)
+        self.assertEqual(metadata["source_dataset_allowed_action_risk_max"], 0.05)
 
 
 if __name__ == "__main__":

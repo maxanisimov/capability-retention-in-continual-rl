@@ -15,6 +15,13 @@ def _module_device(module: torch.nn.Module) -> torch.device:
     except StopIteration:
         return torch.device("cpu")
 
+
+def _env_display_id(env: gymnasium.Env) -> str:
+    spec = getattr(env, "spec", None)
+    if spec is not None and getattr(spec, "id", None) is not None:
+        return str(spec.id)
+    return env.unwrapped.__class__.__name__
+
 def render_gymnasium_agent(
         actor, 
         env: gymnasium.Env | None = None,
@@ -44,7 +51,7 @@ def render_gymnasium_agent(
 
     if env is not None:
         assert env.unwrapped.render_mode == 'human', "Environment must be created with render_mode='human'"
-        env_id = env.spec.id
+        env_id = _env_display_id(env)
     elif env_id is not None:
         assert env_engine in ENV_ENGINES, f"env_engine must be one of {ENV_ENGINES}"
         if env_engine == 'gymnasium':
@@ -269,7 +276,7 @@ def plot_episode(
     
     if env is not None:
         assert env.unwrapped.render_mode == 'rgb_array', "Environment must be created with render_mode='rgb_array'"
-        env_id = env.spec.id
+        env_id = _env_display_id(env)
     elif env_id is not None:
         env_kwargs = env_kwargs or {}
         env = gymnasium.make(env_id, render_mode='rgb_array', **env_kwargs)

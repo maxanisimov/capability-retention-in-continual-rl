@@ -7,6 +7,8 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 
+from experiments.utils.masa_tabular_envs.frozen_lake import CustomFrozenLake
+
 
 ACTION_DELTAS = {
     0: (0, -1),   # left
@@ -166,15 +168,17 @@ def make_env(
     max_episode_steps: int,
     shaped: bool = False,
     is_slippery: bool = True,
+    success_rate: float = 1.0 / 3.0,
     render_mode: str | None = None,
 ) -> gym.Env:
-    env = gym.make(
-        "FrozenLake-v1",
+    base_env = CustomFrozenLake(
         desc=list(env_map),
+        map_name=None,
         is_slippery=is_slippery,
-        max_episode_steps=max_episode_steps,
+        success_rate=success_rate,
         render_mode=render_mode,
     )
+    env = gym.wrappers.TimeLimit(base_env, max_episode_steps=max_episode_steps)
     env = CoordObsWrapper(env, env_map, task_num)
     env = SafetyFlagWrapper(env)
     if shaped:

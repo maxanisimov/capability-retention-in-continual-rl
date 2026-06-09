@@ -25,13 +25,15 @@ class ConstantLogitActor(torch.nn.Module):
 def _payload() -> dict[str, torch.Tensor]:
     return {
         "state": torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=torch.float32),
-        "actions": torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+        "actions": torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=torch.float32),
     }
 
 
 class VerifiedMarginConstrainedPPOTests(unittest.TestCase):
     def test_verified_margin_and_hard_accuracy_for_point_logits(self) -> None:
-        actor = ConstantLogitActor(torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32))
+        actor = ConstantLogitActor(
+            torch.tensor([[2.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0]], dtype=torch.float32),
+        )
         constraint = VerifiedMarginConstraint.from_payload(
             _payload(),
             temperature=1,
@@ -42,7 +44,9 @@ class VerifiedMarginConstrainedPPOTests(unittest.TestCase):
         self.assertEqual(constraint.hard_accuracy(actor), 1.0)
 
     def test_temperature_calibration_selects_first_positive_margin(self) -> None:
-        actor = ConstantLogitActor(torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32))
+        actor = ConstantLogitActor(
+            torch.tensor([[2.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0]], dtype=torch.float32),
+        )
 
         temperature, margin = calibrate_margin_temperature(
             actor,
@@ -56,7 +60,9 @@ class VerifiedMarginConstrainedPPOTests(unittest.TestCase):
         self.assertGreater(margin, 0.0)
 
     def test_temperature_calibration_fails_when_no_temperature_is_safe(self) -> None:
-        actor = ConstantLogitActor(torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32))
+        actor = ConstantLogitActor(
+            torch.tensor([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
+        )
 
         with self.assertRaisesRegex(ValueError, "Could not calibrate"):
             calibrate_margin_temperature(
@@ -68,22 +74,22 @@ class VerifiedMarginConstrainedPPOTests(unittest.TestCase):
             )
 
     def test_safe_line_search_backtracks_to_first_safe_alpha(self) -> None:
-        actor = torch.nn.Sequential(torch.nn.Linear(3, 2))
+        actor = torch.nn.Sequential(torch.nn.Linear(3, 4))
         layer = actor[0]
         assert isinstance(layer, torch.nn.Linear)
         with torch.no_grad():
             layer.weight.zero_()
-            layer.bias.copy_(torch.tensor([1.0, 0.0]))
+            layer.bias.copy_(torch.tensor([2.0, 0.0, 0.0, 0.0]))
         old_params = [param.detach().clone() for param in actor.parameters()]
         candidate_params = [param.detach().clone() for param in actor.parameters()]
-        candidate_params[1] = torch.tensor([0.0, 1.0])
+        candidate_params[1] = torch.tensor([0.0, 2.0, 0.0, 0.0])
         with torch.no_grad():
             layer.bias.copy_(candidate_params[1])
 
         constraint = VerifiedMarginConstraint.from_payload(
             {
                 "state": torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32),
-                "actions": torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+                "actions": torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
             },
             temperature=1,
             device="cpu",
@@ -102,22 +108,22 @@ class VerifiedMarginConstrainedPPOTests(unittest.TestCase):
         self.assertGreater(decision.margin, 0.0)
 
     def test_safe_line_search_restores_old_params_when_all_alphas_fail(self) -> None:
-        actor = torch.nn.Sequential(torch.nn.Linear(3, 2))
+        actor = torch.nn.Sequential(torch.nn.Linear(3, 4))
         layer = actor[0]
         assert isinstance(layer, torch.nn.Linear)
         with torch.no_grad():
             layer.weight.zero_()
-            layer.bias.copy_(torch.tensor([1.0, 0.0]))
+            layer.bias.copy_(torch.tensor([2.0, 0.0, 0.0, 0.0]))
         old_params = [param.detach().clone() for param in actor.parameters()]
         candidate_params = [param.detach().clone() for param in actor.parameters()]
-        candidate_params[1] = torch.tensor([0.0, 1.0])
+        candidate_params[1] = torch.tensor([0.0, 2.0, 0.0, 0.0])
         with torch.no_grad():
             layer.bias.copy_(candidate_params[1])
 
         constraint = VerifiedMarginConstraint.from_payload(
             {
                 "state": torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32),
-                "actions": torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+                "actions": torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
             },
             temperature=1,
             device="cpu",

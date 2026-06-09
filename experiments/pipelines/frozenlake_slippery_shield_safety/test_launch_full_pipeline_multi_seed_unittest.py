@@ -45,6 +45,8 @@ class FrozenLakeSafetyFullLauncherTests(unittest.TestCase):
                         "250",
                         "--unsafe-cost-threshold",
                         "0.75",
+                        "--success-rate",
+                        "0.8",
                         "--dry-run",
                     ],
                 )
@@ -60,6 +62,7 @@ class FrozenLakeSafetyFullLauncherTests(unittest.TestCase):
             self.assertEqual(summary["run_settings"]["shield_theta"], 1e-8)
             self.assertEqual(summary["run_settings"]["shield_max_vi_steps"], 250)
             self.assertEqual(summary["run_settings"]["unsafe_cost_threshold"], 0.75)
+            self.assertEqual(summary["run_settings"]["success_rate"], 0.8)
             self.assertEqual(len(jobs), 18)
             self.assertTrue(all(job["state"] == launcher.JOB_SUCCEEDED for job in jobs))
             self.assertEqual(
@@ -80,6 +83,9 @@ class FrozenLakeSafetyFullLauncherTests(unittest.TestCase):
             self.assertEqual([job["scheduled_wave"] for job in jobs[12:18]], [1] * 6)
             self.assertIn("--shield-type", jobs[0]["command"])
             self.assertIn("probabilistic", jobs[0]["command"])
+            self.assertIn("--success-rate", jobs[0]["command"])
+            self.assertIn("--success-rate", jobs[1]["command"])
+            self.assertIn("0.8", jobs[1]["command"])
             self.assertNotIn("--shield-type", jobs[1]["command"])
 
             wave_to_seed_cores = {}

@@ -132,6 +132,8 @@ class FrozenLakeSafetyAdaptationLauncherTests(unittest.TestCase):
                         "4",
                         "--safe-line-search-backtrack-coef",
                         "0.25",
+                        "--success-rate",
+                        "0.8",
                         "--dry-run",
                     ],
                 )
@@ -151,6 +153,9 @@ class FrozenLakeSafetyAdaptationLauncherTests(unittest.TestCase):
             self.assertIn("3", command)
             self.assertIn("--safe-line-search-max-backtracks", command)
             self.assertIn("4", command)
+            self.assertIn("--success-rate", command)
+            self.assertIn("0.8", command)
+            self.assertEqual(summary["run_settings"]["success_rate"], 0.8)
 
 
 if __name__ == "__main__":

@@ -148,6 +148,15 @@ def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--poll-seconds", type=float, default=1.0)
+    parser.add_argument(
+        "--success-rate",
+        type=float,
+        default=None,
+        help=(
+            "Probability that the requested action is executed in slippery FrozenLake. "
+            "Forwarded to the adaptation job."
+        ),
+    )
     parser.add_argument("--resume-policy", choices=["skip_completed", "rerun_all"], default="skip_completed")
     parser.add_argument("--failure-policy", choices=["continue", "fail_fast"], default="continue")
     parser.add_argument("--total-timesteps-override", type=int, default=None)
@@ -234,6 +243,8 @@ def _build_command(args: argparse.Namespace, *, seed: int, passthrough: list[str
         cmd.extend(["--source-run-dir", str(source_run_dir)])
     if args.total_timesteps_override is not None:
         cmd.extend(["--total-timesteps-override", str(args.total_timesteps_override)])
+    if args.success_rate is not None:
+        cmd.extend(["--success-rate", str(args.success_rate)])
     if args.mode == "downstream_ewc":
         if args.ewc_lambda is not None:
             cmd.extend(["--ewc-lambda", str(args.ewc_lambda)])
@@ -307,6 +318,7 @@ def _write_summary(
             "resume_policy": str(args.resume_policy),
             "failure_policy": str(args.failure_policy),
             "dry_run": bool(args.dry_run),
+            "success_rate": args.success_rate,
             "inverse_temp_start": args.inverse_temp_start,
             "inverse_temp_max": args.inverse_temp_max,
             "safe_line_search_max_backtracks": args.safe_line_search_max_backtracks,

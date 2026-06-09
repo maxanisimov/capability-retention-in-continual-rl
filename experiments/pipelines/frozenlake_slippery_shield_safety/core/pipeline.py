@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from dataclasses import replace
 import os
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,9 @@ from experiments.pipelines.frozenlake_slippery_shield_safety.core.constrained_pp
     lagrangian_ppo_train,
     safe_line_search_ppo_train,
 )
+from experiments.pipelines.frozenlake_slippery_shield_safety.core.analysis.plot_shield import (
+    plot_shield_safety_probabilities,
+)
 from experiments.pipelines.frozenlake_slippery_shield_safety.core.paths import (
     NOADAPT_POLICY_SUBDIR,
     default_outputs_root,
@@ -34,8 +38,10 @@ from experiments.pipelines.frozenlake_slippery_shield_safety.core.safety import 
     create_shield_rashomon_dataset,
     finetune_on_allowed_actions,
     greedy_action,
+    min_risk_shield_from_action_risk,
     rollout_greedy_policy,
     safe_action_mask_for_state,
+    shield_allowed_action_risk_stats,
     shield_allowed_action_stats,
     synthesise_frozenlake_shield,
     to_tensor_dataset,
@@ -202,6 +208,7 @@ def _make_source_env(cfg: PipelineConfig, *, shaped: bool, render_mode: str | No
         max_episode_steps=cfg.max_episode_steps,
         shaped=shaped,
         is_slippery=cfg.is_slippery,
+        success_rate=cfg.success_rate,
         render_mode=render_mode,
     )
 
@@ -213,6 +220,7 @@ def _make_downstream_env(cfg: PipelineConfig, *, shaped: bool, render_mode: str 
         max_episode_steps=cfg.max_episode_steps,
         shaped=shaped,
         is_slippery=cfg.is_slippery,
+        success_rate=cfg.success_rate,
         render_mode=render_mode,
     )
 
@@ -306,11 +314,23 @@ def _evaluate_both_tasks(
     }
 
 
-def _safety_critical_states(env_map: list[str] | tuple[str, ...]) -> list[int]:
+def _safety_critical_states(
+    env_map: list[str] | tuple[str, ...],
+    *,
+    is_slippery: bool,
+    success_rate: float,
+) -> list[int]:
     return [
         state_index
         for state_index in traversable_nonterminal_states(env_map)
-        if float(safe_action_mask_for_state(env_map, state_index).sum()) < 4.0
+        if float(
+            safe_action_mask_for_state(
+                env_map,
+                state_index,
+                is_slippery=is_slippery,
+                success_rate=success_rate,
+            ).sum(),
+        ) < 4.0
     ]
 
 
@@ -319,16 +339,27 @@ def _safety_critical_state_metrics(
     *,
     env_map: list[str] | tuple[str, ...],
     task_num: float,
+    is_slippery: bool,
+    success_rate: float,
     device: str | torch.device,
 ) -> dict[str, Any]:
-    critical_states = _safety_critical_states(env_map)
+    critical_states = _safety_critical_states(
+        env_map,
+        is_slippery=is_slippery,
+        success_rate=success_rate,
+    )
     safe_count = 0
     failures: list[dict[str, int]] = []
 
     for state_index in critical_states:
         obs = state_index_to_obs(state_index, env_map, task_num)
         action = greedy_action(actor, obs, device=device)
-        safe_mask = safe_action_mask_for_state(env_map, state_index)
+        safe_mask = safe_action_mask_for_state(
+            env_map,
+            state_index,
+            is_slippery=is_slippery,
+            success_rate=success_rate,
+        )
         if bool(safe_mask[action] > 0):
             safe_count += 1
         else:
@@ -377,6 +408,8 @@ def _compute_task_policy_metrics(
         actor,
         env_map=env_map,
         task_num=task_num,
+        is_slippery=cfg.is_slippery,
+        success_rate=cfg.success_rate,
         device=device,
     )
     return {
@@ -417,6 +450,36 @@ def _save_trajectory_plot(
         )
     finally:
         env.close()
+
+
+def _save_shield_safety_probability_plot(
+    *,
+    cfg: PipelineConfig,
+    shield: np.ndarray,
+    shield_info: object,
+    seed: int,
+    path: Path,
+) -> None:
+    env = _make_source_env(cfg, shaped=False, render_mode="rgb_array")
+    fig = None
+    try:
+        fig = plot_shield_safety_probabilities(
+            env,
+            shield,
+            action_risk=getattr(shield_info, "action_risk", None),
+            title=(
+                f"Source shield safety probabilities: {cfg.layout} "
+                f"(success_rate={cfg.success_rate:.3g})"
+            ),
+            save_path=path,
+            seed=seed,
+        )
+    finally:
+        env.close()
+        if fig is not None:
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
 
 
 def _write_summary(
@@ -493,11 +556,17 @@ def _load_source_shield_metadata(source_dir: Path) -> dict[str, Any]:
     settings = data["run_settings"]
     keys = (
         "dataset_source",
+        "shield_dataset_generation_mode",
         "shield_type",
         "shield_risk_threshold",
         "shield_theta",
         "shield_max_vi_steps",
         "unsafe_cost_threshold",
+        "success_rate",
+        "dataset_allowed_action_risk_count",
+        "dataset_allowed_action_risk_min",
+        "dataset_allowed_action_risk_max",
+        "dataset_allowed_action_risk_mean",
         "shield_trainable_state_count",
         "shield_trainable_allowed_actions_min",
         "shield_trainable_allowed_actions_max",
@@ -511,7 +580,7 @@ def _load_source_shield_metadata(source_dir: Path) -> dict[str, Any]:
 
 
 def train_source(args: argparse.Namespace) -> Path:
-    cfg = get_pipeline_config(args.layout)
+    cfg = _config_from_args(args)
     _set_seeds(args.seed)
     total_timesteps = (
         int(args.total_timesteps_override)
@@ -577,14 +646,37 @@ def train_source(args: argparse.Namespace) -> Path:
         theta=shield_theta,
         max_vi_steps=shield_max_vi_steps,
         unsafe_cost_threshold=unsafe_cost_threshold,
+        is_slippery=cfg.is_slippery,
+        success_rate=cfg.success_rate,
     )
+    shield_dataset_generation_mode = "deterministic_shield"
+    if shield_type == "probabilistic":
+        if shield_info.action_risk is None:
+            raise RuntimeError("Probabilistic shield synthesis did not return action_risk.")
+        shield = min_risk_shield_from_action_risk(
+            cfg.source_map,
+            shield_info.action_risk,
+            theta=shield_theta,
+        )
+        shield_dataset_generation_mode = "probabilistic_min_risk"
     rashomon_payload = create_shield_rashomon_dataset(
         cfg.source_map,
         task_num=cfg.source_task_num,
         shield=shield,
     )
     validate_rashomon_payload(rashomon_payload)
+    if int(rashomon_payload["state"].shape[0]) == 0:
+        raise RuntimeError(
+            "Shield dataset generation produced no trainable source safety states. "
+            "Check that the source map has traversable nonterminal states and that "
+            "probabilistic synthesis returned action-risk metadata.",
+        )
     shield_stats = shield_allowed_action_stats(cfg.source_map, shield, rashomon_payload)
+    allowed_action_risk_stats = shield_allowed_action_risk_stats(
+        cfg.source_map,
+        shield,
+        shield_info.action_risk,
+    )
     finetune_result = finetune_on_allowed_actions(
         actor,
         rashomon_payload,
@@ -614,6 +706,7 @@ def train_source(args: argparse.Namespace) -> Path:
     trajectory_pairs_path = run_dir / "source_policy_state_action_pairs.yaml"
     source_plot_path = run_dir / "trajectory_source.png"
     downstream_plot_path = run_dir / "trajectory_downstream.png"
+    shield_safety_plot_path = run_dir / "shield_safety_probabilities.png"
 
     torch.save(actor.state_dict(), actor_path)
     torch.save(critic.state_dict(), critic_path)
@@ -627,6 +720,13 @@ def train_source(args: argparse.Namespace) -> Path:
     )
     _save_trajectory_plot(cfg=cfg, actor=actor, task="source", seed=args.seed, path=source_plot_path)
     _save_trajectory_plot(cfg=cfg, actor=actor, task="downstream", seed=args.seed, path=downstream_plot_path)
+    _save_shield_safety_probability_plot(
+        cfg=cfg,
+        shield=shield,
+        shield_info=shield_info,
+        seed=args.seed,
+        path=shield_safety_plot_path,
+    )
 
     run_results = _evaluate_both_tasks(cfg, actor=actor, device=args.device, seed=args.seed)
     run_results.update(
@@ -654,12 +754,14 @@ def train_source(args: argparse.Namespace) -> Path:
         "source_task_num": cfg.source_task_num,
         "downstream_task_num": cfg.downstream_task_num,
         "is_slippery": cfg.is_slippery,
+        "success_rate": cfg.success_rate,
         "eval_episodes": cfg.eval_episodes,
         "total_timesteps": int(total_timesteps),
         "train_shaped": True,
         "early_stop_eval_shaped": False,
         "ppo": _ppo_config_dict(ppo_cfg),
         "dataset_source": "synthesized_shield",
+        "shield_dataset_generation_mode": shield_dataset_generation_mode,
         "shield_type": shield_type,
         "shield_risk_threshold": shield_risk_threshold,
         "shield_theta": shield_theta,
@@ -668,6 +770,7 @@ def train_source(args: argparse.Namespace) -> Path:
         "rashomon_dataset_size": int(rashomon_payload["state"].shape[0]),
         "outputs_root": str(args.outputs_root),
         **shield_stats,
+        **allowed_action_risk_stats,
         **_shield_info_summary(shield_info),
     }
     artifacts = {
@@ -680,6 +783,7 @@ def train_source(args: argparse.Namespace) -> Path:
         "source_policy_state_action_pairs_path": str(trajectory_pairs_path),
         "trajectory_source_plot_path": str(source_plot_path),
         "trajectory_downstream_plot_path": str(downstream_plot_path),
+        "shield_safety_probability_plot_path": str(shield_safety_plot_path),
     }
     _write_summary(run_dir, run_settings=run_settings, run_results=run_results, artifacts=artifacts)
     print(f"Saved source/noadapt artifacts to {run_dir}")
@@ -771,7 +875,7 @@ def _certificate_to_float(certificate: object) -> float:
 
 
 def adapt_downstream(args: argparse.Namespace, *, mode: str) -> Path:
-    cfg = get_pipeline_config(args.layout)
+    cfg = _config_from_args(args)
     _set_seeds(args.seed)
     source_dir = args.source_run_dir or resolve_source_run_dir(args.outputs_root, args.layout, args.seed)
     source_rashomon_dataset_path: Path | None = None
@@ -991,6 +1095,7 @@ def adapt_downstream(args: argparse.Namespace, *, mode: str) -> Path:
         "source_task_num": cfg.source_task_num,
         "downstream_task_num": cfg.downstream_task_num,
         "is_slippery": cfg.is_slippery,
+        "success_rate": cfg.success_rate,
         "eval_episodes": cfg.eval_episodes,
         "total_timesteps": int(total_timesteps),
         "warm_start_actor": True,
@@ -1084,6 +1189,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--outputs-root", type=Path, default=default_outputs_root())
     parser.add_argument("--source-run-dir", type=Path, default=None)
+    parser.add_argument(
+        "--success-rate",
+        type=float,
+        default=None,
+        help=(
+            "Probability that the requested action is executed in slippery FrozenLake. "
+            "The remaining probability is split across the two side slips."
+        ),
+    )
     parser.add_argument("--total-timesteps-override", type=int, default=None)
     parser.add_argument("--safety-finetune-lr", type=float, default=None)
     parser.add_argument("--safety-finetune-max-epochs", type=int, default=None)
@@ -1107,15 +1221,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
+    cfg = get_pipeline_config(args.layout)
+    if getattr(args, "success_rate", None) is None:
+        return cfg
+    success_rate = float(args.success_rate)
+    if not 0.0 <= success_rate <= 1.0:
+        raise ValueError(f"--success-rate must be in [0, 1], got {success_rate}.")
+    return replace(cfg, success_rate=success_rate)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.dry_run:
-        cfg = get_pipeline_config(args.layout)
+        cfg = _config_from_args(args)
         run_dir = mode_run_dir(args.outputs_root, args.layout, args.seed, args.mode)
         print(
             f"Dry run: mode={args.mode} layout={cfg.layout} seed={args.seed} "
             f"run_dir={run_dir} "
+            f"success_rate={cfg.success_rate} "
             f"shield_type={args.shield_type or cfg.shield_type} "
             f"shield_risk_threshold="
             f"{args.shield_risk_threshold if args.shield_risk_threshold is not None else cfg.shield_risk_threshold} "

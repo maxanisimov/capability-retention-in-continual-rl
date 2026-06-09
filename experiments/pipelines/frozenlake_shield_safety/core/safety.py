@@ -161,6 +161,69 @@ def create_shield_rashomon_dataset(
     }
 
 
+def min_risk_shield_from_action_risk(
+    env_map: list[str] | tuple[str, ...],
+    action_risk: np.ndarray,
+    *,
+    theta: float,
+) -> np.ndarray:
+    """Return a mask allowing minimum-risk actions in each trainable state."""
+    nrow, ncol = grid_shape(env_map)
+    expected_shape = (nrow * ncol, 4)
+    risk_arr = np.asarray(action_risk, dtype=np.float64)
+    if risk_arr.shape != expected_shape:
+        raise ValueError(f"Expected action_risk shape {expected_shape}, got {risk_arr.shape}.")
+    if theta < 0.0:
+        raise ValueError(f"theta must be non-negative for min-risk masks, got {theta}.")
+
+    shield = np.zeros(expected_shape, dtype=np.int64)
+    for state_index in traversable_nonterminal_states(env_map):
+        state_risk = risk_arr[state_index]
+        min_risk = float(np.min(state_risk))
+        shield[state_index] = (state_risk <= min_risk + float(theta)).astype(np.int64)
+    return shield
+
+
+def shield_allowed_action_risk_stats(
+    env_map: list[str] | tuple[str, ...],
+    shield: np.ndarray,
+    action_risk: np.ndarray | None,
+    *,
+    prefix: str = "dataset_allowed_action_risk",
+) -> dict[str, float | int]:
+    """Summarise action risks for allowed trainable-state actions."""
+    if action_risk is None:
+        return {}
+    nrow, ncol = grid_shape(env_map)
+    expected_shape = (nrow * ncol, 4)
+    shield_arr = np.asarray(shield)
+    risk_arr = np.asarray(action_risk, dtype=np.float64)
+    if shield_arr.shape != expected_shape:
+        raise ValueError(f"Expected shield shape {expected_shape}, got {shield_arr.shape}.")
+    if risk_arr.shape != expected_shape:
+        raise ValueError(f"Expected action_risk shape {expected_shape}, got {risk_arr.shape}.")
+
+    risks: list[float] = []
+    for state_index in traversable_nonterminal_states(env_map):
+        for action in np.flatnonzero(shield_arr[state_index] > 0):
+            risks.append(float(risk_arr[state_index, int(action)]))
+
+    if not risks:
+        return {
+            f"{prefix}_count": 0,
+            f"{prefix}_min": 0.0,
+            f"{prefix}_max": 0.0,
+            f"{prefix}_mean": 0.0,
+        }
+    risk_array = np.asarray(risks, dtype=np.float64)
+    return {
+        f"{prefix}_count": int(risk_array.size),
+        f"{prefix}_min": float(risk_array.min()),
+        f"{prefix}_max": float(risk_array.max()),
+        f"{prefix}_mean": float(risk_array.mean()),
+    }
+
+
 def shield_allowed_action_stats(
     env_map: list[str] | tuple[str, ...],
     shield: np.ndarray,
