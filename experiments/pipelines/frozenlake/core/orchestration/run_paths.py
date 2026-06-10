@@ -1,142 +1,25 @@
-"""Centralized path helpers for FrozenLake experiments."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake.core.orchestration.run_paths`."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-NOADAPT_POLICY_SUBDIR = "noadapt"
-LEGACY_SOURCE_POLICY_SUBDIR = "source"
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake.core.orchestration.run_paths"
+_module = _import_module(_CANONICAL_MODULE)
 
+if __name__ == "__main__":
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
-def pipeline_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def settings_root() -> Path:
-    return pipeline_root() / "settings"
-
-
-def artifacts_root() -> Path:
-    return pipeline_root() / "artifacts"
-
-
-def runs_root() -> Path:
-    return artifacts_root() / "runs"
-
-
-def legacy_outputs_root() -> Path:
-    return pipeline_root() / "outputs"
-
-
-def default_outputs_root() -> Path:
-    return runs_root()
-
-
-def default_task_settings_file() -> Path:
-    return default_task_pipelines_file()
-
-
-def default_task_pipelines_file() -> Path:
-    return settings_root() / "tasks" / "task_pipelines.yaml"
-
-
-def default_task_definitions_file() -> Path:
-    return settings_root() / "tasks" / "task_definitions.yaml"
-
-
-def default_source_envs_file() -> Path:
-    return settings_root() / "tasks" / "source_envs.yaml"
-
-
-def default_downstream_envs_file() -> Path:
-    return settings_root() / "tasks" / "downstream_envs.yaml"
-
-
-def default_train_source_settings_file() -> Path:
-    return settings_root() / "source" / "train_source_policy_settings.yaml"
-
-
-def default_adapt_ppo_settings_file() -> Path:
-    return settings_root() / "adaptation" / "ppo.yaml"
-
-
-def default_adapt_ewc_settings_file() -> Path:
-    return settings_root() / "adaptation" / "ewc.yaml"
-
-
-def default_adapt_rashomon_settings_file() -> Path:
-    return settings_root() / "adaptation" / "rashomon.yaml"
-
-
-def seed_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
-    return outputs_root / layout / f"seed_{seed}"
-
-
-def _policy_subdir_candidates(policy_subdir: str) -> tuple[str, ...]:
-    if policy_subdir in {NOADAPT_POLICY_SUBDIR, LEGACY_SOURCE_POLICY_SUBDIR}:
-        return (NOADAPT_POLICY_SUBDIR, LEGACY_SOURCE_POLICY_SUBDIR)
-    if policy_subdir in {"downstream", "downstream_unconstrained"}:
-        return ("downstream_unconstrained", "downstream")
-    return (policy_subdir,)
-
-
-def resolve_default_source_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
-    """Prefer the new noadapt layout; fall back to legacy source directories."""
-    candidates = [
-        seed_run_dir(outputs_root, layout, seed) / subdir
-        for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
-    ]
-    legacy_candidates = [
-        (outputs_root / f"seed_{seed}") / subdir
-        for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
-    ]
-    for candidate in [*candidates, *legacy_candidates]:
-        if candidate.exists():
-            return candidate
-
-    global_legacy = legacy_outputs_root()
-    if outputs_root != global_legacy:
-        global_candidates = [
-            seed_run_dir(global_legacy, layout, seed) / subdir
-            for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
-        ] + [
-            (global_legacy / f"seed_{seed}") / subdir
-            for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
-        ]
-        for candidate in global_candidates:
-            if candidate.exists():
-                return candidate
-
-    return seed_run_dir(outputs_root, layout, seed) / NOADAPT_POLICY_SUBDIR
-
-
-def resolve_policy_dir(outputs_root: Path, layout: str, seed: int, policy_subdir: str) -> Path:
-    """Resolve a policy directory with legacy fallback candidates."""
-    candidate_subdirs = _policy_subdir_candidates(policy_subdir)
-    candidates = [
-        seed_run_dir(outputs_root, layout, seed) / subdir
-        for subdir in candidate_subdirs
-    ]
-    legacy_candidates = [
-        (outputs_root / f"seed_{seed}") / subdir
-        for subdir in candidate_subdirs
-    ]
-    for candidate in [*candidates, *legacy_candidates]:
-        if candidate.exists():
-            return candidate
-
-    global_legacy = legacy_outputs_root()
-    if outputs_root != global_legacy:
-        global_candidates = [
-            seed_run_dir(global_legacy, layout, seed) / subdir
-            for subdir in candidate_subdirs
-        ] + [
-            (global_legacy / f"seed_{seed}") / subdir
-            for subdir in candidate_subdirs
-        ]
-        for candidate in global_candidates:
-            if candidate.exists():
-                return candidate
-
-    return seed_run_dir(outputs_root, layout, seed) / candidate_subdirs[0]
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

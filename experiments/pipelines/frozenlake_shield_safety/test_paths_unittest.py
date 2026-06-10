@@ -1,43 +1,25 @@
-"""Unit tests for FrozenLake shield safety path helpers."""
+"""Compatibility delegate for :mod:`experiments.pipelines.safety.frozenlake.test_paths_unittest`."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-import unittest
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-from experiments.pipelines.frozenlake_shield_safety.core import paths
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-
-class FrozenLakeSafetyPathTests(unittest.TestCase):
-    def test_mode_run_dirs_use_expected_subdirs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            self.assertEqual(
-                paths.mode_run_dir(root, "diagonal_4x4", 3, "source"),
-                root / "diagonal_4x4" / "seed_3" / "noadapt",
-            )
-            self.assertEqual(
-                paths.mode_run_dir(root, "diagonal_4x4", 3, "downstream_rashomon"),
-                root / "diagonal_4x4" / "seed_3" / "downstream_rashomon",
-            )
-            self.assertEqual(
-                paths.mode_run_dir(root, "diagonal_4x4", 3, "downstream_safe_line_search"),
-                root / "diagonal_4x4" / "seed_3" / "downstream_safe_line_search",
-            )
-            self.assertEqual(
-                paths.mode_run_dir(root, "diagonal_4x4", 3, "downstream_lagrangian"),
-                root / "diagonal_4x4" / "seed_3" / "downstream_lagrangian",
-            )
-
-    def test_source_resolution_falls_back_to_legacy_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            legacy = root / "diagonal_4x4" / "seed_0" / "source"
-            legacy.mkdir(parents=True)
-
-            self.assertEqual(paths.resolve_source_run_dir(root, "diagonal_4x4", 0), legacy)
-
+_CANONICAL_MODULE = "experiments.pipelines.safety.frozenlake.test_paths_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
+
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

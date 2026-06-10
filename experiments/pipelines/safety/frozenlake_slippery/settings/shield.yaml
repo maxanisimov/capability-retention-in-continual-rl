@@ -1,0 +1,24 @@
+diagonal_4x4:
+  shield_type: probabilistic
+  shield_risk_threshold: 0.05
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_6x6:
+  shield_type: probabilistic
+  shield_risk_threshold: 0.05
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+route_switch_6x6:
+  shield_type: probabilistic
+  shield_risk_threshold: 0.05
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+old_route_blocked_6x6:
+  shield_type: probabilistic
+  shield_risk_threshold: 0.05
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5

@@ -1,0 +1,84 @@
+corridor_7x7_deterministic:
+  env_id: CustomLavaCrossing-v0
+  dynamics: deterministic
+  slip_prob: 0.0
+  max_episode_steps: 100
+  source_map:
+  - SFFFFFF
+  - LLLLLLF
+  - FFFFFFF
+  - FLLLLLL
+  - FFFFFFF
+  - LLLLLLF
+  - FFFFFFG
+  downstream_map:
+  - SFFFFFF
+  - FLLLLLL
+  - FFFFFFF
+  - LLLLLLF
+  - FFFFFFF
+  - FLLLLLL
+  - FFFFFFG
+corridor_7x7_slip_0p1:
+  env_id: CustomLavaCrossing-v0
+  dynamics: stochastic
+  slip_prob: 0.1
+  max_episode_steps: 100
+  source_map:
+  - SFFFFFF
+  - LLLLLLF
+  - FFFFFFF
+  - FLLLLLL
+  - FFFFFFF
+  - LLLLLLF
+  - FFFFFFG
+  downstream_map:
+  - SFFFFFF
+  - FLLLLLL
+  - FFFFFFF
+  - LLLLLLF
+  - FFFFFFF
+  - FLLLLLL
+  - FFFFFFG
+route_switch_7x7_deterministic:
+  env_id: CustomLavaCrossing-v0
+  dynamics: deterministic
+  slip_prob: 0.0
+  max_episode_steps: 100
+  source_map:
+  - SFFFFFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFG
+  downstream_map:
+  - SLLLLLL
+  - FFFFFFL
+  - FLLLLLL
+  - FFFFFFF
+  - LLLLLLF
+  - LLLLLLF
+  - LLLLLLG
+route_switch_7x7_slip_0p1:
+  env_id: CustomLavaCrossing-v0
+  dynamics: stochastic
+  slip_prob: 0.1
+  max_episode_steps: 100
+  source_map:
+  - SFFFFFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFL
+  - LLLLLFG
+  downstream_map:
+  - SLLLLLL
+  - FFFFFFL
+  - FLLLLLL
+  - FFFFFFF
+  - LLLLLLF
+  - LLLLLLF
+  - LLLLLLG

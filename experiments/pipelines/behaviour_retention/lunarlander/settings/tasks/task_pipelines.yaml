@@ -1,0 +1,24 @@
+deterministic__default_to_underpowered_vehicle:
+  append_task_id: true
+  source:
+    env: deterministic__default
+  downstream:
+    env: deterministic__underpowered_vehicle
+deterministic__default_to_sluggish_vehicle:
+  append_task_id: true
+  source:
+    env: deterministic__default
+  downstream:
+    env: deterministic__sluggish_vehicle
+deterministic__default_to_twitchy_vehicle:
+  append_task_id: true
+  source:
+    env: deterministic__default
+  downstream:
+    env: deterministic__twitchy_vehicle
+deterministic__default_to_stochastic__default:
+  append_task_id: true
+  source:
+    env: deterministic__default
+  downstream:
+    env: default

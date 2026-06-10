@@ -1,157 +1,25 @@
-"""Unit tests for the FrozenLake shield safety adaptation-only launcher."""
+"""Compatibility delegate for :mod:`experiments.pipelines.safety.frozenlake.test_launch_adaptation_multi_seed_unittest`."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-import unittest
-from unittest.mock import patch
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-import yaml
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-from experiments.pipelines.frozenlake_shield_safety.cli import launch_adaptation_multi_seed as launcher
-
-
-class FrozenLakeSafetyAdaptationLauncherTests(unittest.TestCase):
-    def test_dry_run_schedules_runs_in_core_waves_without_clashes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            outputs_root = Path(tmp_dir)
-            with patch.object(launcher.os, "sched_getaffinity", return_value={4, 5, 6}):
-                rc = launcher.main(
-                    [
-                        "--mode",
-                        "downstream_rashomon",
-                        "--pipeline",
-                        "diagonal_4x4",
-                        "--outputs-root",
-                        str(outputs_root),
-                        "--seeds",
-                        "0",
-                        "1",
-                        "2",
-                        "3",
-                        "--cores",
-                        "5",
-                        "4",
-                        "5",
-                        "--max-parallel",
-                        "2",
-                        "--resume-policy",
-                        "rerun_all",
-                        "--dry-run",
-                    ],
-                )
-
-            self.assertEqual(rc, 0)
-            summary_path = (
-                outputs_root
-                / "diagonal_4x4"
-                / "multi_seed_logs"
-                / "adaptation_parallel"
-                / "downstream_rashomon"
-                / "summary.yaml"
-            )
-            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
-            jobs = summary["jobs"]
-
-            self.assertEqual(summary["run_settings"]["core_pool"], [5, 4])
-            self.assertEqual([job["state"] for job in jobs], [launcher.JOB_SUCCEEDED] * 4)
-            self.assertEqual([job["core"] for job in jobs], [5, 4, 5, 4])
-            self.assertEqual([job["scheduled_wave"] for job in jobs], [0, 0, 1, 1])
-
-    def test_rejects_max_parallel_larger_than_unique_core_pool(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with patch.object(launcher.os, "sched_getaffinity", return_value={0}):
-                with self.assertRaisesRegex(ValueError, "exceeds selected unique core count"):
-                    launcher.main(
-                        [
-                            "--mode",
-                            "downstream_ewc",
-                            "--outputs-root",
-                            tmp_dir,
-                            "--seeds",
-                            "0",
-                            "--cores",
-                            "0",
-                            "--max-parallel",
-                            "2",
-                            "--dry-run",
-                        ],
-                    )
-
-    def test_all_completed_runs_are_skipped_and_still_write_summary(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            outputs_root = Path(tmp_dir)
-            run_dir = outputs_root / "diagonal_4x4" / "seed_0" / "downstream_unconstrained"
-            run_dir.mkdir(parents=True)
-            for artifact in launcher.MODE_TO_REQUIRED_ARTIFACTS["downstream_unconstrained"]:
-                (run_dir / artifact).write_text("present", encoding="utf-8")
-
-            with patch.object(launcher.os, "sched_getaffinity", return_value={0}):
-                rc = launcher.main(
-                    [
-                        "--mode",
-                        "downstream_unconstrained",
-                        "--outputs-root",
-                        str(outputs_root),
-                        "--seeds",
-                        "0",
-                    ],
-                )
-
-            self.assertEqual(rc, 0)
-            summary_path = (
-                outputs_root
-                / "diagonal_4x4"
-                / "multi_seed_logs"
-                / "adaptation_parallel"
-                / "downstream_unconstrained"
-                / "summary.yaml"
-            )
-            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
-            self.assertEqual(summary["jobs"][0]["state"], launcher.JOB_SKIPPED)
-            self.assertIsNone(summary["jobs"][0]["core"])
-
-    def test_dry_run_forwards_safe_line_search_args(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            outputs_root = Path(tmp_dir)
-            with patch.object(launcher.os, "sched_getaffinity", return_value={0}):
-                rc = launcher.main(
-                    [
-                        "--mode",
-                        "downstream_safe_line_search",
-                        "--outputs-root",
-                        str(outputs_root),
-                        "--seeds",
-                        "0",
-                        "--inverse-temp-start",
-                        "3",
-                        "--inverse-temp-max",
-                        "7",
-                        "--safe-line-search-max-backtracks",
-                        "4",
-                        "--safe-line-search-backtrack-coef",
-                        "0.25",
-                        "--dry-run",
-                    ],
-                )
-
-            self.assertEqual(rc, 0)
-            summary_path = (
-                outputs_root
-                / "diagonal_4x4"
-                / "multi_seed_logs"
-                / "adaptation_parallel"
-                / "downstream_safe_line_search"
-                / "summary.yaml"
-            )
-            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
-            command = summary["jobs"][0]["command"]
-            self.assertIn("--inverse-temp-start", command)
-            self.assertIn("3", command)
-            self.assertIn("--safe-line-search-max-backtracks", command)
-            self.assertIn("4", command)
-
+_CANONICAL_MODULE = "experiments.pipelines.safety.frozenlake.test_launch_adaptation_multi_seed_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
+
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

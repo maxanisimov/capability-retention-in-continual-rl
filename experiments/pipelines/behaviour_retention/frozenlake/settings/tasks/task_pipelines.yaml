@@ -1,0 +1,24 @@
+diagonal_10x10:
+  append_task_id: true
+  source:
+    env: diagonal_10x10__source
+  downstream:
+    env: diagonal_10x10__downstream
+diagonal_30x30:
+  append_task_id: true
+  source:
+    env: diagonal_30x30__source
+  downstream:
+    env: diagonal_30x30__downstream
+diagonal_40x40:
+  append_task_id: true
+  source:
+    env: diagonal_40x40__source
+  downstream:
+    env: diagonal_40x40__downstream
+diagonal_60x60:
+  append_task_id: true
+  source:
+    env: diagonal_60x60__source
+  downstream:
+    env: diagonal_60x60__downstream

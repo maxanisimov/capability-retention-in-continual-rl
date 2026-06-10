@@ -1,69 +1,25 @@
-"""Unit tests for FrozenLake full-pipeline orchestration."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake.test_launch_full_pipeline_multi_seed_unittest`."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-import unittest
-from unittest.mock import patch
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-import yaml
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-from experiments.pipelines.frozenlake.core.orchestration import launch_full_pipeline_multi_seed as fp
-
-
-class FrozenLakeFullPipelineGraphTests(unittest.TestCase):
-    def test_source_success_unlocks_downstream_jobs(self) -> None:
-        jobs = fp._create_job_graph([0])
-        fp._refresh_ready_states(jobs)
-        self.assertEqual(jobs["source:0"].state, fp.JOB_READY)
-        for mode in fp.DOWNSTREAM_MODES:
-            self.assertEqual(jobs[f"{mode}:0"].state, fp.JOB_PENDING)
-
-        jobs["source:0"].state = fp.JOB_SUCCEEDED
-        fp._refresh_ready_states(jobs)
-        for mode in fp.DOWNSTREAM_MODES:
-            self.assertEqual(jobs[f"{mode}:0"].state, fp.JOB_READY)
-
-    def test_source_failure_blocks_downstream_jobs(self) -> None:
-        jobs = fp._create_job_graph([0])
-        fp._refresh_ready_states(jobs)
-        jobs["source:0"].state = fp.JOB_FAILED
-        fp._refresh_ready_states(jobs)
-        for mode in fp.DOWNSTREAM_MODES:
-            self.assertEqual(jobs[f"{mode}:0"].state, fp.JOB_BLOCKED)
-
-
-class FrozenLakeFullPipelineDryRunTests(unittest.TestCase):
-    def test_dry_run_writes_summary_for_all_jobs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            outputs_root = Path(tmp_dir)
-            with patch.object(fp.os, "sched_getaffinity", return_value={0, 1}):
-                rc = fp.main(
-                    [
-                        "--pipeline",
-                        "dryrun_unit_case",
-                        "--outputs-root",
-                        str(outputs_root),
-                        "--seeds",
-                        "0",
-                        "1",
-                        "--cores",
-                        "0",
-                        "1",
-                        "--dry-run",
-                        "--no-aggregate-metrics",
-                    ],
-                )
-
-            self.assertEqual(rc, 0)
-            summary_path = outputs_root / "dryrun_unit_case" / "multi_seed_logs" / "full_pipeline" / "summary.yaml"
-            self.assertTrue(summary_path.exists())
-            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8")) or {}
-            jobs = summary.get("jobs", [])
-            self.assertEqual(len(jobs), 8)
-            self.assertTrue(all(job["state"] == fp.JOB_SUCCEEDED for job in jobs))
-
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake.test_launch_full_pipeline_multi_seed_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
+
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

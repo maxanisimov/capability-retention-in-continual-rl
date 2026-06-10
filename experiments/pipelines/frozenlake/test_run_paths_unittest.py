@@ -1,50 +1,25 @@
-"""Unit tests for FrozenLake path resolution helpers."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake.test_run_paths_unittest`."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-import unittest
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-from experiments.pipelines.frozenlake.core.orchestration import run_paths
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-
-class FrozenLakeRunPathsTests(unittest.TestCase):
-    def test_default_outputs_root_is_canonical_artifacts_runs(self) -> None:
-        self.assertEqual(
-            run_paths.default_outputs_root(),
-            run_paths.runs_root(),
-        )
-
-    def test_source_resolution_prefers_noadapt_then_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            noadapt = root / "layout_a" / "seed_0" / "noadapt"
-            source = root / "layout_a" / "seed_0" / "source"
-            source.mkdir(parents=True)
-
-            self.assertEqual(
-                run_paths.resolve_default_source_run_dir(root, "layout_a", 0),
-                source,
-            )
-
-            noadapt.mkdir()
-            self.assertEqual(
-                run_paths.resolve_default_source_run_dir(root, "layout_a", 0),
-                noadapt,
-            )
-
-    def test_unconstrained_resolution_accepts_legacy_downstream_name(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            legacy = root / "layout_a" / "seed_1" / "downstream"
-            legacy.mkdir(parents=True)
-
-            self.assertEqual(
-                run_paths.resolve_policy_dir(root, "layout_a", 1, "downstream_unconstrained"),
-                legacy,
-            )
-
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake.test_run_paths_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
+
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

@@ -1,64 +1,25 @@
-"""Path helpers for FrozenLake slippery shield safety runs."""
+"""Compatibility delegate for :mod:`experiments.pipelines.safety.frozenlake_slippery.core.paths`."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-NOADAPT_POLICY_SUBDIR = "noadapt"
-SOURCE_POLICY_SUBDIR = NOADAPT_POLICY_SUBDIR
-DOWNSTREAM_UNCONSTRAINED_SUBDIR = "downstream_unconstrained"
-DOWNSTREAM_EWC_SUBDIR = "downstream_ewc"
-DOWNSTREAM_RASHOMON_SUBDIR = "downstream_rashomon"
-DOWNSTREAM_SAFE_LINE_SEARCH_SUBDIR = "downstream_safe_line_search"
-DOWNSTREAM_LAGRANGIAN_SUBDIR = "downstream_lagrangian"
+_CANONICAL_MODULE = "experiments.pipelines.safety.frozenlake_slippery.core.paths"
+_module = _import_module(_CANONICAL_MODULE)
 
+if __name__ == "__main__":
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
-def pipeline_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def artifacts_root() -> Path:
-    return pipeline_root() / "artifacts"
-
-
-def default_outputs_root() -> Path:
-    return artifacts_root() / "runs"
-
-
-def seed_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
-    return outputs_root / layout / f"seed_{seed}"
-
-
-def source_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
-    return seed_run_dir(outputs_root, layout, seed) / NOADAPT_POLICY_SUBDIR
-
-
-def resolve_source_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
-    canonical = source_run_dir(outputs_root, layout, seed)
-    if canonical.exists():
-        return canonical
-    legacy = seed_run_dir(outputs_root, layout, seed) / "source"
-    if legacy.exists():
-        return legacy
-    return canonical
-
-
-def mode_run_subdir(mode: str) -> str:
-    if mode == "source":
-        return NOADAPT_POLICY_SUBDIR
-    if mode == "downstream_unconstrained":
-        return DOWNSTREAM_UNCONSTRAINED_SUBDIR
-    if mode == "downstream_ewc":
-        return DOWNSTREAM_EWC_SUBDIR
-    if mode == "downstream_rashomon":
-        return DOWNSTREAM_RASHOMON_SUBDIR
-    if mode == "downstream_safe_line_search":
-        return DOWNSTREAM_SAFE_LINE_SEARCH_SUBDIR
-    if mode == "downstream_lagrangian":
-        return DOWNSTREAM_LAGRANGIAN_SUBDIR
-    raise ValueError(f"Unsupported mode '{mode}'.")
-
-
-def mode_run_dir(outputs_root: Path, layout: str, seed: int, mode: str) -> Path:
-    return seed_run_dir(outputs_root, layout, seed) / mode_run_subdir(mode)
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

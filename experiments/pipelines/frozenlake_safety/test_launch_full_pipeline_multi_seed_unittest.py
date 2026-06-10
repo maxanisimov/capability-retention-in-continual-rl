@@ -1,76 +1,25 @@
-"""Unit tests for the FrozenLake safety full-pipeline launcher."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake_safety_constrained.test_launch_full_pipeline_multi_seed_unittest`."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-import unittest
-from unittest.mock import patch
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-import yaml
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-from experiments.pipelines.frozenlake_safety.cli import launch_full_pipeline_multi_seed as launcher
-
-
-class FrozenLakeSafetyFullLauncherTests(unittest.TestCase):
-    def test_dry_run_schedules_seed_pipelines_in_core_waves_without_clashes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            outputs_root = Path(tmp_dir)
-            with patch.object(launcher.os, "sched_getaffinity", return_value={4, 5, 6}):
-                rc = launcher.main(
-                    [
-                        "--pipeline",
-                        "diagonal_4x4",
-                        "--outputs-root",
-                        str(outputs_root),
-                        "--seeds",
-                        "0",
-                        "1",
-                        "2",
-                        "--cores",
-                        "5",
-                        "4",
-                        "5",
-                        "--max-parallel",
-                        "2",
-                        "--resume-policy",
-                        "rerun_all",
-                        "--dry-run",
-                    ],
-                )
-
-            self.assertEqual(rc, 0)
-            summary_path = outputs_root / "diagonal_4x4" / "multi_seed_logs" / "full_pipeline" / "summary.yaml"
-            self.assertTrue(summary_path.exists())
-            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
-            jobs = summary["jobs"]
-            self.assertEqual(summary["run_settings"]["core_pool"], [5, 4])
-            self.assertEqual(len(jobs), 12)
-            self.assertTrue(all(job["state"] == launcher.JOB_SUCCEEDED for job in jobs))
-            self.assertEqual(
-                [job["mode"] for job in jobs[:4]],
-                ["source", "downstream_unconstrained", "downstream_ewc", "downstream_rashomon"],
-            )
-            self.assertEqual([job["core"] for job in jobs[:4]], [5, 5, 5, 5])
-            self.assertEqual([job["core"] for job in jobs[4:8]], [4, 4, 4, 4])
-            self.assertEqual([job["core"] for job in jobs[8:12]], [5, 5, 5, 5])
-            self.assertEqual([job["scheduled_wave"] for job in jobs[:8]], [0] * 8)
-            self.assertEqual([job["scheduled_wave"] for job in jobs[8:12]], [1] * 4)
-
-            wave_to_seed_cores = {}
-            for job in jobs:
-                key = (job["scheduled_wave"], job["seed"])
-                wave_to_seed_cores.setdefault(key, job["core"])
-                self.assertEqual(wave_to_seed_cores[key], job["core"])
-            for wave in {job["scheduled_wave"] for job in jobs}:
-                cores_in_wave = {
-                    core
-                    for (scheduled_wave, _), core in wave_to_seed_cores.items()
-                    if scheduled_wave == wave
-                }
-                seed_count = sum(1 for scheduled_wave, _ in wave_to_seed_cores if scheduled_wave == wave)
-                self.assertEqual(len(cores_in_wave), seed_count)
-
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake_safety_constrained.test_launch_full_pipeline_multi_seed_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
+
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

@@ -1,14 +1,25 @@
-"""CLI wrapper for FrozenLake source training."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake.cli.train_source`."""
 
-from pathlib import Path
-import sys
+from __future__ import annotations
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-from experiments.pipelines.frozenlake.core.methods.source_train import main
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
+
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake.cli.train_source"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

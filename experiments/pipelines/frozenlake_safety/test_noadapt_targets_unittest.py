@@ -1,56 +1,25 @@
-"""Unit tests for NoAdapt supervised target construction."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake_safety_constrained.test_noadapt_targets_unittest`."""
 
 from __future__ import annotations
 
-import unittest
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-import torch
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-from experiments.pipelines.frozenlake_safety.core.config import SOURCE_MAP
-from experiments.pipelines.frozenlake_safety.core.env import obs_to_state_index
-from experiments.pipelines.frozenlake_safety.core.safety import (
-    TrajectoryStep,
-    build_noadapt_supervised_payload,
-    create_rashomon_dataset,
-)
-
-
-class FrozenLakeNoAdaptTargetTests(unittest.TestCase):
-    def test_trajectory_states_are_one_hot_and_off_trajectory_stays_multihot(self) -> None:
-        rashomon_payload = create_rashomon_dataset(SOURCE_MAP, task_num=0.0)
-        trajectory = [
-            TrajectoryStep(step=0, state_index=0, row=0, col=0, action=2),
-            TrajectoryStep(step=1, state_index=1, row=0, col=1, action=1),
-        ]
-
-        supervised = build_noadapt_supervised_payload(
-            rashomon_payload,
-            env_map=SOURCE_MAP,
-            trajectory_steps=trajectory,
-        )
-        masks_by_state = {
-            obs_to_state_index(obs.numpy(), SOURCE_MAP): actions
-            for obs, actions in zip(supervised["state"], supervised["actions"], strict=True)
-        }
-
-        torch.testing.assert_close(masks_by_state[0], torch.tensor([0.0, 0.0, 1.0, 0.0]))
-        torch.testing.assert_close(masks_by_state[1], torch.tensor([0.0, 1.0, 0.0, 0.0]))
-        torch.testing.assert_close(masks_by_state[6], torch.tensor([1.0, 1.0, 0.0, 0.0]))
-
-    def test_unsafe_trajectory_action_is_rejected(self) -> None:
-        rashomon_payload = create_rashomon_dataset(SOURCE_MAP, task_num=0.0)
-        trajectory = [
-            TrajectoryStep(step=0, state_index=1, row=0, col=1, action=2),
-        ]
-
-        with self.assertRaises(ValueError):
-            build_noadapt_supervised_payload(
-                rashomon_payload,
-                env_map=SOURCE_MAP,
-                trajectory_steps=trajectory,
-            )
-
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake_safety_constrained.test_noadapt_targets_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

@@ -1,34 +1,25 @@
-"""Unit tests for FrozenLake shield-safety initial-frame plotting helpers."""
+"""Compatibility delegate for :mod:`experiments.pipelines.safety.frozenlake.test_plot_initial_frames_unittest`."""
 
 from __future__ import annotations
 
-import unittest
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-from experiments.pipelines.frozenlake_shield_safety.core.analysis.plot_initial_frames import (
-    build_parser,
-    default_initial_frame_dir,
-    source_downstream_task_cfgs,
-)
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-
-class FrozenLakeShieldSafetyInitialFramePlotTests(unittest.TestCase):
-    def test_source_downstream_task_cfgs_use_pipeline_maps(self) -> None:
-        source_cfg, downstream_cfg = source_downstream_task_cfgs("diagonal_10x10")
-
-        self.assertEqual(source_cfg["env_map"][0], "SFHHHHHHHH")
-        self.assertEqual(downstream_cfg["env_map"][0], "SFFHHHHHHH")
-        self.assertEqual(source_cfg["max_episode_steps"], 100)
-        self.assertEqual(downstream_cfg["max_episode_steps"], 100)
-        self.assertFalse(source_cfg["is_slippery"])
-        self.assertFalse(downstream_cfg["is_slippery"])
-
-    def test_parser_defaults_to_dedicated_initial_frame_directory(self) -> None:
-        args = build_parser().parse_args([])
-
-        self.assertEqual(args.layout, "diagonal_4x4")
-        self.assertEqual(args.output_dir, default_initial_frame_dir())
-        self.assertEqual(args.formats, ["pdf", "png"])
-
+_CANONICAL_MODULE = "experiments.pipelines.safety.frozenlake.test_plot_initial_frames_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
+
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

@@ -1,38 +1,25 @@
-"""Actor/critic models for the FrozenLake shield-safety pipeline."""
+"""Compatibility delegate for :mod:`experiments.pipelines.safety.frozenlake.core.models`."""
 
 from __future__ import annotations
 
-import torch
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-def _activation_layer(name: str) -> torch.nn.Module:
-    if name == "relu":
-        return torch.nn.ReLU()
-    if name == "tanh":
-        return torch.nn.Tanh()
-    raise ValueError(f"Unsupported activation '{name}'. Expected 'relu' or 'tanh'.")
+_CANONICAL_MODULE = "experiments.pipelines.safety.frozenlake.core.models"
+_module = _import_module(_CANONICAL_MODULE)
 
+if __name__ == "__main__":
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
-def build_actor_critic(
-    *,
-    obs_dim: int = 3,
-    hidden: int = 64,
-    activation: str = "relu",
-    n_actions: int = 4,
-) -> tuple[torch.nn.Sequential, torch.nn.Sequential]:
-    actor = torch.nn.Sequential(
-        torch.nn.Linear(obs_dim, hidden),
-        _activation_layer(activation),
-        torch.nn.Linear(hidden, hidden),
-        _activation_layer(activation),
-        torch.nn.Linear(hidden, n_actions),
-    )
-    critic = torch.nn.Sequential(
-        torch.nn.Linear(obs_dim, hidden),
-        _activation_layer(activation),
-        torch.nn.Linear(hidden, hidden),
-        _activation_layer(activation),
-        torch.nn.Linear(hidden, 1),
-    )
-    return actor, critic
-
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

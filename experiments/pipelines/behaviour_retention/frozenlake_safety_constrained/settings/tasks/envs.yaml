@@ -1,0 +1,29 @@
+diagonal_4x4:
+  max_episode_steps: 16
+  source_map:
+  - SFHH
+  - FFFH
+  - HFFF
+  - HFFG
+  downstream_map:
+  - SFFH
+  - FHFH
+  - FFFF
+  - HFFG
+
+diagonal_6x6:
+  max_episode_steps: 36
+  source_map:
+  - SFHHHH
+  - FFFHHH
+  - HFFFHH
+  - HFFFHH
+  - HHFFFF
+  - HHHFFG
+  downstream_map:
+  - SFFHHH
+  - FHFHHH
+  - FFFFHH
+  - HFFFHH
+  - HHFFFF
+  - HHHFFG

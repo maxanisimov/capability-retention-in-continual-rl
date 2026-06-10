@@ -1,32 +1,25 @@
-"""Backward-compatible entrypoint for FrozenLake PPO sweeps."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake.sweep_scaled_ppo`."""
 
-from pathlib import Path
-import sys
+from __future__ import annotations
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import CoordObsWrapper
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import DenseShapingWrapper
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import SafetyFlagWrapper
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import main
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import make_diagonal_source_map
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import make_env
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import schedule_for_size
-from experiments.pipelines.frozenlake.core.methods.sweep_scaled_ppo import train_and_eval
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-__all__ = [
-    "CoordObsWrapper",
-    "DenseShapingWrapper",
-    "SafetyFlagWrapper",
-    "main",
-    "make_diagonal_source_map",
-    "make_env",
-    "schedule_for_size",
-    "train_and_eval",
-]
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake.sweep_scaled_ppo"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

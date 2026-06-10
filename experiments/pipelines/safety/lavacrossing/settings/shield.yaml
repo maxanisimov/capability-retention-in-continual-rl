@@ -1,0 +1,11 @@
+_defaults: &shield_defaults
+  shield_type: probabilistic
+  shield_risk_threshold: 0.05
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+
+corridor_7x7_deterministic: *shield_defaults
+corridor_7x7_slip_0p1: *shield_defaults
+route_switch_7x7_deterministic: *shield_defaults
+route_switch_7x7_slip_0p1: *shield_defaults

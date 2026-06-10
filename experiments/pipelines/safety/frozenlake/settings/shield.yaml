@@ -1,0 +1,60 @@
+diagonal_4x4:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_6x6:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+route_switch_6x6:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+old_route_blocked_6x6:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_8x8:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_10x10:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_20x20:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_40x40:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_60x60:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5
+diagonal_80x80:
+  shield_type: deterministic
+  shield_risk_threshold: 0.0
+  shield_theta: 1.0e-10
+  shield_max_vi_steps: 1000
+  unsafe_cost_threshold: 0.5

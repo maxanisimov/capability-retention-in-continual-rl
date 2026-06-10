@@ -158,6 +158,11 @@ dmypy.json
 .pytype/
 
 # Cython debug symbols
+
+# Experiment generated data
+experiments/pipelines/**/artifacts/
+experiments/pipelines/**/outputs/
+experiments/pipelines/**/archive/
 cython_debug/
 
 # PyCharm

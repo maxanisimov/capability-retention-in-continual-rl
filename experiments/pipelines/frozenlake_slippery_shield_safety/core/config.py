@@ -1,197 +1,25 @@
-"""Static configuration for the FrozenLake slippery shield-safety pipeline."""
+"""Compatibility delegate for :mod:`experiments.pipelines.safety.frozenlake_slippery.core.config`."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-from experiments.pipelines.frozenlake_slippery_shield_safety.core.reference_settings import (
-    LAYOUT,
-    frozenlake_slippery_shield_safety_diagonal_4x4_settings,
-    settings_for_layout,
-)
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
+_CANONICAL_MODULE = "experiments.pipelines.safety.frozenlake_slippery.core.config"
+_module = _import_module(_CANONICAL_MODULE)
 
-REFERENCE_SETTINGS = frozenlake_slippery_shield_safety_diagonal_4x4_settings()
-SOURCE_PPO_SETTINGS = REFERENCE_SETTINGS["source"]["ppo"]
-ADAPTATION_PPO_SETTINGS = REFERENCE_SETTINGS["adaptation_ppo"]["ppo"]
-ADAPTATION_EWC_SETTINGS = REFERENCE_SETTINGS["adaptation_ewc"]["ewc"]
-ADAPTATION_RASHOMON_SETTINGS = REFERENCE_SETTINGS["adaptation_rashomon"]["rashomon"]
-TASKS_SETTINGS = REFERENCE_SETTINGS["tasks"]
-SHIELD_SETTINGS = REFERENCE_SETTINGS["shield"]
-SETTINGS_SOURCE = (
-    f"FrozenLake Slippery Shield Safety {LAYOUT} "
-    "(experiments/pipelines/frozenlake_slippery_shield_safety/settings/source/train_source_policy_settings.yaml, "
-    "experiments/pipelines/frozenlake_slippery_shield_safety/settings/adaptation/{ppo,ewc,rashomon}.yaml, "
-    "experiments/pipelines/frozenlake_slippery_shield_safety/settings/tasks/envs.yaml, "
-    "experiments/pipelines/frozenlake_slippery_shield_safety/settings/shield.yaml)"
-)
-N_ACTIONS = 4
-OBS_DIM = 3
-LAYOUT_NAME = LAYOUT
-SOURCE_MAP = tuple(str(r) for r in TASKS_SETTINGS["source_map"])
-DOWNSTREAM_MAP = tuple(str(r) for r in TASKS_SETTINGS["downstream_map"])
+if __name__ == "__main__":
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
-
-def _optional_float(settings: dict[str, object], key: str) -> float | None:
-    value = settings.get(key)
-    return None if value is None else float(value)
-
-
-@dataclass(frozen=True)
-class PipelineConfig:
-    layout: str = LAYOUT
-    source_map: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["source_map"])
-    downstream_map: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["downstream_map"])
-    max_episode_steps: int = int(TASKS_SETTINGS["max_episode_steps"])
-    is_slippery: bool = bool(TASKS_SETTINGS.get("is_slippery", True))
-    success_rate: float = float(TASKS_SETTINGS.get("success_rate", 1.0 / 3.0))
-    source_task_num: float = float(REFERENCE_SETTINGS["adaptation_ppo"]["source_task_num"])
-    downstream_task_num: float = float(REFERENCE_SETTINGS["adaptation_ppo"]["downstream_task_num"])
-    reference_layout: str = LAYOUT
-    reference_settings_source: str = SETTINGS_SOURCE
-    reference_settings_files: dict[str, str] | None = None
-    hidden: int = int(SOURCE_PPO_SETTINGS["hidden"])
-    activation: str = str(REFERENCE_SETTINGS["source"].get("activation", "relu"))
-    source_total_timesteps: int = int(SOURCE_PPO_SETTINGS["total_timesteps"])
-    downstream_total_timesteps: int = int(ADAPTATION_PPO_SETTINGS["total_timesteps"])
-    source_rollout_steps: int = int(SOURCE_PPO_SETTINGS["rollout_steps"])
-    downstream_rollout_steps: int = int(ADAPTATION_PPO_SETTINGS["rollout_steps"])
-    source_minibatch_size: int = int(SOURCE_PPO_SETTINGS["minibatch_size"])
-    downstream_minibatch_size: int = int(ADAPTATION_PPO_SETTINGS["minibatch_size"])
-    source_update_epochs: int = int(SOURCE_PPO_SETTINGS["update_epochs"])
-    downstream_update_epochs: int = int(ADAPTATION_PPO_SETTINGS["update_epochs"])
-    source_gamma: float = float(SOURCE_PPO_SETTINGS["gamma"])
-    downstream_gamma: float = float(ADAPTATION_PPO_SETTINGS["gamma"])
-    source_gae_lambda: float = float(SOURCE_PPO_SETTINGS["gae_lambda"])
-    downstream_gae_lambda: float = float(ADAPTATION_PPO_SETTINGS["gae_lambda"])
-    source_clip_coef: float = float(SOURCE_PPO_SETTINGS["clip_coef"])
-    downstream_clip_coef: float = float(ADAPTATION_PPO_SETTINGS["clip_coef"])
-    source_ent_coef: float = float(SOURCE_PPO_SETTINGS["ent_coef"])
-    downstream_ent_coef: float = float(ADAPTATION_PPO_SETTINGS["ent_coef"])
-    source_vf_coef: float = float(SOURCE_PPO_SETTINGS["vf_coef"])
-    downstream_vf_coef: float = float(ADAPTATION_PPO_SETTINGS["vf_coef"])
-    source_lr: float = float(SOURCE_PPO_SETTINGS["lr"])
-    downstream_lr: float = float(ADAPTATION_PPO_SETTINGS["lr"])
-    source_max_grad_norm: float = float(SOURCE_PPO_SETTINGS["max_grad_norm"])
-    downstream_max_grad_norm: float = float(ADAPTATION_PPO_SETTINGS["max_grad_norm"])
-    eval_episodes: int = int(ADAPTATION_PPO_SETTINGS.get("eval_episodes", 100))
-    source_early_stop_min_steps: int = int(SOURCE_PPO_SETTINGS.get("early_stop_min_steps", 5))
-    downstream_early_stop_min_steps: int = int(ADAPTATION_PPO_SETTINGS.get("early_stop_min_steps", 5))
-    source_early_stop_reward_threshold: float | None = _optional_float(
-        SOURCE_PPO_SETTINGS,
-        "early_stop_reward_threshold",
-    )
-    source_early_stop_failure_rate_threshold: float | None = _optional_float(
-        SOURCE_PPO_SETTINGS,
-        "early_stop_failure_rate_threshold",
-    )
-    downstream_early_stop_reward_threshold: float | None = _optional_float(
-        ADAPTATION_PPO_SETTINGS,
-        "early_stop_reward_threshold",
-    )
-    downstream_early_stop_failure_rate_threshold: float | None = _optional_float(
-        ADAPTATION_PPO_SETTINGS,
-        "early_stop_failure_rate_threshold",
-    )
-    early_stop_success_rate_threshold: float | None = _optional_float(
-        ADAPTATION_PPO_SETTINGS,
-        "early_stop_success_rate_threshold",
-    )
-    ewc_lambda: float = float(ADAPTATION_EWC_SETTINGS["ewc_lambda"])
-    ewc_apply_to_critic: bool = bool(ADAPTATION_EWC_SETTINGS["ewc_apply_to_critic"])
-    fisher_sample_size: int = int(ADAPTATION_EWC_SETTINGS["fisher_sample_size"])
-    rashomon_settings_source: str = SETTINGS_SOURCE
-    rashomon_total_timesteps: int = int(ADAPTATION_PPO_SETTINGS["total_timesteps"])
-    rashomon_n_iters: int = int(ADAPTATION_RASHOMON_SETTINGS["rashomon_n_iters"])
-    rashomon_checkpoint: int = int(ADAPTATION_RASHOMON_SETTINGS["rashomon_checkpoint"])
-    inverse_temp_start: int = int(ADAPTATION_RASHOMON_SETTINGS["inverse_temp_start"])
-    inverse_temp_max: int = int(ADAPTATION_RASHOMON_SETTINGS["inverse_temp_max"])
-    rashomon_surrogate_aggregation: str = str(ADAPTATION_RASHOMON_SETTINGS["rashomon_surrogate_aggregation"])
-    rashomon_min_hard_spec: float = float(ADAPTATION_RASHOMON_SETTINGS["rashomon_min_hard_spec"])
-    safety_finetune_lr: float = float(ADAPTATION_RASHOMON_SETTINGS["safety_finetune_lr"])
-    safety_finetune_max_epochs: int = int(ADAPTATION_RASHOMON_SETTINGS["safety_finetune_max_epochs"])
-    shield_type: str = str(SHIELD_SETTINGS["shield_type"])
-    shield_risk_threshold: float = float(SHIELD_SETTINGS["shield_risk_threshold"])
-    shield_theta: float = float(SHIELD_SETTINGS["shield_theta"])
-    shield_max_vi_steps: int = int(SHIELD_SETTINGS["shield_max_vi_steps"])
-    unsafe_cost_threshold: float = float(SHIELD_SETTINGS["unsafe_cost_threshold"])
-
-
-def get_pipeline_config(layout: str) -> PipelineConfig:
-    s = settings_for_layout(layout)
-    src_ppo = s["source"]["ppo"]
-    adapt_ppo = s["adaptation_ppo"]["ppo"]
-    adapt_ewc = s["adaptation_ewc"]["ewc"]
-    adapt_rashomon = s["adaptation_rashomon"]["rashomon"]
-    tasks = s["tasks"]
-    shield = s["shield"]
-    settings_source = (
-        f"FrozenLake Slippery Shield Safety {layout} "
-        "(experiments/pipelines/frozenlake_slippery_shield_safety/settings/source/train_source_policy_settings.yaml, "
-        "experiments/pipelines/frozenlake_slippery_shield_safety/settings/adaptation/{ppo,ewc,rashomon}.yaml, "
-        "experiments/pipelines/frozenlake_slippery_shield_safety/settings/tasks/envs.yaml, "
-        "experiments/pipelines/frozenlake_slippery_shield_safety/settings/shield.yaml)"
-    )
-    return PipelineConfig(
-        layout=layout,
-        source_map=tuple(str(r) for r in tasks["source_map"]),
-        downstream_map=tuple(str(r) for r in tasks["downstream_map"]),
-        max_episode_steps=int(tasks["max_episode_steps"]),
-        is_slippery=bool(tasks.get("is_slippery", True)),
-        success_rate=float(tasks.get("success_rate", 1.0 / 3.0)),
-        source_task_num=float(s["adaptation_ppo"]["source_task_num"]),
-        downstream_task_num=float(s["adaptation_ppo"]["downstream_task_num"]),
-        reference_layout=layout,
-        reference_settings_source=settings_source,
-        reference_settings_files=dict(s["settings_files"]),
-        hidden=int(src_ppo["hidden"]),
-        activation=str(s["source"].get("activation", "relu")),
-        source_total_timesteps=int(src_ppo["total_timesteps"]),
-        downstream_total_timesteps=int(adapt_ppo["total_timesteps"]),
-        source_rollout_steps=int(src_ppo["rollout_steps"]),
-        downstream_rollout_steps=int(adapt_ppo["rollout_steps"]),
-        source_minibatch_size=int(src_ppo["minibatch_size"]),
-        downstream_minibatch_size=int(adapt_ppo["minibatch_size"]),
-        source_update_epochs=int(src_ppo["update_epochs"]),
-        downstream_update_epochs=int(adapt_ppo["update_epochs"]),
-        source_gamma=float(src_ppo["gamma"]),
-        downstream_gamma=float(adapt_ppo["gamma"]),
-        source_gae_lambda=float(src_ppo["gae_lambda"]),
-        downstream_gae_lambda=float(adapt_ppo["gae_lambda"]),
-        source_clip_coef=float(src_ppo["clip_coef"]),
-        downstream_clip_coef=float(adapt_ppo["clip_coef"]),
-        source_ent_coef=float(src_ppo["ent_coef"]),
-        downstream_ent_coef=float(adapt_ppo["ent_coef"]),
-        source_vf_coef=float(src_ppo["vf_coef"]),
-        downstream_vf_coef=float(adapt_ppo["vf_coef"]),
-        source_lr=float(src_ppo["lr"]),
-        downstream_lr=float(adapt_ppo["lr"]),
-        source_max_grad_norm=float(src_ppo["max_grad_norm"]),
-        downstream_max_grad_norm=float(adapt_ppo["max_grad_norm"]),
-        eval_episodes=int(adapt_ppo.get("eval_episodes", src_ppo.get("eval_episodes", 100))),
-        source_early_stop_min_steps=int(src_ppo.get("early_stop_min_steps", 5)),
-        downstream_early_stop_min_steps=int(adapt_ppo.get("early_stop_min_steps", 5)),
-        source_early_stop_reward_threshold=_optional_float(src_ppo, "early_stop_reward_threshold"),
-        source_early_stop_failure_rate_threshold=_optional_float(src_ppo, "early_stop_failure_rate_threshold"),
-        downstream_early_stop_reward_threshold=_optional_float(adapt_ppo, "early_stop_reward_threshold"),
-        downstream_early_stop_failure_rate_threshold=_optional_float(adapt_ppo, "early_stop_failure_rate_threshold"),
-        early_stop_success_rate_threshold=_optional_float(adapt_ppo, "early_stop_success_rate_threshold"),
-        ewc_lambda=float(adapt_ewc["ewc_lambda"]),
-        ewc_apply_to_critic=bool(adapt_ewc["ewc_apply_to_critic"]),
-        fisher_sample_size=int(adapt_ewc["fisher_sample_size"]),
-        rashomon_settings_source=settings_source,
-        rashomon_total_timesteps=int(adapt_ppo["total_timesteps"]),
-        rashomon_n_iters=int(adapt_rashomon["rashomon_n_iters"]),
-        rashomon_checkpoint=int(adapt_rashomon["rashomon_checkpoint"]),
-        inverse_temp_start=int(adapt_rashomon["inverse_temp_start"]),
-        inverse_temp_max=int(adapt_rashomon["inverse_temp_max"]),
-        rashomon_surrogate_aggregation=str(adapt_rashomon["rashomon_surrogate_aggregation"]),
-        rashomon_min_hard_spec=float(adapt_rashomon["rashomon_min_hard_spec"]),
-        safety_finetune_lr=float(adapt_rashomon["safety_finetune_lr"]),
-        safety_finetune_max_epochs=int(adapt_rashomon["safety_finetune_max_epochs"]),
-        shield_type=str(shield["shield_type"]),
-        shield_risk_threshold=float(shield["shield_risk_threshold"]),
-        shield_theta=float(shield["shield_theta"]),
-        shield_max_vi_steps=int(shield["shield_max_vi_steps"]),
-        unsafe_cost_threshold=float(shield["unsafe_cost_threshold"]),
-    )
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

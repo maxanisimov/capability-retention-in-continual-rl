@@ -1,85 +1,25 @@
-"""Unit tests for FrozenLake task-loading helpers."""
+"""Compatibility delegate for :mod:`experiments.pipelines.behaviour_retention.frozenlake.test_task_loading_unittest`."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-import unittest
+from importlib import import_module as _import_module
+from pathlib import Path as _Path
+import sys as _sys
 
-import yaml
+for _parent in _Path(__file__).resolve().parents:
+    if (_parent / "pyproject.toml").is_file() and (_parent / "experiments").is_dir():
+        if str(_parent) not in _sys.path:
+            _sys.path.insert(0, str(_parent))
+        break
 
-from experiments.pipelines.frozenlake.core.env.task_loading import load_task_settings
-
-
-def _write_yaml(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-
-
-class FrozenLakeTaskLoadingTests(unittest.TestCase):
-    def test_split_pipeline_resolution_and_role_task_nums(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            defs = root / "task_definitions.yaml"
-            pipes = root / "task_pipelines.yaml"
-            _write_yaml(
-                defs,
-                {
-                    "src": {
-                        "layout": "tiny",
-                        "grid_size": 2,
-                        "max_episode_steps": 8,
-                        "env_map": ["SF", "HG"],
-                    },
-                    "dst": {
-                        "layout": "tiny",
-                        "grid_size": 2,
-                        "max_episode_steps": 8,
-                        "env_map": ["SF", "FG"],
-                    },
-                },
-            )
-            _write_yaml(
-                pipes,
-                {
-                    "tiny_pipeline": {
-                        "append_task_id": False,
-                        "source": {"env": "src"},
-                        "downstream": {"env": "dst"},
-                    },
-                },
-            )
-
-            source = load_task_settings(pipes, "tiny_pipeline", "source")
-            downstream = load_task_settings(pipes, "tiny_pipeline", "downstream")
-
-            self.assertEqual(source["task_num"], 0.0)
-            self.assertEqual(downstream["task_num"], 1.0)
-            self.assertFalse(source["append_task_id"])
-            self.assertEqual(source["env_map"], ["SF", "HG"])
-            self.assertEqual(downstream["_resolved_definition_name"], "dst")
-
-    def test_legacy_direct_source_env_format(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            path = Path(tmp_dir) / "source_envs.yaml"
-            _write_yaml(
-                path,
-                {
-                    "diagonal_2x2": {
-                        "grid_size": 2,
-                        "max_episode_steps": 8,
-                        "env1_map": ["SF", "FG"],
-                    },
-                },
-            )
-
-            cfg = load_task_settings(path, "diagonal_2x2", "source")
-
-            self.assertEqual(cfg["task_num"], 0.0)
-            self.assertEqual(cfg["env_map"], ["SF", "FG"])
-            self.assertEqual(cfg["_task_settings_format"], "legacy_direct")
-
+_CANONICAL_MODULE = "experiments.pipelines.behaviour_retention.frozenlake.test_task_loading_unittest"
+_module = _import_module(_CANONICAL_MODULE)
 
 if __name__ == "__main__":
-    unittest.main()
+    _main = getattr(_module, "main", None)
+    if _main is None:
+        raise SystemExit(f"{_CANONICAL_MODULE} does not define main().")
+    raise SystemExit(_main())
 
+_sys.modules[__name__] = _module
+globals().update(_module.__dict__)

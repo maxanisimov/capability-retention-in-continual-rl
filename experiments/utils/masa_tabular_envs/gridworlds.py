@@ -10,6 +10,7 @@ from gymnasium import spaces
 
 from experiments.utils.masa_tabular_envs.base import TabularEnv
 from experiments.utils.masa_tabular_envs.dynamics import (
+    ACTION_MAP,
     as_int_list,
     create_advanced_transition_matrix,
     create_transition_matrix,
@@ -43,6 +44,14 @@ def _build_label_dict(**groups: list[int]) -> defaultdict[int, set[str]]:
         for state in states:
             labels[int(state)].add(name)
     return labels
+
+
+def _state_index(row: int, col: int, ncol: int) -> int:
+    return row * ncol + col
+
+
+def _decode_cell(cell: Any) -> str:
+    return cell.decode("utf-8") if isinstance(cell, bytes | np.bytes_) else str(cell)
 
 
 class _MatrixGridWorld(TabularEnv):
@@ -96,6 +105,210 @@ class _MatrixGridWorld(TabularEnv):
     @staticmethod
     def cost_fn(labels: set[str]) -> float:
         return 1.0 if ("lava" in labels or "bomb" in labels or "blue" in labels) else 0.0
+
+
+class CustomLavaCrossing(TabularEnv):
+    """Rectangular tabular LavaCrossing environment used by safety pipelines."""
+
+    metadata = {"render_modes": ["ansi", "rgb_array", "human"], "render_fps": 4}
+
+    def __init__(
+        self,
+        *,
+        desc: list[str] | tuple[str, ...] | np.ndarray,
+        slip_prob: float = 0.0,
+        render_mode: RenderMode | None = None,
+        render_window_size: int = 512,
+    ) -> None:
+        super().__init__()
+        self.desc = _validate_lavacrossing_desc(desc)
+        self.nrow, self.ncol = self.desc.shape
+        self._n_states = int(self.nrow * self.ncol)
+        self._n_actions = 5
+        self._slip_prob = validate_probability("slip_prob", slip_prob)
+
+        self.initial_state_distrib = np.asarray(self.desc == b"S", dtype="float64").ravel()
+        if self.initial_state_distrib.sum() <= 0.0:
+            raise ValueError("LavaCrossing desc must contain at least one start cell 'S'.")
+        self.initial_state_distrib /= self.initial_state_distrib.sum()
+
+        self._goal_states = _lavacrossing_states(self.desc, {"G"})
+        self._lava_states = _lavacrossing_states(self.desc, {"L"})
+        self._wall_states = _lavacrossing_states(self.desc, {"W"})
+        self._terminal_states = self._goal_states + self._lava_states
+        self.observation_space = spaces.Discrete(self._n_states)
+        self.action_space = spaces.Discrete(self._n_actions)
+        self._transition_matrix = _build_lavacrossing_transition_matrix(
+            self.desc,
+            slip_prob=self._slip_prob,
+        )
+        self._successor_states, self._transition_probs = _successor_dict_from_matrix(
+            self._transition_matrix,
+        )
+
+        self.np_random = None
+        self.s = 0
+        self.lastaction = None
+        self.render_mode = render_mode
+        self.render_window_size = int(render_window_size)
+        self._validate_tabular_spaces()
+
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        super().reset(seed=seed)
+        self.s = int(self.np_random.choice(self._n_states, p=self.initial_state_distrib))
+        self.lastaction = None
+        if self.render_mode == "human":
+            self.render()
+        return int(self.s), {}
+
+    def step(self, action: int):
+        if not self.action_space.contains(action):
+            raise AssertionError(f"Invalid action {action}!")
+        probs = self._transition_matrix[:, int(self.s), int(action)]
+        next_state = int(self.np_random.choice(self._n_states, p=probs))
+        self.s = next_state
+        self.lastaction = int(action)
+        cell = self._cell(next_state)
+        reward = 1.0 if cell == "G" else 0.0
+        terminated = cell in {"G", "L"}
+        if self.render_mode == "human":
+            self.render()
+        return next_state, reward, bool(terminated), False, {"prob": float(probs[next_state])}
+
+    def render(self):
+        ansi = "\n".join(
+            "".join(
+                (
+                    "A"
+                    if _state_index(row, col, self.ncol) == int(self.s)
+                    else self._cell(_state_index(row, col, self.ncol))
+                )
+                for col in range(self.ncol)
+            )
+            for row in range(self.nrow)
+        )
+        if self.render_mode == "rgb_array":
+            return np.zeros((self.nrow, self.ncol, 3), dtype=np.uint8)
+        if self.render_mode == "human":
+            print(ansi)
+            return None
+        return ansi
+
+    def close(self) -> None:
+        return None
+
+    @property
+    def human_window_closed(self) -> bool:
+        return False
+
+    def handle_pygame_event(self, event: Any) -> bool:
+        return False
+
+    def label_fn(self, obs: int) -> set[str]:
+        cell = self._cell(int(obs))
+        if cell == "S":
+            return {"start"}
+        if cell == "G":
+            return {"goal"}
+        if cell == "L":
+            return {"lava"}
+        if cell == "W":
+            return {"wall"}
+        return {"floor"}
+
+    @staticmethod
+    def cost_fn(labels: set[str]) -> float:
+        return 1.0 if "lava" in labels else 0.0
+
+    def _cell(self, state: int) -> str:
+        row, col = divmod(int(state), self.ncol)
+        return _decode_cell(self.desc[row, col])
+
+
+def _validate_lavacrossing_desc(desc: list[str] | tuple[str, ...] | np.ndarray) -> np.ndarray:
+    if isinstance(desc, np.ndarray):
+        if desc.ndim != 2:
+            raise ValueError("LavaCrossing desc array must be 2D.")
+        rows = [
+            "".join(_decode_cell(cell) for cell in row)
+            for row in desc.tolist()
+        ]
+    else:
+        rows = [row.decode("utf-8") if isinstance(row, bytes) else str(row) for row in list(desc)]
+    if not rows:
+        raise ValueError("LavaCrossing desc must be non-empty.")
+    ncol = len(rows[0])
+    if ncol == 0 or any(len(row) != ncol for row in rows):
+        raise ValueError("LavaCrossing desc must be rectangular and non-empty.")
+    allowed = {"S", "F", "L", "G", "W"}
+    bad = sorted({cell for row in rows for cell in row if cell not in allowed})
+    if bad:
+        raise ValueError(f"LavaCrossing desc contains invalid cells: {bad}.")
+    return np.asarray(rows, dtype="c")
+
+
+def _lavacrossing_states(desc: np.ndarray, cells: set[str]) -> list[int]:
+    nrow, ncol = desc.shape
+    states = []
+    for row in range(nrow):
+        for col in range(ncol):
+            if _decode_cell(desc[row, col]) in cells:
+                states.append(_state_index(row, col, ncol))
+    return states
+
+
+def _build_lavacrossing_transition_matrix(desc: np.ndarray, *, slip_prob: float) -> np.ndarray:
+    slip_prob = validate_probability("slip_prob", slip_prob)
+    nrow, ncol = desc.shape
+    n_states = nrow * ncol
+    n_actions = 5
+    terminal = set(_lavacrossing_states(desc, {"G", "L"}))
+    matrix = np.zeros((n_states, n_states, n_actions), dtype=np.float64)
+    intended_prob = 1.0 - slip_prob
+    random_prob = slip_prob / float(n_actions - 1) if n_actions > 1 else 0.0
+
+    for row in range(nrow):
+        for col in range(ncol):
+            state = _state_index(row, col, ncol)
+            for action in range(n_actions):
+                if state in terminal:
+                    matrix[state, state, action] = 1.0
+                    continue
+                for candidate_action in range(n_actions):
+                    prob = intended_prob if candidate_action == action else random_prob
+                    if prob <= 0.0:
+                        continue
+                    next_state = _lavacrossing_next_state(desc, row, col, candidate_action)
+                    matrix[next_state, state, action] += prob
+    return matrix
+
+
+def _lavacrossing_next_state(desc: np.ndarray, row: int, col: int, action: int) -> int:
+    nrow, ncol = desc.shape
+    dy, dx = ACTION_MAP[action]
+    next_row = int(np.clip(row + dy, 0, nrow - 1))
+    next_col = int(np.clip(col + dx, 0, ncol - 1))
+    candidate = _state_index(next_row, next_col, ncol)
+    return _state_index(row, col, ncol) if _decode_cell(desc[next_row, next_col]) == "W" else candidate
+
+
+def _successor_dict_from_matrix(
+    matrix: np.ndarray,
+) -> tuple[dict[int, dict[int, list[int]]], dict[int, dict[int, list[float]]]]:
+    n_states, _, n_actions = matrix.shape
+    successor_states: dict[int, dict[int, list[int]]] = {}
+    transition_probs: dict[int, dict[int, list[float]]] = {}
+    for state in range(n_states):
+        successor_states[state] = {}
+        transition_probs[state] = {}
+        for action in range(n_actions):
+            successors = np.flatnonzero(matrix[:, state, action] > 0.0)
+            successor_states[state][action] = [int(next_state) for next_state in successors]
+            transition_probs[state][action] = [
+                float(matrix[next_state, state, action])
+                for next_state in successors
+            ]
+    return successor_states, transition_probs
 
 
 class CustomBridgeCrossing(_MatrixGridWorld):

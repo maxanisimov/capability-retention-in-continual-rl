@@ -1,0 +1,21 @@
+diagonal_4x4:
+  rashomon:
+    rashomon_n_iters: 20000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+    rashomon_surrogate_aggregation: min
+    rashomon_min_hard_spec: 1.0
+    safety_finetune_lr: 0.01
+    safety_finetune_max_epochs: 3000
+
+diagonal_6x6:
+  rashomon:
+    rashomon_n_iters: 100000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+    rashomon_surrogate_aggregation: min
+    rashomon_min_hard_spec: 1.0
+    safety_finetune_lr: 0.01
+    safety_finetune_max_epochs: 3000
