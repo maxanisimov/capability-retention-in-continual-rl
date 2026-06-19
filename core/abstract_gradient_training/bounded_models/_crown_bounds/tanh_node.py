@@ -31,6 +31,19 @@ def _tanh_derivative(x: torch.Tensor) -> torch.Tensor:
     return 1 - torch.tanh(x).square()
 
 
+def _raw_to_slope(raw: torch.Tensor, eps: float) -> torch.Tensor:
+    eps = _effective_eps(raw, eps)
+    return eps + (1 - 2 * eps) * torch.sigmoid(raw)
+
+
+def _slope_to_raw(slope: torch.Tensor, eps: float) -> torch.Tensor:
+    eps = _effective_eps(slope, eps)
+    slope = slope.clamp(min=eps, max=1 - eps)
+    unit_slope = (slope - eps) / (1 - 2 * eps)
+    unit_slope = unit_slope.clamp(min=eps, max=1 - eps)
+    return torch.logit(unit_slope)
+
+
 def _residual_bounds(
     l: torch.Tensor, u: torch.Tensor, slope: torch.Tensor, eps: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -75,7 +88,7 @@ def tanh_linear_bounds(
     l, u = torch.broadcast_tensors(l, u)
     eps = _effective_eps(l, eps)
     width = u - l
-    degenerate = width.abs() <= eps
+    degenerate = width == 0
     safe_width = torch.where(degenerate, torch.ones_like(width), width)
     tanh_l = torch.tanh(l)
     tanh_u = torch.tanh(u)
@@ -150,6 +163,7 @@ class TanhNode(Node):
         self,
         in_var: Node,
         interval_matmul: Literal["rump", "exact", "nguyen"] = "rump",
+        tanh_relaxation: Literal["fixed", "optimizable"] = "fixed",
     ):
         super().__init__()
         assert interval_matmul in [
@@ -157,17 +171,54 @@ class TanhNode(Node):
             "exact",
             "nguyen",
         ], f"Unknown interval matmul method: {interval_matmul}"
+        assert tanh_relaxation in [
+            "fixed",
+            "optimizable",
+        ], f"Unknown tanh relaxation method: {tanh_relaxation}"
         self.in_var = in_var
         self.interval_matmul: Literal["rump", "exact", "nguyen"] = interval_matmul
+        self.tanh_relaxation = tanh_relaxation
+        self.eps = 1e-12
+        self.initialized = False
         self.update_relaxation()
 
     def update_relaxation(self) -> None:
         x_l, x_u = self.in_var.concretize()  # type: ignore
         assert x_l.shape == x_u.shape
         assert x_l.dim() == 2, "Expected input to be a 2D tensor"
-        self.alpha_l, self.beta_l, self.alpha_u, self.beta_u = tanh_linear_bounds(
-            x_l, x_u
+        fixed_alpha_l, fixed_beta_l, fixed_alpha_u, fixed_beta_u = tanh_linear_bounds(
+            x_l, x_u, eps=self.eps
         )
+
+        if self.tanh_relaxation == "fixed":
+            self.alpha_l, self.beta_l = fixed_alpha_l, fixed_beta_l
+            self.alpha_u, self.beta_u = fixed_alpha_u, fixed_beta_u
+            self.initialized = True
+            return
+
+        if not self.initialized:
+            self.alpha_l_raw = _slope_to_raw(
+                fixed_alpha_l, self.eps
+            ).detach().requires_grad_()
+            self.alpha_u_raw = _slope_to_raw(
+                fixed_alpha_u, self.eps
+            ).detach().requires_grad_()
+            self._optimizable_params.extend([self.alpha_l_raw, self.alpha_u_raw])
+
+        alpha_l = _raw_to_slope(self.alpha_l_raw, self.eps)
+        alpha_u = _raw_to_slope(self.alpha_u_raw, self.eps)
+        beta_l, _ = _residual_bounds(x_l, x_u, alpha_l, self.eps)
+        _, beta_u = _residual_bounds(x_l, x_u, alpha_u, self.eps)
+
+        # For exact point intervals, keep the exact local linearisation.
+        degenerate = x_l == x_u
+        deriv = _tanh_derivative(x_l)
+        exact_beta = torch.tanh(x_l) - deriv * x_l
+        self.alpha_l = torch.where(degenerate, deriv, alpha_l)
+        self.beta_l = torch.where(degenerate, exact_beta, beta_l)
+        self.alpha_u = torch.where(degenerate, deriv, alpha_u)
+        self.beta_u = torch.where(degenerate, exact_beta, beta_u)
+        self.initialized = True
 
     def _backpropagate(self, backward_bounds: LinearBounds) -> None:
         self.update_relaxation()

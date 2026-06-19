@@ -1,6 +1,6 @@
 """
 Pytorch model bounded with linear bound propagation. The bounds support backward mode linear bound propagation
-and various relaxations of the ReLU activation function. The bounds are similar to those used in the CROWN,
+and relaxations of ReLU and Tanh activation functions. The bounds are similar to those used in the CROWN,
 FastLin and DeepPoly verification algorithms, but differ in that here we must support interval parameters.
 
 We use the following formulation of linear bound propagation:
@@ -9,7 +9,7 @@ We use the following formulation of linear bound propagation:
     - Bounds can be computed by propagating the linear bounds to form a linear relaxation of the whole model.
     - Since the parameters of the model are intervals, the bound propagation is computed using interval arithmetic.
     - The final bounds are computed via interval arithmetic on the linear bounds of the entire model.
-    - The model also supports relaxation optimization (i.e. Alpha-CROWN) for the ReLU activation function.
+    - The model also supports relaxation optimization (i.e. Alpha-CROWN) for ReLU and Tanh activations.
 
 Example:
 
@@ -72,6 +72,7 @@ class CROWNBoundedModel(IntervalBoundedModel):
         transform: BoundedModel | None = None,
         trainable: bool = True,
         relu_relaxation: Literal["zero", "one", "parallel", "optimizable"] = "zero",
+        tanh_relaxation: Literal["fixed", "optimizable"] = "fixed",
         interval_matmul: Literal["rump", "exact", "nguyen"] = "rump",
         gradient_bound_mode: Literal["linear", "interval"] = "interval",
         alpha_crown_iters: int = 10,
@@ -86,6 +87,7 @@ class CROWNBoundedModel(IntervalBoundedModel):
             trainable (bool, optional): Flag to indicate if the model is trainable. If False, the model will not support
                 gradient computation and all parameters will be fixed (non-interval).
             relu_relaxation (str): one of ["zero", "one", "parallel", "optimizable"], method to use for ReLU relaxation.
+            tanh_relaxation (str): one of ["fixed", "optimizable"], method to use for Tanh relaxation.
             interval_matmul (str): one of ["rump", "exact", "nguyen"], method to use for interval matrix multiplication.
             gradient_bound_mode (str): one of ["linear", "interval"], method to use for gradient bound computation.
             alpha_crown_iters (int): number of iterations to use for Alpha-CROWN optimization.
@@ -105,9 +107,16 @@ class CROWNBoundedModel(IntervalBoundedModel):
             raise ValueError(
                 f"Unsupported method for ReLU relaxation: {relu_relaxation}"
             )
-        if alpha_crown_iters == 0 and relu_relaxation == "optimizable":
+        if tanh_relaxation not in ["fixed", "optimizable"]:
             raise ValueError(
-                "Optimizable ReLU relaxation requires setting alpha-CROWN iterations > 0"
+                f"Unsupported method for Tanh relaxation: {tanh_relaxation}"
+            )
+        uses_alpha_crown = (
+            relu_relaxation == "optimizable" or tanh_relaxation == "optimizable"
+        )
+        if alpha_crown_iters == 0 and uses_alpha_crown:
+            raise ValueError(
+                "Optimizable relaxation requires setting alpha-CROWN iterations > 0"
             )
         if alpha_crown_lr < 0:
             raise ValueError("Alpha-CROWN requires a non-negative learning rate")
@@ -117,10 +126,12 @@ class CROWNBoundedModel(IntervalBoundedModel):
             )
 
         self.relu_relaxation = relu_relaxation
+        self.tanh_relaxation = tanh_relaxation
         self.gradient_bound_mode = gradient_bound_mode
         self.alpha_crown_iters = alpha_crown_iters
         self.alpha_crown_lr = alpha_crown_lr
         self.optimize_inter = optimize_inter
+        self.uses_alpha_crown = uses_alpha_crown
 
     def bound_forward(
         self, x_l: torch.Tensor, x_u: torch.Tensor, retain_intermediate: bool = False
@@ -167,16 +178,17 @@ class CROWNBoundedModel(IntervalBoundedModel):
                 x = _crown_bounds.TanhNode(
                     x,
                     interval_matmul=self.interval_matmul,
+                    tanh_relaxation=self.tanh_relaxation,
                 )
             else:
                 raise ValueError(f"Unsupported module type in LBP: {type(module)}")
-            if self.relu_relaxation == "optimizable" and self.optimize_inter:
+            if self.uses_alpha_crown and self.optimize_inter:
                 x_l, x_u = self.optimize_bounds(x)
             x_l, x_u = x.concretize()
             inter_l.append(x_l)
             inter_u.append(x_u)
 
-        if self.relu_relaxation == "optimizable":
+        if self.uses_alpha_crown:
             # perform alpha-CROWN optimization
             x_l, x_u = self.optimize_bounds(x)
 
@@ -306,7 +318,7 @@ class CROWNBoundedModel(IntervalBoundedModel):
         self, node: _crown_bounds.Node
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimize the lower bound slopes of any ReLU nodes using Alpha-CROWN.
+        Optimize any optimizable activation relaxation parameters using Alpha-CROWN.
         """
         if not node.optimizable_parameters():
             return node.concretize().as_tuple()
@@ -332,6 +344,7 @@ class CROWNBoundedModel(IntervalBoundedModel):
             f"{self.trainable=},",
             f"{self.interval_matmul=},",
             f"{self.relu_relaxation=},",
+            f"{self.tanh_relaxation=},",
             f"{self.gradient_bound_mode=},",
             f"{self.alpha_crown_iters=},",
             f"{self.alpha_crown_lr=},",
