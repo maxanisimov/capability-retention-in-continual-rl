@@ -50,6 +50,7 @@ class CROWNBoundedModel(IntervalBoundedModel):
 
     - torch.nn.Linear
     - torch.nn.ReLU
+    - torch.nn.Tanh
 
     The forward pass bounds are always computed using linear bound propagation. The backward pass bounds can be computed
     using either interval propagation (which we inherit from IntervalBoundedModel) or linear bound propagation. The
@@ -98,7 +99,7 @@ class CROWNBoundedModel(IntervalBoundedModel):
             interval_matmul=interval_matmul,
         )
         for module in model:
-            if not isinstance(module, (torch.nn.Linear, torch.nn.ReLU)):
+            if not isinstance(module, (torch.nn.Linear, torch.nn.ReLU, torch.nn.Tanh)):
                 raise ValueError(f"Unsupported module type in LBP: {type(module)}")
         if relu_relaxation not in ["zero", "one", "parallel", "optimizable"]:
             raise ValueError(
@@ -162,6 +163,11 @@ class CROWNBoundedModel(IntervalBoundedModel):
                     relu_lb=self.relu_relaxation,
                     interval_matmul=self.interval_matmul,
                 )  # type: ignore
+            elif isinstance(module, torch.nn.Tanh):
+                x = _crown_bounds.TanhNode(
+                    x,
+                    interval_matmul=self.interval_matmul,
+                )
             else:
                 raise ValueError(f"Unsupported module type in LBP: {type(module)}")
             if self.relu_relaxation == "optimizable" and self.optimize_inter:
@@ -262,6 +268,23 @@ class CROWNBoundedModel(IntervalBoundedModel):
                     dl_dy,
                     (inter_l > 0).float(),
                     (inter_u > 0).float(),
+                    interval_matmul=self.interval_matmul,
+                )
+            elif isinstance(module, torch.nn.Tanh):
+                abs_l, abs_u = inter_l.abs(), inter_u.abs()
+                max_abs = torch.maximum(abs_l, abs_u)
+                crosses_zero = (inter_l <= 0) & (inter_u >= 0)
+                min_abs = torch.where(
+                    crosses_zero,
+                    torch.zeros_like(inter_l),
+                    torch.minimum(abs_l, abs_u),
+                )
+                deriv_l = 1 - torch.tanh(max_abs).square()
+                deriv_u = 1 - torch.tanh(min_abs).square()
+                dl_dy = _crown_bounds.MulNode(
+                    dl_dy,
+                    deriv_l,
+                    deriv_u,
                     interval_matmul=self.interval_matmul,
                 )
             else:

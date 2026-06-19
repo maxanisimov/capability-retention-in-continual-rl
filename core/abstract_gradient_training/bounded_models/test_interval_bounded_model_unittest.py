@@ -98,9 +98,15 @@ class IntervalBoundedModelTanhTests(unittest.TestCase):
         self.assertTrue(torch.all(sampled_outputs >= output_l - 1e-10).item())
         self.assertTrue(torch.all(sampled_outputs <= output_u + 1e-10).item())
 
-    def test_crown_still_rejects_tanh(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unsupported module type in LBP"):
-            CROWNBoundedModel(_build_tanh_model())
+    def test_crown_accepts_tanh(self) -> None:
+        model = _build_tanh_model()
+        bounded_model = CROWNBoundedModel(model, trainable=False)
+        batch = torch.randn(3, 3, dtype=torch.float64)
+
+        lower, upper = bounded_model.bound_forward(batch, batch)
+
+        self.assertEqual(lower.shape, (3, 1))
+        self.assertEqual(upper.shape, (3, 1))
 
 
 if __name__ == "__main__":
