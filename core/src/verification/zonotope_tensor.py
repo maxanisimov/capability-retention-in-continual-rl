@@ -23,6 +23,74 @@ from src.verification.interval_tensor import IntervalTensor
 # pylint: disable=missing-docstring, invalid-name
 
 
+def _effective_eps(x: torch.Tensor, eps: float) -> float:
+    return max(float(eps), float(torch.finfo(x.dtype).eps))
+
+
+def _atanh_clamped(x: torch.Tensor, eps: float) -> torch.Tensor:
+    eps = _effective_eps(x, eps)
+    x = x.clamp(min=-1 + eps, max=1 - eps)
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
+def _tanh_derivative(x: torch.Tensor) -> torch.Tensor:
+    return 1 - torch.tanh(x).square()
+
+
+def tanh_affine_residual_bounds(
+    l: torch.Tensor, u: torch.Tensor, eps: float = 1e-12
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Return ``a, r_l, r_u`` such that tanh(z) is in ``a * z + [r_l, r_u]``.
+
+    The residual bounds are exact for the chosen slope: extrema of
+    ``tanh(z) - a * z`` can only occur at the endpoints or where
+    ``tanh'(z) = a``.
+    """
+    l, u = torch.broadcast_tensors(l, u)
+    if (u < l).any():
+        raise ValueError("Expected lower tanh bounds to be <= upper bounds.")
+
+    eps = _effective_eps(l, eps)
+    width = u - l
+    degenerate = width == 0
+    safe_width = torch.where(degenerate, torch.ones_like(width), width)
+    tanh_l = torch.tanh(l)
+    tanh_u = torch.tanh(u)
+    slope = (tanh_u - tanh_l) / safe_width
+
+    endpoint_l = tanh_l - slope * l
+    endpoint_u = tanh_u - slope * u
+    residuals_for_min = [endpoint_l, endpoint_u]
+    residuals_for_max = [endpoint_l, endpoint_u]
+
+    slope_clamped = slope.clamp(min=eps, max=1 - eps)
+    root = torch.sqrt((1 - slope_clamped).clamp(min=0))
+    crit_pos = _atanh_clamped(root, eps)
+    crit_neg = -crit_pos
+    inf = torch.full_like(l, float("inf"))
+    neg_inf = torch.full_like(l, -float("inf"))
+    for point in (crit_neg, crit_pos):
+        residual = torch.tanh(point) - slope * point
+        inside = (l <= point) & (point <= u)
+        residuals_for_min.append(torch.where(inside, residual, inf))
+        residuals_for_max.append(torch.where(inside, residual, neg_inf))
+
+    residual_l = torch.stack(residuals_for_min).min(dim=0).values
+    residual_u = torch.stack(residuals_for_max).max(dim=0).values
+
+    exact_slope = _tanh_derivative(l)
+    exact_residual = tanh_l - exact_slope * l
+    slope = torch.where(degenerate, exact_slope, slope)
+    residual_l = torch.where(degenerate, exact_residual, residual_l)
+    residual_u = torch.where(degenerate, exact_residual, residual_u)
+
+    if not all(torch.isfinite(t).all() for t in (slope, residual_l, residual_u)):
+        raise ValueError("Tanh affine residual bounds produced non-finite values.")
+
+    return slope, residual_l, residual_u
+
+
 class ZonotopeTensor:
     """A class representing a mixed interval-zonotope object over a pytorch tensor."""
 
@@ -143,6 +211,14 @@ class ZonotopeTensor:
         # compute the new zonotope
         center = slope * self.center + IntervalTensor(torch.zeros_like(bias), bias)
         generators = slope * self.generators
+        return ZonotopeTensor(center, generators, self.coeff)
+
+    def tanh(self) -> ZonotopeTensor:
+        """Pass the zonotope through Tanh using a sound affine-residual bound."""
+        conc = self.concretize()
+        slope, residual_l, residual_u = tanh_affine_residual_bounds(conc.lb, conc.ub)
+        center = self.center * slope + IntervalTensor(residual_l, residual_u)
+        generators = self.generators * slope
         return ZonotopeTensor(center, generators, self.coeff)
 
     @property

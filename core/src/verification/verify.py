@@ -49,6 +49,8 @@ def bound_forward_pass(
             x = x @ w.T + b
         elif isinstance(layer, torch.nn.ReLU):
             x = x.relu()
+        elif isinstance(layer, torch.nn.Tanh):
+            x = x.tanh()
         elif isinstance(layer, torch.nn.Flatten):
             x = x.flatten(start_dim=1)
         elif isinstance(layer, InContextHead):

@@ -15,6 +15,10 @@ from abstract_gradient_training.bounded_models._crown_bounds.affine_node import 
 )
 from abstract_gradient_training.bounded_models._crown_bounds.mul_node import MulNode
 from abstract_gradient_training.bounded_models._crown_bounds.relu_node import ReLUNode
+from abstract_gradient_training.bounded_models._crown_bounds.tanh_node import (
+    TanhNode,
+    tanh_linear_bounds,
+)
 
 __all__ = [
     "IntervalBounds",
@@ -24,4 +28,6 @@ __all__ = [
     "AffineNode",
     "MulNode",
     "ReLUNode",
+    "TanhNode",
+    "tanh_linear_bounds",
 ]

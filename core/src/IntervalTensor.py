@@ -142,6 +142,9 @@ class IntervalTensor:
     def relu(self) -> IntervalTensor:
         return IntervalTensor(torch.relu(self.lb), torch.relu(self.ub))
 
+    def tanh(self) -> IntervalTensor:
+        return IntervalTensor(torch.tanh(self.lb), torch.tanh(self.ub))
+
     def abs(self) -> IntervalTensor:
         return IntervalTensor(
             torch.minimum(self.lb.abs(), self.ub.abs()),
