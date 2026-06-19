@@ -40,7 +40,7 @@ def module_forward_pass(
             dilation=module.dilation,
             groups=module.groups,
         )
-    elif isinstance(module, (torch.nn.ReLU, torch.nn.Flatten)):
+    elif isinstance(module, (torch.nn.ReLU, torch.nn.Tanh, torch.nn.Flatten)):
         x = module(x)
     elif isinstance(module, DropoutWrapper):
         x = module(x, gen_mask=True) if train else x
@@ -104,6 +104,9 @@ def module_backward_pass(
     elif isinstance(module, torch.nn.ReLU):
         # compute the gradient wrt the input to the module
         dl_dy = dl_dy * (x > 0).float()
+    elif isinstance(module, torch.nn.Tanh):
+        # compute the gradient wrt the input to the module
+        dl_dy = dl_dy * (1 - torch.tanh(x).square())
     elif isinstance(module, torch.nn.Flatten):
         # compute the gradient wrt the input to the module
         dl_dy = torch.reshape(dl_dy, x.size())

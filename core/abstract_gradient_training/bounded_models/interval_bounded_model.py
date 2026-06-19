@@ -24,6 +24,7 @@ class IntervalBoundedModel(BoundedModel):
 
         - torch.nn.Linear
         - torch.nn.ReLU
+        - torch.nn.Tanh
         - torch.nn.Conv2d
         - torch.nn.Flatten
         - torch.nn.Dropout
@@ -74,6 +75,7 @@ class IntervalBoundedModel(BoundedModel):
                     torch.nn.Linear,
                     torch.nn.Conv2d,
                     torch.nn.ReLU,
+                    torch.nn.Tanh,
                     torch.nn.Flatten,
                     torch.nn.Dropout,
                 ),
@@ -153,7 +155,7 @@ class IntervalBoundedModel(BoundedModel):
                     dilation=module.dilation,
                     groups=module.groups,
                 )
-            elif isinstance(module, (torch.nn.ReLU, torch.nn.Flatten)):
+            elif isinstance(module, (torch.nn.ReLU, torch.nn.Tanh, torch.nn.Flatten)):
                 x_l, x_u = module(x_l), module(x_u)
             elif isinstance(module, nominal_modules.DropoutWrapper):
                 if retain_intermediate:  # only dropout in training mode
@@ -277,6 +279,21 @@ class IntervalBoundedModel(BoundedModel):
                 # compute the gradient wrt the input to the module
                 dl_dy_l, dl_dy_u = interval_arithmetic.propagate_elementwise(
                     dl_dy_l, dl_dy_u, (inter_l > 0).float(), (inter_u > 0).float()
+                )
+            elif isinstance(module, torch.nn.Tanh):
+                # tanh' is non-negative, even, and decreases as |x| grows.
+                abs_l, abs_u = inter_l.abs(), inter_u.abs()
+                max_abs = torch.maximum(abs_l, abs_u)
+                crosses_zero = (inter_l <= 0) & (inter_u >= 0)
+                min_abs = torch.where(
+                    crosses_zero,
+                    torch.zeros_like(inter_l),
+                    torch.minimum(abs_l, abs_u),
+                )
+                deriv_l = 1 - torch.tanh(max_abs).square()
+                deriv_u = 1 - torch.tanh(min_abs).square()
+                dl_dy_l, dl_dy_u = interval_arithmetic.propagate_elementwise(
+                    dl_dy_l, dl_dy_u, deriv_l, deriv_u
                 )
             elif isinstance(module, torch.nn.Flatten):
                 # compute the gradient wrt the input to the module
