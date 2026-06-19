@@ -1,0 +1,280 @@
+diagonal_10x10:
+  grid_size: 10
+  corridor_half_width: 1
+  max_episode_steps: 40
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 50000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_20x20:
+  grid_size: 20
+  corridor_half_width: 1
+  max_episode_steps: 80
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 100000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_30x30:
+  grid_size: 30
+  corridor_half_width: 1
+  max_episode_steps: 120
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 150000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_40x40:
+  grid_size: 40
+  corridor_half_width: 1
+  max_episode_steps: 160
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 200000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_50x50:
+  grid_size: 50
+  corridor_half_width: 1
+  max_episode_steps: 200
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 250000
+    hidden: 128
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_60x60:
+  grid_size: 60
+  corridor_half_width: 1
+  max_episode_steps: 240
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 300000
+    hidden: 128
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_70x70:
+  grid_size: 70
+  corridor_half_width: 1
+  max_episode_steps: 280
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 350000
+    hidden: 256
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_80x80:
+  grid_size: 80
+  corridor_half_width: 1
+  max_episode_steps: 320
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 400000
+    hidden: 256
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_90x90:
+  grid_size: 90
+  corridor_half_width: 1
+  max_episode_steps: 360
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 450000
+    hidden: 256
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true
+diagonal_100x100:
+  grid_size: 100
+  corridor_half_width: 1
+  max_episode_steps: 400
+  success: true
+  raw_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 500000
+    hidden: 256
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    lr: 0.0001
+    max_grad_norm: 0.5
+    device: cpu
+  training_wrappers:
+    coordinate_observation: true
+    dense_reward_shaping: true

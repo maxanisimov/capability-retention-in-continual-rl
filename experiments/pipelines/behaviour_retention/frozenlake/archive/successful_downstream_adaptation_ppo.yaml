@@ -1,0 +1,38 @@
+diagonal_30x30:
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: false
+  pre_adaptation_transform:
+    task_feature_neutralization: true
+    description: >-
+      To handle the shift from source task flag 0.0 to downstream task flag 1.0,
+      modify first-layer parameters before adaptation:
+      bias := bias - weight[:, task_feature_index] * 1.0;
+      weight[:, task_feature_index] := 0.0.
+    task_feature_index: 2
+  ppo:
+    seed: 0
+    total_timesteps: 300000
+    eval_episodes: 1
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+    device: cpu

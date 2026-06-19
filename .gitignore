@@ -135,6 +135,16 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+!experiments/pipelines/mountaincar/core/env/
+!experiments/pipelines/mountaincar/core/env/*.py
+!experiments/pipelines/cartpole/core/env/
+!experiments/pipelines/cartpole/core/env/*.py
+!experiments/pipelines/acrobot/core/env/
+!experiments/pipelines/acrobot/core/env/*.py
+!experiments/pipelines/carracing/core/env/
+!experiments/pipelines/carracing/core/env/*.py
+!experiments/pipelines/breakout/core/env/
+!experiments/pipelines/breakout/core/env/*.py
 
 # Spyder project settings
 .spyderproject

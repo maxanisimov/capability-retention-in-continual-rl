@@ -1,0 +1,391 @@
+diagonal_10x10:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: true
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 40000 # 20480
+    eval_episodes: 1
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: false
+  verification:
+    attempt: 1
+    method: chunked_search_relu_actor_critic
+    date: '2026-04-13'
+diagonal_20x20:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: true
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 51200
+    eval_episodes: 1
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: false
+  verification:
+    attempt: 1
+    method: chunked_search_relu_actor_critic
+    date: '2026-04-13'
+diagonal_30x30:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: false
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: false
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 300000
+    eval_episodes: 1
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+  verification:
+    attempt: 1
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+diagonal_40x40:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: true
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 133120
+    eval_episodes: 1
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.03
+    vf_coef: 0.5
+    lr: 0.0003
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+  verification:
+    attempt: 1
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+diagonal_50x50:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: false
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: false
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 500000
+    eval_episodes: 1
+    rollout_steps: 1024
+    update_epochs: 10
+    minibatch_size: 256
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+  verification:
+    attempt: 1
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+diagonal_60x60:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: false
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 500000
+    eval_episodes: 1
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.03
+    vf_coef: 0.5
+    lr: 0.0003
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+  verification:
+    attempt: 2
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+diagonal_70x70:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: false
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 500000
+    eval_episodes: 1
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+  verification:
+    attempt: 2
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+diagonal_80x80:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: true
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 409600
+    eval_episodes: 1
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
+  verification:
+    attempt: 2
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+diagonal_90x90:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: true
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: false
+  notes: No successful deterministic raw downstream policy found in tested PPO sweeps
+    through 2026-04-14 (including train_shaped=true, warm_start.critic in {true,false},
+    total_timesteps up to 634880, lr in {5e-4,3e-4}, ent_coef in {0.05,0.03}).
+  verification:
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+  downstream_eval:
+    episodes: 1
+    mean_reward: null
+    std_reward: null
+    failure_rate: null
+diagonal_100x100:
+  source_task_num: 0.0
+  downstream_task_num: 1.0
+  warm_start:
+    actor: true
+    critic: false
+  pre_adaptation_transform:
+    task_feature_neutralization: false
+    task_feature_index: 2
+    description: bias := bias - weight[:, task_feature_index] * 1.0; weight[:, task_feature_index]
+      := 0.0.
+  train_shaped: true
+  activation: relu
+  success: true
+  notes: Validated on 2026-04-14 with sparse-reward early-stop checks (seed 0).
+  verification:
+    attempt: 1
+    method: validated_seed0_sparse_early_stop
+    date: '2026-04-14'
+  downstream_eval:
+    episodes: 1
+    mean_reward: 1.0
+    std_reward: 0.0
+    failure_rate: 0.0
+  ppo:
+    seed: 0
+    total_timesteps: 634880
+    eval_episodes: 1
+    rollout_steps: 2048
+    update_epochs: 10
+    minibatch_size: 512
+    gamma: 0.995
+    gae_lambda: 0.97
+    clip_coef: 0.2
+    ent_coef: 0.05
+    vf_coef: 0.5
+    lr: 0.0005
+    max_grad_norm: 0.5
+    device: cpu
+    early_stop: true
+    early_stop_deterministic_total_reward_threshold: 1.0
+    early_stop_deterministic_eval_episodes: 1
