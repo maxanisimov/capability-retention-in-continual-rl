@@ -118,9 +118,23 @@ def _get_min_acc(
                     f"Unsupported multi-label soft metric: {multi_label_soft_metric}"
                 )
         else:
-            acc = verify.bound_multi_label_accuracy(
-                logits, y, lower=lower, aggregation=aggregation,
+            # route the hard multi-label "argmax in admissible set" check through the
+            # shared verify_point primitive, so this and ad-hoc pointwise verification
+            # share one code path. x_l/x_u default to X, reproducing bound_forward(X, X)
+            # above exactly.
+            from src.verification.api import AdmissibleSet, verify_point
+
+            result = verify_point(
+                bounded_model, X, AdmissibleSet(n_classes=y.shape[-1], multi_hot=y),
+                lower=lower, context_mask=context_mask,
             )
+            per_sample = result.certified.float()
+            if aggregation == "min":
+                acc = per_sample.min()
+            elif aggregation == "mean":
+                acc = per_sample.mean()
+            else:
+                raise ValueError(f"Unsupported aggregation method: {aggregation}")
     else:
         if soft:
             acc = verify.bound_soft_accuracy(logits, y, T=soft_acc_temperature, lower=lower)

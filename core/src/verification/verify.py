@@ -199,6 +199,8 @@ def bound_multi_label_accuracy(
         return correct.float().min()
     elif aggregation == 'mean':
         return correct.float().mean()
+    elif aggregation == 'none':
+        return correct.float()
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
@@ -246,6 +248,8 @@ def bound_multi_label_soft_accuracy(
         return correct_probs.min()
     elif aggregation == 'mean':
         return correct_probs.mean()
+    elif aggregation == 'none':
+        return correct_probs
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
@@ -306,5 +310,7 @@ def bound_multi_label_accuracy_margin(
         return margins.min()
     elif aggregation == 'mean':
         return margins.mean()
+    elif aggregation == 'none':
+        return margins
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")
