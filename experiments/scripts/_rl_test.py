@@ -20,6 +20,7 @@ project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
+from src.rashomon_spec import AccuracyRequirement
 from src.trainer import IntervalTrainer
 
 
@@ -462,6 +463,7 @@ def main():
 
     interval_trainer = IntervalTrainer(
         model=policy_network.net, # policy network's Sequential part
+        accuracy=AccuracyRequirement(soft_min=0.9),
         seed=2025,
     )
 

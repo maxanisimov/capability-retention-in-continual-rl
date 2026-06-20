@@ -25,6 +25,7 @@ from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
 )
 from experiments.utils.gymnasium_utils import plot_episode
 from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
+from src.rashomon_spec import AccuracyRequirement
 from src.trainer.IntervalTrainer import IntervalTrainer
 
 
@@ -125,15 +126,6 @@ def create_source_trajectory_rashomon_dataset(
     return TensorDataset(obs_tensor, label_tensor), state_action_pairs
 
 
-def _certificate_to_float(certificate: object) -> float:
-    if certificate is None:
-        return float("-inf")
-    if isinstance(certificate, list):
-        vals = [float(v) for v in certificate if v is not None]
-        return min(vals) if vals else float("-inf")
-    return float(certificate) # type: ignore
-
-
 def compute_rashomon_bounds(
     *,
     actor: torch.nn.Module,
@@ -182,23 +174,27 @@ def compute_rashomon_bounds(
     cert_min_threshold = 1.0
     interval_trainer = IntervalTrainer(
         model=actor,
-        # min_acc_limit=surrogate_threshold,
-        min_soft_acc_limit=surrogate_threshold,
-        min_hard_acc_limit=cert_min_threshold,
+        accuracy=AccuracyRequirement(
+            soft_min=surrogate_threshold,
+            hard_min=cert_min_threshold,
+            soft_temperature=selected_inverse_temp,
+            aggregation=aggregation, # type: ignore
+        ),
         seed=seed,
         n_iters=rashomon_n_iters, # type: ignore
         min_acc_increment=0,
-        T=selected_inverse_temp,
         checkpoint=checkpoint, # type: ignore
     )
     # multi_label = (max_valid_actions > 1.0)
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
         multi_label=True,
-        aggregation=aggregation, # type: ignore
     )
 
-    cert_values = [_certificate_to_float(cert) for cert in interval_trainer.certificates]
+    cert_values = [
+        min((c.min_hard_acc for c in certs), default=float("-inf"))
+        for certs in interval_trainer.certificates
+    ]
     valid_indices = [i for i, cert in enumerate(cert_values) if cert >= cert_min_threshold]
     if not valid_indices:
         best_cert = max(cert_values) if cert_values else float("-inf")

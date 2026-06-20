@@ -589,6 +589,7 @@ def _compute_rashomon_bounds(
     inverse_temp_max: int,
     checkpoint: int,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], object, dict[str, Any]]:
+    from src.rashomon_spec import AccuracyRequirement
     from src.trainer.IntervalTrainer import IntervalTrainer
 
     validate_rashomon_payload(rashomon_payload)
@@ -621,20 +622,25 @@ def _compute_rashomon_bounds(
 
     interval_trainer = IntervalTrainer(
         model=actor,
-        min_soft_acc_limit=surrogate_threshold,
-        min_hard_acc_limit=1.0,
+        accuracy=AccuracyRequirement(
+            soft_min=surrogate_threshold,
+            hard_min=1.0,
+            soft_temperature=selected_inverse_temp,
+            aggregation="min",
+        ),
         min_acc_increment=0,
         seed=seed,
         n_iters=n_iters,
-        T=selected_inverse_temp,
         checkpoint=checkpoint,
     )
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
         multi_label=True,
-        aggregation="min",
     )
-    cert_values = [_certificate_to_float(cert) for cert in interval_trainer.certificates]
+    cert_values = [
+        min((c.min_hard_acc for c in certs), default=float("-inf"))
+        for certs in interval_trainer.certificates
+    ]
     valid_indices = [idx for idx, value in enumerate(cert_values) if value >= 1.0]
     if not valid_indices:
         raise ValueError(f"No Rashomon certificate reached 1.0; certificates={cert_values}")
@@ -652,15 +658,6 @@ def _compute_rashomon_bounds(
         "all_certificates": [float(v) for v in cert_values],
     }
     return param_bounds_l, param_bounds_u, bounded_model, metadata
-
-
-def _certificate_to_float(certificate: object) -> float:
-    if certificate is None:
-        return float("-inf")
-    if isinstance(certificate, list):
-        vals = [float(value) for value in certificate if value is not None]
-        return min(vals) if vals else float("-inf")
-    return float(certificate)  # type: ignore[arg-type]
 
 
 def adapt_downstream(args: argparse.Namespace, *, mode: str) -> Path:

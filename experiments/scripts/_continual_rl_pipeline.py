@@ -19,6 +19,7 @@ if str(project_root) not in sys.path:
 
 from scripts._sqrl_pretrain import SQRLPretrainConfig, pretrain_sqrl, default_failure_fn
 from scripts.custom_tasks import *
+from src.rashomon_spec import AccuracyRequirement
 from src.trainer import IntervalTrainer
 from torch.utils.data import TensorDataset, DataLoader
 from stable_baselines3 import PPO
@@ -210,7 +211,7 @@ if __name__ == '__main__':
     # Use IntervalTrainer to compute the Rashomon set around the pretrained policy
     interval_trainer = IntervalTrainer( # TODO: set accuracy
         model=policy, # SQRL policy network (CategoricalPolicy)
-        # min_acc_limit=interval_trainer_min_accuracy,
+        accuracy=AccuracyRequirement(soft_min=0.9), # was the implicit default before AccuracyRequirement
         seed=seed,
     )
     interval_trainer.compute_rashomon_set(

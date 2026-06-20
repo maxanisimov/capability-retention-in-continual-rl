@@ -1,5 +1,6 @@
 from src.trainer import IntervalTrainer
 from src.helpers.SITracker import SITracker
+from src.rashomon_spec import AccuracyRequirement
 
 import torch.nn as nn
 import torch
@@ -13,20 +14,20 @@ class SITrainer(IntervalTrainer):
     def __init__(
         self,
         model: nn.Module,
+        accuracy: AccuracyRequirement = AccuracyRequirement(soft_min=0.9),
         projection_strategy: str = "closest",
         n_certificate_samples=256,
         min_acc_increment=0.05,
-        min_acc_limit=0.9,
         seed: int = 42,
         paradigm: str = "TIL",
         **rashomon_kwargs: dict,
     ):
         super().__init__(
             model,
+            accuracy=accuracy,
             projection_strategy=projection_strategy,
             n_certificate_samples=n_certificate_samples,
             min_acc_increment=min_acc_increment,
-            min_acc_limit=min_acc_limit,
             seed=seed,
             paradigm=paradigm,
             **rashomon_kwargs,

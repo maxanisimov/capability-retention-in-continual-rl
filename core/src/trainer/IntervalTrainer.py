@@ -1,6 +1,7 @@
 from src.trainer.BaseTrainer import BaseTrainer
 from src.regulariser.BaseRegulariser import BaseRegulariser
 from abstract_gradient_training.bounded_models import BoundedModel
+from src.rashomon_spec import AccuracyRequirement
 import src.interval_utils as interval_utils
 import src.utils.general as utils
 
@@ -17,13 +18,10 @@ class IntervalTrainer(BaseTrainer):
     def __init__(
         self,
         model: nn.Module,
+        accuracy: AccuracyRequirement,
         projection_strategy: str = "closest",
         n_certificate_samples=256,
-        min_acc_increment=0.05,
-        min_acc_limit=0.9,
-        min_soft_acc_limit: float | list[float] | None = None,
-        min_hard_acc_limit: float | list[float] | None = None,
-        T: float | None = None,
+        min_acc_increment: float | None = 0.05,
         paradigm: str = "TIL",
         domain_map_fn: Callable = None,
         seed: int = 42,
@@ -36,14 +34,9 @@ class IntervalTrainer(BaseTrainer):
         self.projection_strategy = projection_strategy
         self.n_certificate_samples = n_certificate_samples
         self.min_acc_increment = min_acc_increment
-        self.min_acc_limit = min_acc_limit
-        self.min_soft_acc_limit = min_soft_acc_limit
-        self.min_hard_acc_limit = min_hard_acc_limit
+        self.accuracy = accuracy
         self.bounds = []
         self.paradigm = paradigm
-        if T is None:
-            T = 10
-        rashomon_kwargs["soft_acc_temperature"] = T
         self.rashomon_kwargs = rashomon_kwargs
         self.final_certificates = []
         self.certificates = []
@@ -143,19 +136,23 @@ class IntervalTrainer(BaseTrainer):
     def _resolve_min_acc_limit(
         self,
         *,
-        base_limit: float | list[float] | None,
+        base_limit: float | dict[int, float],
         task_acc: float,
-    ) -> float | list[float] | None:
-        """Resolve per-task min-accuracy limit using increment fallback logic."""
-        if isinstance(base_limit, list):
+    ) -> float | dict[int, float]:
+        """
+        Resolve the min-accuracy limit using increment fallback logic: allow the
+        certified accuracy to drop by `min_acc_increment` from the current task
+        accuracy, but never below half the current accuracy or above `base_limit`.
+        Applied per-group if `base_limit` is a dict.
+        """
+        if not self.min_acc_increment:
             return base_limit
-        if self.min_acc_increment and base_limit is not None:
-            return min(max(task_acc - self.min_acc_increment, task_acc / 2), base_limit)
-        if self.min_acc_increment:
-            return max(task_acc - self.min_acc_increment, task_acc / 2)
-        if base_limit is not None:
-            return base_limit
-        return None
+        if isinstance(base_limit, dict):
+            return {
+                group: min(max(task_acc - self.min_acc_increment, task_acc / 2), limit)
+                for group, limit in base_limit.items()
+            }
+        return min(max(task_acc - self.min_acc_increment, task_acc / 2), base_limit)
 
     def compute_rashomon_set(
         self,
@@ -165,6 +162,10 @@ class IntervalTrainer(BaseTrainer):
         context_id: int | None = None,
         param_mask: Iterable | None = None,
         multi_label: bool = False,
+        has_input_intervals: bool = False,
+        group_by: Callable | None = None,
+        certification_method: str = "IBP",
+        certification_method_kwargs: dict | None = None,
         **kwargs: dict,
     ) -> None:
         """
@@ -173,20 +174,20 @@ class IntervalTrainer(BaseTrainer):
         dl = torch.utils.data.DataLoader(
             dataset, batch_size=self.n_certificate_samples, shuffle=True
         )
-        X, y = next(iter(dl))
-        X, y = X.to(self.device), y.to(self.device)
+        X_l, X_u, y = interval_utils._unpack_batch(next(iter(dl)), has_input_intervals)
+        X_l, X_u, y = X_l.to(self.device), X_u.to(self.device), y.to(self.device)
 
         if hasattr(self, "domain_map_fn") and self.domain_map_fn is not None:
             y = self.domain_map_fn(y)
 
         self._set_context(self.model, context_id)
 
-        model_class_preds = self.model(X).argmax(dim=1)
+        model_class_preds = self.model(X_l).argmax(dim=1)
         if not multi_label:
             task_acc = (model_class_preds == y).float().mean()
         else:
             task_acc = float(numpy.mean([y[i][pred].item() > 0 for i, pred in enumerate(model_class_preds)]))
-        
+
         if isinstance(self.model[-1], utils.InContextHead):
             model = self.model[:-1]
             context_mask = self.model[-1].mask
@@ -194,35 +195,27 @@ class IntervalTrainer(BaseTrainer):
             model = self.model
             context_mask = None
 
-        base_soft_limit = (
-            self.min_soft_acc_limit
-            if self.min_soft_acc_limit is not None
-            else self.min_acc_limit
+        resolved_accuracy = AccuracyRequirement(
+            soft_min=self._resolve_min_acc_limit(
+                base_limit=self.accuracy.soft_min, task_acc=float(task_acc),
+            ),
+            hard_min=self._resolve_min_acc_limit(
+                base_limit=(
+                    self.accuracy.hard_min
+                    if self.accuracy.hard_min is not None
+                    else self.accuracy.soft_min
+                ),
+                task_acc=float(task_acc),
+            ),
+            soft_metric=self.accuracy.soft_metric,
+            soft_temperature=self.accuracy.soft_temperature,
+            aggregation=self.accuracy.aggregation,
         )
-        base_hard_limit = (
-            self.min_hard_acc_limit
-            if self.min_hard_acc_limit is not None
-            else self.min_acc_limit
-        )
-        min_soft_acc_limit = self._resolve_min_acc_limit(
-            base_limit=base_soft_limit,
-            task_acc=float(task_acc),
-        )
-        min_hard_acc_limit = self._resolve_min_acc_limit(
-            base_limit=base_hard_limit,
-            task_acc=float(task_acc),
-        )
-        if min_soft_acc_limit is None and min_hard_acc_limit is None:
-            raise ValueError(
-                "At least one of min_acc_limit, min_soft_acc_limit, min_hard_acc_limit, or min_acc_increment must be set."
-            )
 
-        bounded_models, certificates = interval_utils.compute_rashomon_set(
+        result = interval_utils.compute_rashomon_set(
             model,
             dataset,
-            min_acc_limit=self.min_acc_limit,
-            min_soft_acc_limit=min_soft_acc_limit,
-            min_hard_acc_limit=min_hard_acc_limit,
+            resolved_accuracy,
             context_mask=context_mask,
             callback=callback,
             certificate_samples=self.n_certificate_samples,
@@ -232,13 +225,17 @@ class IntervalTrainer(BaseTrainer):
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
             param_mask=param_mask,
             multi_label=multi_label,
+            has_input_intervals=has_input_intervals,
+            group_by=group_by,
+            certification_method=certification_method,
+            certification_method_kwargs=certification_method_kwargs,
             **{**self.rashomon_kwargs, **kwargs},
         )
-        self.bounds = bounded_models
-        self.certificates = certificates
+        self.bounds = result.bounded_models
+        self.certificates = result.certificates
         # we are now in any of the rashomon sets, but we'll use the last which should be the biggest
         # (but maybe not the best)
-        self._last_projection = len(bounded_models) - 1
+        self._last_projection = len(result.bounded_models) - 1
 
     def _train_step(
         self,

@@ -1,7 +1,7 @@
 from abstract_gradient_training.bounded_models import IntervalBoundedModel, BoundedModel
 from src.IntervalTensor import IntervalTensor
 import src.verification.verify as verify
-from src.data_utils import _extract_targets
+from src.rashomon_spec import AccuracyRequirement, RashomonCertificate, RashomonResult
 
 import torch
 import torch.nn as nn
@@ -67,110 +67,127 @@ def _objective_fn(
     return objective / nparams
 
 
+def _unpack_batch(
+    batch: tuple[torch.Tensor, ...], has_input_intervals: bool
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Unpack a DataLoader batch into (x_l, x_u, y), handling both point datasets
+    (batches of (x, y), giving x_l=x_u=x) and interval datasets (batches of (x_l, x_u, y)).
+    """
+    if has_input_intervals:
+        x_l, x_u, y = batch
+        return x_l, x_u, y
+    x, y = batch
+    return x, x, y
+
+
 def _get_min_acc(
     bounded_model: IntervalBoundedModel,
-    X: torch.Tensor,
+    X_l: torch.Tensor,
+    X_u: torch.Tensor,
     y: torch.Tensor,
+    accuracy: AccuracyRequirement,
     soft: bool = False,
     lower: bool = True,
     context_mask: torch.Tensor | None = None,
     multi_label: bool = False,
-    soft_acc_temperature: float = SOFT_ACC_TEMP,
-    aggregation: str = "mean",
-    multi_label_soft_metric: str = "soft_accuracy",
 ) -> torch.Tensor:
     """
     Compute the minimum accuracy of the model on the given data using IBP.
 
     Args:
         bounded_model: The interval-bounded model
-        X: Input data tensor
+        X_l: Lower bound of the input region (equal to X_u for point inputs)
+        X_u: Upper bound of the input region (equal to X_l for point inputs)
         y: Target labels. For multi-label case, should be a multi-hot tensor of shape
            (N, n_classes) with 1 for valid actions and 0 otherwise
+        accuracy: Specifies the soft surrogate metric, its temperature, and the
+            within-group sample aggregation to use
         soft: Whether to use soft accuracy
         lower: Whether to compute lower bound (True) or upper bound (False)
         context_mask: Optional context mask
         multi_label: If True, treats y as containing multiple valid labels per sample
-        soft_acc_temperature: Temperature for softmax in soft accuracy computation
-        aggregation: Aggregation method for multi-label accuracy ('mean' or 'min')
-        multi_label_soft_metric: Soft metric to use for multi-label constraints
-            ('soft_accuracy' or 'accuracy_margin')
 
     Returns:
         Accuracy bound tensor
     """
-    logits = IntervalTensor(*bounded_model.bound_forward(X, X))
+    logits = IntervalTensor(*bounded_model.bound_forward(X_l, X_u))
     if context_mask is not None:
         logits = logits * context_mask
 
     if multi_label:
         if soft:
-            if multi_label_soft_metric == "soft_accuracy":
+            if accuracy.soft_metric == "soft_accuracy":
                 acc = verify.bound_multi_label_soft_accuracy(
-                    logits, y, T=soft_acc_temperature, lower=lower, aggregation=aggregation,
+                    logits, y, T=accuracy.soft_temperature, lower=lower,
+                    aggregation=accuracy.aggregation,
                 )
-            elif multi_label_soft_metric == "accuracy_margin":
+            elif accuracy.soft_metric == "accuracy_margin":
                 acc = verify.bound_multi_label_accuracy_margin(
-                    logits, y, T=soft_acc_temperature, lower=lower, aggregation=aggregation,
+                    logits, y, T=accuracy.soft_temperature, lower=lower,
+                    aggregation=accuracy.aggregation,
                 )
             else:
                 raise ValueError(
-                    f"Unsupported multi-label soft metric: {multi_label_soft_metric}"
+                    f"Unsupported multi-label soft metric: {accuracy.soft_metric}"
                 )
         else:
             # route the hard multi-label "argmax in admissible set" check through the
             # shared verify_point primitive, so this and ad-hoc pointwise verification
-            # share one code path. Passing x=X (a point) reproduces bound_forward(X, X)
-            # above exactly.
+            # share one code path.
             from src.verification.api import AdmissibleSet, verify_point
 
             result = verify_point(
                 bounded_model, AdmissibleSet(n_classes=y.shape[-1], multi_hot=y),
-                x=X, lower=lower, context_mask=context_mask,
+                x_l=X_l, x_u=X_u, lower=lower, context_mask=context_mask,
             )
             per_sample = result.certified.float()
-            if aggregation == "min":
+            if accuracy.aggregation == "min":
                 acc = per_sample.min()
-            elif aggregation == "mean":
+            elif accuracy.aggregation == "mean":
                 acc = per_sample.mean()
             else:
-                raise ValueError(f"Unsupported aggregation method: {aggregation}")
+                raise ValueError(f"Unsupported aggregation method: {accuracy.aggregation}")
     else:
         if soft:
-            acc = verify.bound_soft_accuracy(logits, y, T=soft_acc_temperature, lower=lower)
+            acc = verify.bound_soft_accuracy(logits, y, T=accuracy.soft_temperature, lower=lower)
         else:
             acc = verify.bound_accuracy(logits, y, lower=lower)
     return acc
 
 
-def _expand_limit_per_task(
-    limits: list[float] | float,
-    ntasks: int,
-) -> list[float]:
-    if isinstance(limits, list):
-        if not limits:
-            raise ValueError("Accuracy limit list must not be empty.")
-        if len(limits) >= ntasks:
-            return limits[:ntasks]
-        return limits + [limits[-1]] * (ntasks - len(limits))
-    return [limits] * ntasks
-
-
-def _resolve_limit_value(
-    limit: list[float] | float | None,
-    *,
-    fallback: list[float] | float | None,
-) -> tuple[list[float], float]:
-    value = limit if limit is not None else fallback
-    if value is None:
-        raise ValueError(
-            "At least one min-accuracy limit must be specified.",
+def _certify_groups(
+    bounded_model: IntervalBoundedModel,
+    X_l: torch.Tensor,
+    X_u: torch.Tensor,
+    y: torch.Tensor,
+    accuracy: AccuracyRequirement,
+    groups: list[int | None],
+    group_by: Callable[[torch.Tensor], torch.Tensor] | None,
+    multi_label: bool,
+    context_mask: torch.Tensor | None,
+) -> list[RashomonCertificate]:
+    """Certify a bounded model against a certificate batch, once per group."""
+    group_ids = group_by(y) if group_by is not None else None
+    certs = []
+    for group in groups:
+        mask = (
+            torch.ones(y.shape[0], dtype=torch.bool, device=y.device)
+            if group is None
+            else group_ids == group
         )
-    if isinstance(value, list):
-        if not value:
-            raise ValueError("Accuracy limit list must not be empty.")
-        return value, float(value[-1])
-    return [], float(value)
+        if not mask.any():
+            continue
+        hard_acc = _get_min_acc(
+            bounded_model, X_l[mask], X_u[mask], y[mask], accuracy,
+            soft=False, context_mask=context_mask, multi_label=multi_label,
+        ).item()
+        soft_acc = _get_min_acc(
+            bounded_model, X_l[mask], X_u[mask], y[mask], accuracy,
+            soft=True, context_mask=context_mask, multi_label=multi_label,
+        ).item()
+        certs.append(RashomonCertificate(group=group, min_soft_acc=soft_acc, min_hard_acc=hard_acc))
+    return certs
 
 
 @torch.no_grad()
@@ -213,18 +230,15 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self,
         bounded_model: IntervalBoundedModel,
         dataloader: torch.utils.data.DataLoader,
-        min_soft_acc_limits: list[float] | float,
-        min_hard_acc_limits: list[float] | float,
+        accuracy: AccuracyRequirement,
         penalty_coefficient: float,
         objective_fn: Callable,
         obj_alpha: float,
         context_mask: torch.Tensor | None = None,
         domain_map_fn: Callable | None = None,
-        task_labels: list[tuple[int, int]] = None,
+        group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
         multi_label: bool = False,
-        soft_acc_temperature: float = SOFT_ACC_TEMP,
-        aggregation: str = "mean",
-        multi_label_soft_metric: str = "soft_accuracy",
+        has_input_intervals: bool = False,
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -232,27 +246,29 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.dataloader = dataloader
         self.data_iter = iter(dataloader)
         self.obj_alpha = obj_alpha
-        self.task_labels = (
-            task_labels
-            or torch._unique(_extract_targets(dataloader.dataset))[0].tolist()
-        )  # if there is only one task then we can extract the task labels as opposed to having to provide them
-        ntasks = len(self.task_labels)
-        self.min_soft_acc_limits = _expand_limit_per_task(min_soft_acc_limits, ntasks)
-        self.min_hard_acc_limits = _expand_limit_per_task(min_hard_acc_limits, ntasks)
+        self.group_by = group_by
+        self.has_input_intervals = has_input_intervals
+
+        full_batch = next(iter(torch.utils.data.DataLoader(
+            dataloader.dataset, batch_size=len(dataloader.dataset), shuffle=False,
+        )))
+        _, _, all_y = _unpack_batch(full_batch, has_input_intervals)
+        self.groups: list[int | None] = (
+            sorted(group_by(all_y).unique().tolist()) if group_by is not None else [None]
+        )
+
         self.context_mask = context_mask
         self.objective_fn = objective_fn
         self.domain_map_fn = domain_map_fn
         self.multi_label = multi_label
-        self.soft_acc_temperature = soft_acc_temperature
-        self.aggregation = aggregation
-        self.multi_label_soft_metric = multi_label_soft_metric
+        self.accuracy = accuracy
         self.penalty_updater = (
             cooper.penalty_coefficients.MultiplicativePenaltyCoefficientUpdater(
                 growth_factor=1.01, violation_tolerance=0.05
             )
         )
         self.new = True
-        for i in range(len(self.task_labels)):
+        for i in range(len(self.groups)):
             multiplier = cooper.multipliers.DenseMultiplier(
                 init=torch.zeros(1, device=device)
             )
@@ -273,76 +289,59 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         """
         # get data
         try:
-            X, y = next(self.data_iter)
+            batch = next(self.data_iter)
         except StopIteration:
             self.data_iter = iter(self.dataloader)
-            X, y = next(self.data_iter)
+            batch = next(self.data_iter)
+        X_l, X_u, y = _unpack_batch(batch, self.has_input_intervals)
 
-        X, y = X.to(self.bounded_model.device), y.to(self.bounded_model.device)
+        X_l = X_l.to(self.bounded_model.device)
+        X_u = X_u.to(self.bounded_model.device)
+        y = y.to(self.bounded_model.device)
 
-        curr_context_mask = self.context_mask
         # apply projection
         _project_bounded_model(self.bounded_model, context_mask=self.context_mask)
         loss = -self.objective_fn(self.bounded_model, self.obj_alpha)
 
         misc_info = {}
         observed_constraints = {}
-        encountered_tasks = 0
 
-        # NOTE: Hard-coded for multi-label tasks
-        if self.multi_label:
-            self.task_labels = [0]
+        group_ids = self.group_by(y) if self.group_by is not None else None
 
-        for i, task in enumerate(self.task_labels):
-            if not self.multi_label:
-                mask = torch.isin(y, torch.tensor(task).to(y.device))
-            else:
-                mask = torch.ones(y.shape[0], dtype=torch.bool, device=y.device) # NOTE: I need all data samples
+        for i, group in enumerate(self.groups):
+            mask = (
+                torch.ones(y.shape[0], dtype=torch.bool, device=y.device)
+                if group is None
+                else group_ids == group
+            )
             if not mask.any():
                 continue
-            encountered_tasks += 1
-            inputs = X[mask]
-            targets = y[mask]
-
-            if encountered_tasks > 1:
-                # Set the context mask properly in TIL
-                if self.context_mask is not None:
-                    # Create a new mask tensor filled with zeros with the same shape and device.
-                    # This is a non-in-place operation, which is safe for autograd.
-                    new_mask = torch.zeros_like(self.context_mask)
-
-                    # Use advanced indexing to set the specified task labels to 1.
-                    # This is also a non-in-place operation on the original tensor.
-                    new_mask[self.task_labels[i]] = 1
-
-                    # Replace the old mask with the new one.
-                    self.context_mask = new_mask
+            inputs_l, inputs_u, targets = X_l[mask], X_u[mask], y[mask]
 
             if self.domain_map_fn is not None:
                 targets = self.domain_map_fn(targets)
             soft_min_acc = _get_min_acc(
                 self.bounded_model,
-                inputs,
+                inputs_l,
+                inputs_u,
                 targets,
+                self.accuracy,
                 soft=True,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
-                soft_acc_temperature=self.soft_acc_temperature,
-                aggregation=self.aggregation,
-                multi_label_soft_metric=self.multi_label_soft_metric,
             )
             min_acc = _get_min_acc(
                 self.bounded_model,
-                inputs,
+                inputs_l,
+                inputs_u,
                 targets,
+                self.accuracy,
                 soft=False,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
-                aggregation=self.aggregation,
             )
 
-            soft_limit = self.min_soft_acc_limits[i]
-            hard_limit = self.min_hard_acc_limits[i]
+            soft_limit, hard_limit = self.accuracy.resolve(group)
             defect = soft_limit - soft_min_acc
             setattr(self, f"defect{i}", defect)
             defect_strict = hard_limit - min_acc
@@ -365,8 +364,6 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
             observed_constraints = observed_constraints | {
                 getattr(self, f"constraint{i}"): constraint_state
             }
-
-        self.context_mask = curr_context_mask
 
         self.penalty_updater.step(observed_constraints)  # type: ignore
         for constraint in observed_constraints.keys():
@@ -400,12 +397,12 @@ def get_lr_schedulers(
         nonlocal current_multiplier
         max_violation = torch.max(
             torch.tensor(
-                [getattr(cmp, f"defect_strict{i}") for i in range(len(cmp.task_labels))]
+                [getattr(cmp, f"defect_strict{i}") for i in range(len(cmp.groups))]
             )
         )
         min_violation = torch.min(
             torch.tensor(
-                [getattr(cmp, f"defect_strict{i}") for i in range(len(cmp.task_labels))]
+                [getattr(cmp, f"defect_strict{i}") for i in range(len(cmp.groups))]
             )
         )
         if (
@@ -437,25 +434,18 @@ def _create_hook(mask: torch.Tensor):
 
     return hook_fn
 
-def update_context_mask_with_bounded_model(task_labels: list[int], current_mask: torch.Tensor, bounded_model: IntervalBoundedModel) -> tuple[torch.Tensor, IntervalBoundedModel]:
-    new_mask = torch.zeros_like(current_mask)
-    for label in task_labels:
-        new_mask[label] = 1
-
-    return new_mask, bounded_model
 
 def compute_rashomon_set(
     model: torch.nn.Sequential,
     dataset: torch.utils.data.Dataset,
+    accuracy: AccuracyRequirement,
+    *,
     batch_size: int = 500,
     certificate_samples: int = 1000,
-    min_acc_limit=0.85,
-    min_soft_acc_limit: list[float] | float | None = None,
-    min_hard_acc_limit: list[float] | float | None = None,
-    n_iters=2000,
-    primal_learning_rate=0.1,
-    dual_learning_rate=0.1,
-    penalty_coefficient=1.0,
+    n_iters: int = 2000,
+    primal_learning_rate: float = 0.1,
+    dual_learning_rate: float = 0.1,
+    penalty_coefficient: float = 1.0,
     use_schedule: bool = True,
     init_bbox: float = 0.0,
     obj_alpha: float = 0.0,
@@ -467,26 +457,22 @@ def compute_rashomon_set(
     param_select_fn: Callable | None = None,
     domain_map_fn: Callable | None = None,
     param_mask: Iterable | None = None,
-    task_labels: list[tuple[float]] = None,
+    group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
     multi_label: bool = False,
-    soft_acc_temperature: float = SOFT_ACC_TEMP,
-    aggregation: str = "mean",
-    multi_label_soft_metric: str = "soft_accuracy",
-) -> tuple[list[IntervalBoundedModel], list[float]]:
+    has_input_intervals: bool = False,
+    certification_method: str = "IBP",
+    certification_method_kwargs: dict | None = None,
+) -> RashomonResult:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
 
     Args:
         model (torch.nn.Sequential): The model to optimize.
-        dataset (torch.utils.data.Dataset): The dataset for certification.
-        batch_size (int): Batch size for the dataset.
-        certificate_samples (int): Number of samples to use for the final certificates.
-        min_acc_limit (float): Backward-compatible shared minimum-accuracy limit used for both
-            soft and hard constraints when explicit limits are not provided.
-        min_soft_acc_limit (float | list[float] | None): Minimum soft-accuracy limit used in the
-            differentiable constraint. Falls back to min_acc_limit when None.
-        min_hard_acc_limit (float | list[float] | None): Minimum hard-accuracy limit used as
-            strict_violation. Falls back to min_acc_limit when None.
+        dataset (torch.utils.data.Dataset): The dataset for certification. Yields (x, y) batches
+            by default, or (x_l, x_u, y) batches if has_input_intervals=True.
+        accuracy (AccuracyRequirement): Specifies the soft/hard accuracy limits (optionally
+            per-group), the soft surrogate metric and temperature, and the within-group sample
+            aggregation.
         n_iters (int): Number of iterations for optimization.
         primal_learning_rate (float): Learning rate for primal variables. A higher value prioritizes expanding the bbox,
             potentially at the expense of violating the accuracy constraint.
@@ -506,22 +492,22 @@ def compute_rashomon_set(
         custom_objective (Callable, optional): Custom objective function to use instead of the default one.
         param_select_fn (Callable, optional): Function to select parameters that we wish to compute rashomon sets over.
             If None, all parameters are used.
-        multi_label_soft_metric (str): Soft metric used for multi-label constraints.
-            Options are "soft_accuracy" and "accuracy_margin".
+        group_by (Callable, optional): Function applied to each minibatch's `y` (or per-row multi-hot
+            admissible-set tensor) producing an integer group-id tensor. Each unique group gets its own
+            Lagrangian constraint with its own (soft_min, hard_min) limits, resolved via
+            `accuracy.resolve(group)`. If None, all samples form a single global group (group id None).
+        has_input_intervals (bool): If True, `dataset` yields (x_l, x_u, y) batches (input-region
+            certification) instead of (x, y) point batches.
+        certification_method (str): Verification method (see `src.verification.registry`) used to compute
+            the *reported* certificates. The optimization loop itself always uses IBP for speed; this only
+            affects the checkpoint/final certificates, which are computed by rebuilding a BoundedModel of
+            this method from each checkpoint's (param_l, param_u).
+        certification_method_kwargs (dict, optional): Extra kwargs forwarded to the certification backend.
 
     Returns:
-        bmodel (agt.bounded_models.IntervalBoundedModel): The optimized bounded model.
-            If checkpoint is not -1, returns a list of models at each checkpoint.
-        certificates (list[float]): The certificates for each checkpoint.
+        RashomonResult: The optimized bounded models (one per checkpoint, IBP-parameterized) and their
+            certificates (one list of per-group RashomonCertificate per checkpoint).
     """
-    min_soft_acc_limits, min_soft_acc_limit = _resolve_limit_value(
-        min_soft_acc_limit,
-        fallback=min_acc_limit,
-    )
-    min_hard_acc_limits, min_hard_acc_limit = _resolve_limit_value(
-        min_hard_acc_limit,
-        fallback=min_acc_limit,
-    )
     device = next(model.parameters()).device
     objective_fn = custom_objective if custom_objective is not None else _objective_fn
 
@@ -545,58 +531,57 @@ def compute_rashomon_set(
         shuffle=True,
         generator=torch.Generator().manual_seed(42),  # TODO: don't always use 42 seed
     )
-    # Get the batch of data we'll use to report our certificates w.r.t.
-    encountered_tasks = 1
-    encountered_labels = []
-    if task_labels and len(task_labels) > 1:
-        X, y = next(
-            iter(
-                torch.utils.data.DataLoader(
-                    dataset, batch_size=len(dataset), shuffle=False
-                )
-            )
-        )
-        cert_tasks = []
-        for task in task_labels:
-            mask = torch.isin(y, torch.tensor(task).to(y.device))
+    # Get the batch of data we'll use to report our certificates w.r.t., balanced per group if group_by is given
+    encountered_groups = 1
+    if group_by is not None:
+        full_batch = next(iter(torch.utils.data.DataLoader(
+            dataset, batch_size=len(dataset), shuffle=False,
+        )))
+        X_l_all, X_u_all, y_all = _unpack_batch(full_batch, has_input_intervals)
+        group_ids_all = group_by(y_all)
+        cert_groups = []
+        for group in sorted(group_ids_all.unique().tolist()):
+            mask = group_ids_all == group
             if not mask.any():
                 continue
-            inputs = X[mask][:certificate_samples]
-            targets = y[mask][:certificate_samples]
-            cert_tasks.append(torch.utils.data.TensorDataset(inputs, targets))
-            encountered_labels += task
-        dataset = torch.utils.data.ConcatDataset(cert_tasks)
-        encountered_tasks = len(cert_tasks)
+            tensors = (
+                (X_l_all[mask][:certificate_samples], X_u_all[mask][:certificate_samples], y_all[mask][:certificate_samples])
+                if has_input_intervals
+                else (X_l_all[mask][:certificate_samples], y_all[mask][:certificate_samples])
+            )
+            cert_groups.append(torch.utils.data.TensorDataset(*tensors))
+        dataset = torch.utils.data.ConcatDataset(cert_groups)
+        encountered_groups = len(cert_groups)
 
     if context_mask is not None:
-        mask = context_mask
-        if encountered_labels:
-            mask = torch.zeros_like(context_mask)
-            for label in encountered_labels:
-                mask[label] = 1
-        bounded_model.param_l[-1].data -= (1 - mask) * MAX_PARAMETER_WIDTH
-        bounded_model.param_u[-1].data += (1 - mask) * MAX_PARAMETER_WIDTH
+        bounded_model.param_l[-1].data -= (1 - context_mask) * MAX_PARAMETER_WIDTH
+        bounded_model.param_u[-1].data += (1 - context_mask) * MAX_PARAMETER_WIDTH
         bounded_model.param_l[-2].data -= (
-            (1 - mask) * MAX_PARAMETER_WIDTH
+            (1 - context_mask) * MAX_PARAMETER_WIDTH
         ).unsqueeze(1)
         bounded_model.param_u[-2].data += (
-            (1 - mask) * MAX_PARAMETER_WIDTH
+            (1 - context_mask) * MAX_PARAMETER_WIDTH
         ).unsqueeze(1)
     dl_cert = torch.utils.data.DataLoader(
         dataset,
-        batch_size=certificate_samples * encountered_tasks,
+        batch_size=certificate_samples * encountered_groups,
         shuffle=True,
         generator=torch.Generator().manual_seed(42),
     )
-    X_cert, y_cert = next(iter(dl_cert))
-    X_cert, y_cert = X_cert.to(device), y_cert.to(device)
+    X_l_cert, X_u_cert, y_cert = _unpack_batch(next(iter(dl_cert)), has_input_intervals)
+    X_l_cert, X_u_cert, y_cert = X_l_cert.to(device), X_u_cert.to(device), y_cert.to(device)
     og_y_cert = y_cert
     if domain_map_fn is not None:
         y_cert = domain_map_fn(y_cert)
 
-    if min_soft_acc_limit <= 0.0 and min_hard_acc_limit <= 0.0:
+    groups: list[int | None] = (
+        sorted(group_by(y_cert).unique().tolist()) if group_by is not None else [None]
+    )
+    resolved_limits = {g: accuracy.resolve(g) for g in groups}
+
+    if all(s <= 0.0 and h <= 0.0 for s, h in resolved_limits.values()):
         print(
-            "Warning: both min_soft_acc_limit and min_hard_acc_limit <= 0.0; returning without computing Rashomon set."
+            "Warning: both soft_min and hard_min <= 0.0 for every group; returning without computing Rashomon set."
         )
         if outer_bbox is not None:
             bounded_model = copy.deepcopy(outer_bbox)
@@ -606,64 +591,56 @@ def compute_rashomon_set(
             ):
                 pl.data = p - MAX_PARAMETER_WIDTH
                 pu.data = p + MAX_PARAMETER_WIDTH
-        return [bounded_model], [0.0]
+        zero_certs = [RashomonCertificate(group=g, min_soft_acc=0.0, min_hard_acc=0.0) for g in groups]
+        return RashomonResult(bounded_models=[bounded_model], certificates=[zero_certs])
 
     # Check initial constraint satisfaction feasibility
     with torch.no_grad():
-        initial_defect = min_soft_acc_limit - _get_min_acc(
-            bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask,
-            multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
-            aggregation=aggregation,
-            multi_label_soft_metric=multi_label_soft_metric,
+        initial_certs = _certify_groups(
+            bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+            multi_label, context_mask,
         )
-    if torch.isnan(initial_defect):
-        raise ValueError("Initial bmodel results in NaN defect for the constraint.")
-    print(
-        f"Initial acc constraint violation: {initial_defect.item():.4f} (Positive = violated)"
-    )
+    for cert in initial_certs:
+        soft_limit, _ = resolved_limits[cert.group]
+        defect = soft_limit - cert.min_soft_acc
+        if defect != defect:  # NaN check
+            raise ValueError("Initial bmodel results in NaN defect for the constraint.")
+        print(
+            f"Initial acc constraint violation (group={cert.group}): {defect:.4f} (Positive = violated)"
+        )
 
     if outer_bbox is not None:
         print(
             f"Computing Rashomon set within outer box of size: {_bounded_model_width(outer_bbox).item():.2f}"
         )
-        outer_min_soft_acc = _get_min_acc(
-            outer_bbox, X_cert, y_cert, soft=True, context_mask=context_mask,
-            multi_label=multi_label, soft_acc_temperature=soft_acc_temperature,
-            aggregation=aggregation,
-            multi_label_soft_metric=multi_label_soft_metric,
+        outer_certs = _certify_groups(
+            outer_bbox, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+            multi_label, context_mask,
         )
-        outer_min_acc = _get_min_acc(
-            outer_bbox, X_cert, y_cert, soft=False, context_mask=context_mask,
-            multi_label=multi_label, aggregation=aggregation,
-        )
-        if (
-            outer_min_soft_acc > min_soft_acc_limit
-            and outer_min_acc > min_hard_acc_limit
+        if all(
+            cert.min_soft_acc > resolved_limits[cert.group][0]
+            and cert.min_hard_acc > resolved_limits[cert.group][1]
+            for cert in outer_certs
         ):
             print(
-                "Warning: outer bounding box already satisfies both thresholds "
-                f"(soft >= {min_soft_acc_limit:.2f}, hard >= {min_hard_acc_limit:.2f}) "
-                f"with soft={outer_min_soft_acc.item():.2f}, hard={outer_min_acc.item():.2f}. "
+                "Warning: outer bounding box already satisfies both thresholds for every group. "
                 "No need to compute Rashomon set."
             )
-            return [outer_bbox], [outer_min_acc.item()]
+            return RashomonResult(bounded_models=[outer_bbox], certificates=[outer_certs])
 
     # Instantiate the Constrained Minimization Problem (CMP)
     cmp = BboxOptimizationCMP(
         bounded_model,
         dataloader=dataloader,
+        accuracy=accuracy,
         objective_fn=objective_fn,
-        min_soft_acc_limits=min_soft_acc_limits or min_soft_acc_limit,
-        min_hard_acc_limits=min_hard_acc_limits or min_hard_acc_limit,
         penalty_coefficient=penalty_coefficient,
         obj_alpha=obj_alpha,
         context_mask=context_mask,
         domain_map_fn=domain_map_fn,
-        task_labels=task_labels,
+        group_by=group_by,
         multi_label=multi_label,
-        soft_acc_temperature=soft_acc_temperature,
-        aggregation=aggregation,
-        multi_label_soft_metric=multi_label_soft_metric,
+        has_input_intervals=has_input_intervals,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -689,18 +666,17 @@ def compute_rashomon_set(
     )
 
     # --- Optimization Loop ---
-    print(
-        "Computing Rashomon set with limits: "
-        f"min_soft_acc_limit={min_soft_acc_limit:.2f}, "
-        f"min_hard_acc_limit={min_hard_acc_limit:.2f}"
-    )
+    print(f"Computing Rashomon set with limits: {resolved_limits}")
     obj = objective_fn(bounded_model, obj_alpha)
+    initial_certs = _certify_groups(
+        bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+        multi_label, context_mask,
+    )
     print(
         "Initial bbox: ",
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
-        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation, multi_label_soft_metric=multi_label_soft_metric):.2f}",
+        f"Certificates={initial_certs}",
     )
     primal_lr_scheduler, dual_lr_scheduler = get_lr_schedulers(
         primal_optimizer, dual_optimizer, cmp
@@ -739,57 +715,40 @@ def compute_rashomon_set(
         callback(losses, defects)
 
     obj = objective_fn(bounded_model, obj_alpha)
-
+    final_certs = _certify_groups(
+        bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+        multi_label, context_mask,
+    )
     print(
         "Final bbox: ",
         f"Obj={obj.item():.2f}, ",
         f"Size={_bounded_model_width(bounded_model):.2f}, ",
-        f"Min acc hard={_get_min_acc(bounded_model, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation):.2f}, ",
-        f"Min acc soft={_get_min_acc(bounded_model, X_cert, y_cert, soft=True, context_mask=context_mask, multi_label=multi_label, soft_acc_temperature=soft_acc_temperature, aggregation=aggregation, multi_label_soft_metric=multi_label_soft_metric):.2f}",
+        f"Certificates={final_certs}",
     )
 
     # Remove the hooks created for masking
     for handle in hooks:
         handle.remove()
 
-    # compute the final checkpoint certificates over the entire dataset
-    print(f"Computing final certificates over {certificate_samples} samples")
-    checkpoint_certs = []
-    multi_task_certs = []
+    # compute the final checkpoint certificates over the entire dataset, using certification_method
+    print(f"Computing final certificates over {certificate_samples} samples using {certification_method}")
     print("Num cert samples:", len(og_y_cert))
 
-    # NOTE: hard-coded for multi-label tasks
-    if multi_label:
-        task_labels = None
-    if task_labels:
-        for j, m in enumerate(checkpoint_models):
-            certs = []
-            for i, task in enumerate(task_labels):
-                if not j:
-                    print("Task labels:", task)
-                mask = torch.isin(og_y_cert, torch.tensor(task).to(og_y_cert.device))
-                if not mask.any():
-                    certs.append(None)
-                    continue
-                inputs = X_cert[mask]
-                targets = y_cert[mask]
+    from src.verification.api import build_bounded_model
 
-                if context_mask is not None:
-                    context_mask, bounded_model = update_context_mask_with_bounded_model(task, context_mask, bounded_model)
-
-                cert = _get_min_acc(
-                    m, inputs, targets, soft=False, context_mask=context_mask, multi_label=multi_label,
-                    aggregation=aggregation,
-                ).item()
-                certs.append(cert)
-            multi_task_certs.append(certs)
-
+    checkpoint_certs: list[list[RashomonCertificate]] = []
     for m in checkpoint_models:
+        cert_model = build_bounded_model(
+            model, certification_method,
+            param_l=[p.detach().clone() for p in m.param_l],
+            param_u=[p.detach().clone() for p in m.param_u],
+            **(certification_method_kwargs or {}),
+        )
         checkpoint_certs.append(
-            _get_min_acc(
-                m, X_cert, y_cert, soft=False, context_mask=context_mask, multi_label=multi_label,
-                aggregation=aggregation,
-            ).item()
+            _certify_groups(
+                cert_model, X_l_cert, X_u_cert, og_y_cert, accuracy, groups, group_by,
+                multi_label, context_mask,
+            )
         )
 
     if checkpoint != -1:
@@ -798,13 +757,10 @@ def compute_rashomon_set(
         )
         checkpoint_sizes = [_bounded_model_width(m) for m in checkpoint_models]
         print(f"Checkpoints sizes: {[f'{c:.2f}' for c in checkpoint_sizes]}")
-        print(f"Checkpoint certificates: {[f'{c:.2f}' for c in checkpoint_certs]}")
-        print(
-            f"Multitask certificates: {[f'[{[round(c, 2) if c is not None else None for c in cs]}]' for cs in multi_task_certs]}"
-        )
+        print(f"Checkpoint certificates: {checkpoint_certs}")
 
     print(f"{' Finished Computing Rashomon set ':-^80}")
-    return checkpoint_models, multi_task_certs if task_labels else checkpoint_certs
+    return RashomonResult(bounded_models=checkpoint_models, certificates=checkpoint_certs)
 
 
 def create_violation_mask(model: nn.Module, bounded_model: BoundedModel):
