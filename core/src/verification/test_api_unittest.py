@@ -64,7 +64,7 @@ class VerifyPointTests(unittest.TestCase):
         x = torch.randn(4, 3)
         admissible = AdmissibleSet(n_classes=4, valid_indices=[0, 1])
 
-        result = verify_point(bounded_model, x, admissible)
+        result = verify_point(bounded_model, admissible, x=x)
 
         logits = IntervalTensor(*bounded_model.bound_forward(x, x))
         mask = torch.zeros(4, 4)
@@ -83,12 +83,37 @@ class VerifyPointTests(unittest.TestCase):
         eps = 0.02
         admissible = AdmissibleSet(n_classes=4, valid_indices=[0, 1])
 
-        result = verify_point(bounded_model, x, admissible, x_l=x - eps, x_u=x + eps)
+        result = verify_point(bounded_model, admissible, x_l=x - eps, x_u=x + eps)
 
         # cross-check against manually calling bound_forward with the same bounds
         manual_l, manual_u = bounded_model.bound_forward(x - eps, x + eps)
         self.assertTrue(torch.equal(result.logits_l, manual_l))
         self.assertTrue(torch.equal(result.logits_u, manual_u))
+
+    def test_neither_x_nor_interval_raises(self):
+        model = _build_model()
+        bounded_model = build_bounded_model(model, "IBP")
+        admissible = AdmissibleSet(n_classes=4, valid_indices=[0])
+        with self.assertRaises(ValueError):
+            verify_point(bounded_model, admissible)
+
+    def test_x_and_interval_together_raises(self):
+        model = _build_model()
+        bounded_model = build_bounded_model(model, "IBP")
+        admissible = AdmissibleSet(n_classes=4, valid_indices=[0])
+        x = torch.randn(2, 3)
+        with self.assertRaises(ValueError):
+            verify_point(bounded_model, admissible, x=x, x_l=x, x_u=x)
+
+    def test_only_one_of_x_l_x_u_raises(self):
+        model = _build_model()
+        bounded_model = build_bounded_model(model, "IBP")
+        admissible = AdmissibleSet(n_classes=4, valid_indices=[0])
+        x = torch.randn(2, 3)
+        with self.assertRaises(ValueError):
+            verify_point(bounded_model, admissible, x_l=x)
+        with self.assertRaises(ValueError):
+            verify_point(bounded_model, admissible, x_u=x)
 
 
 class VerifyDatasetTests(unittest.TestCase):
@@ -99,8 +124,8 @@ class VerifyDatasetTests(unittest.TestCase):
         mask = torch.zeros(7, 4)
         mask[:, 0] = 1.0
 
-        unchunked = verify_dataset(bounded_model, X, mask)
-        chunked = verify_dataset(bounded_model, X, mask, batch_size=3)
+        unchunked = verify_dataset(bounded_model, mask, X=X)
+        chunked = verify_dataset(bounded_model, mask, X=X, batch_size=3)
 
         self.assertTrue(torch.equal(unchunked.certified, chunked.certified))
         self.assertTrue(torch.equal(unchunked.logits_l, chunked.logits_l))
@@ -113,18 +138,27 @@ class VerifyDatasetTests(unittest.TestCase):
         mask = torch.zeros(5, 4)
         mask[:, 1] = 1.0
 
-        dataset_result = verify_dataset(bounded_model, X, mask)
+        dataset_result = verify_dataset(bounded_model, mask, X=X)
 
         per_sample_certified = []
         for i in range(X.shape[0]):
             res = verify_point(
-                bounded_model, X[i : i + 1],
+                bounded_model,
                 AdmissibleSet(n_classes=4, multi_hot=mask[i : i + 1]),
+                x=X[i : i + 1],
             )
             per_sample_certified.append(res.certified)
         looped = torch.cat(per_sample_certified)
 
         self.assertTrue(torch.equal(dataset_result.certified, looped))
+
+    def test_neither_X_nor_interval_raises(self):
+        model = _build_model()
+        bounded_model = build_bounded_model(model, "IBP")
+        mask = torch.zeros(3, 4)
+        mask[:, 0] = 1.0
+        with self.assertRaises(ValueError):
+            verify_dataset(bounded_model, mask)
 
 
 if __name__ == "__main__":

@@ -120,13 +120,13 @@ def _get_min_acc(
         else:
             # route the hard multi-label "argmax in admissible set" check through the
             # shared verify_point primitive, so this and ad-hoc pointwise verification
-            # share one code path. x_l/x_u default to X, reproducing bound_forward(X, X)
+            # share one code path. Passing x=X (a point) reproduces bound_forward(X, X)
             # above exactly.
             from src.verification.api import AdmissibleSet, verify_point
 
             result = verify_point(
-                bounded_model, X, AdmissibleSet(n_classes=y.shape[-1], multi_hot=y),
-                lower=lower, context_mask=context_mask,
+                bounded_model, AdmissibleSet(n_classes=y.shape[-1], multi_hot=y),
+                x=X, lower=lower, context_mask=context_mask,
             )
             per_sample = result.certified.float()
             if aggregation == "min":

@@ -123,11 +123,39 @@ def build_bounded_model(
     return bounded_model
 
 
+def _resolve_input_bounds(
+    x: torch.Tensor | None,
+    x_l: torch.Tensor | None,
+    x_u: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Resolve a point `x` or an explicit interval `x_l`/`x_u` into a concrete (lower, upper)
+    pair. Exactly one of `x` or the pair `(x_l, x_u)` must be provided - passing both is
+    ambiguous (which one wins?) and passing neither, or only one of `x_l`/`x_u`, silently
+    produces a degenerate or one-sided "interval", so all three are rejected explicitly.
+    """
+    has_point = x is not None
+    has_interval = x_l is not None or x_u is not None
+    if has_point and has_interval:
+        raise ValueError(
+            "Pass either `x` (a point) or both `x_l` and `x_u` (an interval), not both."
+        )
+    if not has_point and not has_interval:
+        raise ValueError(
+            "Must pass either `x` (a point) or both `x_l` and `x_u` (an interval)."
+        )
+    if has_interval and (x_l is None or x_u is None):
+        raise ValueError("Both `x_l` and `x_u` must be provided together to specify an interval.")
+    if has_point:
+        return x, x
+    return x_l, x_u
+
+
 def verify_point(
     bounded_model: BoundedModel,
-    x: torch.Tensor,
     admissible: AdmissibleSet,
     *,
+    x: torch.Tensor | None = None,
     x_l: torch.Tensor | None = None,
     x_u: torch.Tensor | None = None,
     lower: bool = True,
@@ -137,22 +165,27 @@ def verify_point(
 ) -> VerificationResult:
     """
     Certify that argmax(model(x')) is in the admissible set for every x' in [x_l, x_u]
-    (defaults to the point x if x_l/x_u are omitted) AND for every parameter setting in
-    the bounded_model's [param_l, param_u] box (defaults to the nominal parameters if
-    bounded_model was built with trainable=False). A single `bound_forward` call
-    propagates both input- and parameter-interval uncertainty together.
+    AND for every parameter setting in the bounded_model's [param_l, param_u] box
+    (defaults to the nominal parameters if bounded_model was built with
+    trainable=False). A single `bound_forward` call propagates both input- and
+    parameter-interval uncertainty together.
 
-    `x`'s leading dimension may be 1 (a single point/region) or >1 (a batch of
-    independent points/regions sharing the same parameter interval) - see
-    `verify_dataset` for a dataset-level convenience wrapper with optional chunking.
+    Exactly one of `x` (point verification) or both `x_l` and `x_u` (interval
+    verification) must be given. Their leading dimension may be 1 (a single
+    point/region) or >1 (a batch of independent points/regions sharing the same
+    parameter interval) - see `verify_dataset` for a dataset-level convenience wrapper
+    with optional chunking.
 
     Args:
         bounded_model (BoundedModel): A model built via `build_bounded_model` (or
             directly, e.g. a Rashomon-set member with parameter bounds already set).
-        x (torch.Tensor): The nominal input(s), shape (batch, ...).
         admissible (AdmissibleSet): The admissible action set(s) for this query.
-        x_l (torch.Tensor, optional): Lower bound on the input region. Defaults to `x`.
-        x_u (torch.Tensor, optional): Upper bound on the input region. Defaults to `x`.
+        x (torch.Tensor, optional): A nominal input point, shape (batch, ...). Mutually
+            exclusive with `x_l`/`x_u`.
+        x_l (torch.Tensor, optional): Lower bound on the input region. Must be given
+            together with `x_u`.
+        x_u (torch.Tensor, optional): Upper bound on the input region. Must be given
+            together with `x_l`.
         lower (bool, optional): Whether to certify the worst-case (lower) bound (True,
             sound certification) or compute the best-case (upper) bound (False).
         soft (bool, optional): If True, also compute a differentiable soft margin.
@@ -162,15 +195,18 @@ def verify_point(
 
     Returns:
         VerificationResult: Per-sample certification result.
+
+    Raises:
+        ValueError: If neither `x` nor both `x_l`/`x_u` are given, if `x` is given
+            alongside `x_l`/`x_u`, or if only one of `x_l`/`x_u` is given.
     """
-    x_l = x if x_l is None else x_l
-    x_u = x if x_u is None else x_u
+    x_l, x_u = _resolve_input_bounds(x, x_l, x_u)
 
     logits = IntervalTensor(*bounded_model.bound_forward(x_l, x_u))
     if context_mask is not None:
         logits = logits * context_mask
 
-    mask = admissible.as_multi_hot(x.shape[0], logits.device).float()
+    mask = admissible.as_multi_hot(x_l.shape[0], logits.device).float()
 
     certified = verify.bound_multi_label_accuracy(
         logits, mask, lower=lower, aggregation="none",
@@ -194,9 +230,9 @@ def verify_point(
 
 def verify_dataset(
     bounded_model: BoundedModel,
-    X: torch.Tensor,
     admissible: AdmissibleSet | torch.Tensor,
     *,
+    X: torch.Tensor | None = None,
     X_l: torch.Tensor | None = None,
     X_u: torch.Tensor | None = None,
     lower: bool = True,
@@ -206,10 +242,10 @@ def verify_dataset(
     batch_size: int | None = None,
 ) -> VerificationResult:
     """
-    Dataset-level convenience wrapper over `verify_point`. `X` (and optional `X_l`, `X_u`)
-    hold the whole certificate set with a leading batch dimension. `admissible` may be a
-    single AdmissibleSet shared by every row (its multi-hot mask broadcasts) or a per-row
-    multi-hot tensor of shape (N, n_classes).
+    Dataset-level convenience wrapper over `verify_point`. `X` (point case) or `X_l`/`X_u`
+    (interval case) hold the whole certificate set with a leading batch dimension.
+    `admissible` may be a single AdmissibleSet shared by every row (its multi-hot mask
+    broadcasts) or a per-row multi-hot tensor of shape (N, n_classes).
 
     Batching reuses the same `bound_forward` call used by `verify_point` - there is no
     per-sample Python loop; `bound_forward` is already vectorized across the batch
@@ -220,11 +256,14 @@ def verify_dataset(
     Args:
         bounded_model (BoundedModel): A model built via `build_bounded_model` (or
             directly, e.g. a Rashomon-set member with parameter bounds already set).
-        X (torch.Tensor): Nominal inputs, shape (N, ...).
         admissible (AdmissibleSet | torch.Tensor): Admissible action set(s); a raw tensor
             is interpreted as a per-row (or broadcastable) multi-hot mask.
-        X_l (torch.Tensor, optional): Lower bound on each input region. Defaults to `X`.
-        X_u (torch.Tensor, optional): Upper bound on each input region. Defaults to `X`.
+        X (torch.Tensor, optional): Nominal inputs, shape (N, ...). Mutually exclusive
+            with `X_l`/`X_u`.
+        X_l (torch.Tensor, optional): Lower bound on each input region. Must be given
+            together with `X_u`.
+        X_u (torch.Tensor, optional): Upper bound on each input region. Must be given
+            together with `X_l`.
         lower (bool, optional): See `verify_point`.
         soft (bool, optional): See `verify_point`.
         soft_temperature (float, optional): See `verify_point`.
@@ -234,14 +273,19 @@ def verify_dataset(
 
     Returns:
         VerificationResult: Per-sample certification result over the whole dataset.
+
+    Raises:
+        ValueError: If neither `X` nor both `X_l`/`X_u` are given, if `X` is given
+            alongside `X_l`/`X_u`, or if only one of `X_l`/`X_u` is given.
     """
+    X_l, X_u = _resolve_input_bounds(X, X_l, X_u)
     if isinstance(admissible, torch.Tensor):
         admissible = AdmissibleSet(n_classes=admissible.shape[-1], multi_hot=admissible)
 
-    n = X.shape[0]
+    n = X_l.shape[0]
     if batch_size is None or batch_size >= n:
         return verify_point(
-            bounded_model, X, admissible,
+            bounded_model, admissible,
             x_l=X_l, x_u=X_u, lower=lower, soft=soft,
             soft_temperature=soft_temperature, context_mask=context_mask,
         )
@@ -256,9 +300,8 @@ def verify_dataset(
             )
         chunks.append(
             verify_point(
-                bounded_model, X[start:end], chunk_admissible,
-                x_l=None if X_l is None else X_l[start:end],
-                x_u=None if X_u is None else X_u[start:end],
+                bounded_model, chunk_admissible,
+                x_l=X_l[start:end], x_u=X_u[start:end],
                 lower=lower, soft=soft, soft_temperature=soft_temperature,
                 context_mask=context_mask,
             )
