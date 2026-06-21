@@ -10,7 +10,7 @@ import unittest
 import torch
 
 from src.verification import verify
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 
 
 def _sample_logits_and_targets():

@@ -20,7 +20,7 @@ import torch
 
 from abstract_gradient_training.bounded_models import BoundedModel
 from src.verification import verify
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 from src.verification.registry import get_method
 from src.verification.compatibility import check_model_compatibility
 
@@ -39,6 +39,12 @@ class AdmissibleSet:
     valid_indices: list[int] | None = None
     multi_hot: torch.Tensor | None = None  # shape (n_classes,) or (batch, n_classes)
 
+    def __post_init__(self):
+        if (self.valid_indices is None) == (self.multi_hot is None):
+            raise ValueError("AdmissibleSet requires exactly one of valid_indices or multi_hot.")
+        if self.valid_indices is not None and len(self.valid_indices) == 0:
+            raise ValueError("AdmissibleSet.valid_indices must not be empty.")
+
     def as_multi_hot(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """Return a (batch_size, n_classes) boolean mask of admissible classes."""
         if self.multi_hot is not None:
@@ -46,11 +52,9 @@ class AdmissibleSet:
             if mask.ndim == 1:
                 mask = mask.unsqueeze(0).expand(batch_size, -1)
             return mask
-        if self.valid_indices is not None:
-            mask = torch.zeros(self.n_classes, dtype=torch.bool, device=device)
-            mask[torch.tensor(self.valid_indices, device=device)] = True
-            return mask.unsqueeze(0).expand(batch_size, -1)
-        raise ValueError("AdmissibleSet requires either valid_indices or multi_hot to be set.")
+        mask = torch.zeros(self.n_classes, dtype=torch.bool, device=device)
+        mask[torch.tensor(self.valid_indices, device=device)] = True
+        return mask.unsqueeze(0).expand(batch_size, -1)
 
 
 @dataclasses.dataclass
@@ -116,6 +120,12 @@ def build_bounded_model(
     if trainable:
         if param_l is None or param_u is None:
             raise ValueError("Both param_l and param_u must be provided together.")
+        n_params = len(bounded_model.param_l)
+        if len(param_l) != n_params or len(param_u) != n_params:
+            raise ValueError(
+                f"Expected param_l and param_u to each have {n_params} entries "
+                f"(one per parameter of model), got {len(param_l)} and {len(param_u)}."
+            )
         for p_l_dst, p_l_src in zip(bounded_model.param_l, param_l):
             p_l_dst.data.copy_(p_l_src)
         for p_u_dst, p_u_src in zip(bounded_model.param_u, param_u):

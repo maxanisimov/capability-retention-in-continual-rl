@@ -7,7 +7,7 @@ import unittest
 
 import torch
 
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 from src.verification.verify import bound_forward_pass
 from src.verification.zonotope_tensor import (
     ZonotopeTensor,

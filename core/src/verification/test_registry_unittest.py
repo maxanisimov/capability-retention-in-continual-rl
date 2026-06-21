@@ -5,6 +5,7 @@ import unittest
 import torch
 
 from abstract_gradient_training.bounded_models import CROWNBoundedModel, IntervalBoundedModel
+from src.verification.api import build_bounded_model
 from src.verification.registry import (
     VerificationMethod,
     available_methods,
@@ -48,6 +49,19 @@ class RegistryTests(unittest.TestCase):
             register_method(method, overwrite=False)
         # should not raise
         register_method(method, overwrite=True)
+
+    def test_register_method_custom_usable_via_build_bounded_model(self):
+        name = "test-only-method-usable"
+        register_method(
+            VerificationMethod(
+                name=name,
+                bounded_model_cls=IntervalBoundedModel,
+                supported_modules=(torch.nn.Linear,),
+            )
+        )
+        model = torch.nn.Sequential(torch.nn.Linear(3, 4))
+        bounded_model = build_bounded_model(model, name)
+        self.assertIsInstance(bounded_model, IntervalBoundedModel)
 
 
 if __name__ == "__main__":

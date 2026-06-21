@@ -3,7 +3,7 @@
 import torch
 
 from src.verification.zonotope_tensor import ZonotopeTensor
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 from src.utils.general import split_generators, InContextHead
 import sklearn
 

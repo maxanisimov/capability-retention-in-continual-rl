@@ -8,7 +8,7 @@ from abstract_gradient_training.bounded_models import IntervalBoundedModel
 from src.verification import verify
 from src.verification.api import AdmissibleSet, build_bounded_model, verify_dataset, verify_point
 from src.verification.compatibility import UnsupportedLayerError
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 
 
 def _build_model():
@@ -28,6 +28,18 @@ class AdmissibleSetTests(unittest.TestCase):
         admissible = AdmissibleSet(n_classes=4, multi_hot=multi_hot)
         mask = admissible.as_multi_hot(batch_size=2, device=torch.device("cpu"))
         self.assertTrue(torch.equal(mask, multi_hot.bool()))
+
+    def test_neither_valid_indices_nor_multi_hot_raises(self):
+        with self.assertRaises(ValueError):
+            AdmissibleSet(n_classes=4)
+
+    def test_both_valid_indices_and_multi_hot_raises(self):
+        with self.assertRaises(ValueError):
+            AdmissibleSet(n_classes=4, valid_indices=[0], multi_hot=torch.zeros(4))
+
+    def test_empty_valid_indices_raises(self):
+        with self.assertRaises(ValueError):
+            AdmissibleSet(n_classes=4, valid_indices=[])
 
 
 class BuildBoundedModelTests(unittest.TestCase):
@@ -55,6 +67,14 @@ class BuildBoundedModelTests(unittest.TestCase):
         for p_l, p_u, p_n in zip(bounded_model.param_l, bounded_model.param_u, nominal):
             self.assertTrue(torch.allclose(p_l, p_n - 0.01))
             self.assertTrue(torch.allclose(p_u, p_n + 0.01))
+
+    def test_mismatched_param_interval_length_raises(self):
+        model = _build_model()
+        nominal = [p.detach().clone() for p in model.parameters()]
+        param_l = [p - 0.01 for p in nominal][:-1]
+        param_u = [p + 0.01 for p in nominal]
+        with self.assertRaises(ValueError):
+            build_bounded_model(model, "IBP", param_l=param_l, param_u=param_u)
 
 
 class VerifyPointTests(unittest.TestCase):
@@ -104,6 +124,23 @@ class VerifyPointTests(unittest.TestCase):
         x = torch.randn(2, 3)
         with self.assertRaises(ValueError):
             verify_point(bounded_model, admissible, x=x, x_l=x, x_u=x)
+
+    def test_soft_margin_matches_direct_verify_call(self):
+        model = _build_model()
+        bounded_model = build_bounded_model(model, "IBP")
+        x = torch.randn(4, 3)
+        admissible = AdmissibleSet(n_classes=4, valid_indices=[0, 1])
+
+        result = verify_point(bounded_model, admissible, x=x, soft=True, tau=0.2)
+
+        self.assertIsNotNone(result.margin)
+        logits = IntervalTensor(*bounded_model.bound_forward(x, x))
+        mask = torch.zeros(4, 4)
+        mask[:, [0, 1]] = 1.0
+        expected_margin = verify.bound_multi_label_accuracy_margin(
+            logits, mask, tau=0.2, lower=True, aggregation="none",
+        )
+        self.assertTrue(torch.equal(result.margin, expected_margin))
 
     def test_only_one_of_x_l_x_u_raises(self):
         model = _build_model()
