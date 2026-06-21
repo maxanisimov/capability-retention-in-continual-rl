@@ -11,7 +11,6 @@ import cooper
 import tqdm
 
 MAX_PARAMETER_WIDTH = 10.0
-SOFT_ACC_TEMP = 10
 
 
 def _bounded_model_width(bounded_model: IntervalBoundedModel) -> torch.Tensor:
@@ -121,7 +120,7 @@ def _get_min_acc(
     y: torch.Tensor,
     accuracy: AccuracyRequirement,
     group: int | None,
-    temperature: float,
+    tau: float,
     soft: bool = False,
     lower: bool = True,
     context_mask: torch.Tensor | None = None,
@@ -143,7 +142,8 @@ def _get_min_acc(
             representation internally (see `_to_multi_hot`).
         accuracy: Specifies the target accuracy (per group) used to pick the order-statistic rank
         group: Which group's target accuracy to resolve via `accuracy.resolve(group)`
-        temperature: Softmax temperature for the soft margin (ignored if soft=False)
+        tau: Standard softmax temperature for the soft margin (ignored if soft=False);
+            `softmax(logits / tau)`.
         soft: Whether to use the differentiable soft margin (True) or the strict hard
             certification (False)
         lower: Whether to compute lower bound (True) or upper bound (False)
@@ -161,7 +161,7 @@ def _get_min_acc(
 
     if soft:
         per_sample = verify.bound_multi_label_accuracy_margin(
-            logits, mask, T=temperature, lower=lower, aggregation="none",
+            logits, mask, tau=tau, lower=lower, aggregation="none",
         )
     else:
         per_sample = verify.bound_multi_label_accuracy(
@@ -219,20 +219,26 @@ def _calibrate_temperature(
     cap: float = 100.0,
 ) -> dict[int | None, float]:
     """
-    Calibrate a softmax temperature per group: the smallest temperature (searched via
+    Calibrate a softmax temperature per group: the smallest (sharpest) `tau` (searched via
     geometric doubling from `start`, always also trying `cap` explicitly) at which the
     order-statistic-aggregated soft margin on `bounded_model` (the nominal, pre-optimization
     model) is positive, i.e. at which the model is detected as already satisfying its own
-    target accuracy. Margin soundness holds for any T>0 - temperature only affects how many
-    false negatives the surrogate produces, not its correctness - so this calibration is a
-    one-time, per-group search, not something that needs revisiting during optimization.
+    target accuracy. A low tau gives the sharpest, best-behaved gradient signal for the
+    optimizer (this is what the original box-collapse problem with a flat calibrated
+    temperature traced back to), but also the highest false-negative rate for the order
+    statistic - a single hard-failing sample's margin is most catastrophic at low tau (it
+    can dominate the order-statistic selection even when enough *other* samples pass), so we
+    only flatten (increase tau) as much as necessary to clear the constraint. Margin
+    soundness holds for any tau>0 regardless - temperature only affects the false-negative
+    rate, never correctness - so this calibration is a one-time, per-group search, not
+    something that needs revisiting during optimization.
     """
     group_ids = group_by(y) if group_by is not None else None
     candidates = []
-    T = start
-    while T < cap:
-        candidates.append(T)
-        T *= 2.0
+    tau = start
+    while tau < cap:
+        candidates.append(tau)
+        tau *= 2.0
     candidates.append(cap)
 
     temperatures: dict[int | None, float] = {}
@@ -253,7 +259,7 @@ def _calibrate_temperature(
         for candidate in candidates:
             margin = _order_statistic_select(
                 verify.bound_multi_label_accuracy_margin(
-                    logits, multi_hot, T=candidate, lower=True, aggregation="none",
+                    logits, multi_hot, tau=candidate, lower=True, aggregation="none",
                 ),
                 target_accuracy,
             ).item()
@@ -264,11 +270,49 @@ def _calibrate_temperature(
                 break
         if chosen is None:
             raise ValueError(
-                f"Could not calibrate a softmax temperature in [{start}, {cap}] for "
+                f"Could not calibrate a softmax temperature tau in [{start}, {cap}] for "
                 f"group={group} (target_accuracy={target_accuracy}); best margin found: {best_margin:.4f}."
             )
         temperatures[group] = chosen
     return temperatures
+
+
+def _check_hard_feasibility(
+    bounded_model: IntervalBoundedModel,
+    X_l: torch.Tensor,
+    X_u: torch.Tensor,
+    y: torch.Tensor,
+    accuracy: AccuracyRequirement,
+    groups: list[int | None],
+    group_by: Callable[[torch.Tensor], torch.Tensor] | None,
+    multi_label: bool,
+    context_mask: torch.Tensor | None,
+) -> tuple[dict[int | None, float], dict[int | None, bool]]:
+    """
+    Compute, per group, the literal (mean) hard accuracy of `bounded_model` on the given
+    certificate batch, and whether the order-statistic-aggregated hard condition implied by
+    `accuracy.resolve(group)` is satisfied. Margin soundness only ever implies hard accuracy,
+    never the reverse, so if a group fails this hard check, no softmax temperature could
+    possibly satisfy the surrogate constraint for it either - this lets `compute_rashomon_set`
+    skip a calibration search that is mathematically guaranteed to fail.
+    """
+    group_ids = group_by(y) if group_by is not None else None
+    achieved_accuracy: dict[int | None, float] = {}
+    feasible: dict[int | None, bool] = {}
+    for group in groups:
+        mask = (
+            torch.ones(y.shape[0], dtype=torch.bool, device=y.device)
+            if group is None
+            else group_ids == group
+        )
+        logits = IntervalTensor(*bounded_model.bound_forward(X_l[mask], X_u[mask]))
+        if context_mask is not None:
+            logits = logits * context_mask
+        multi_hot = _to_multi_hot(y[mask], n_classes=logits.lb.shape[-1], multi_label=multi_label)
+        per_sample = verify.bound_multi_label_accuracy(logits, multi_hot, lower=True, aggregation="none")
+        achieved_accuracy[group] = per_sample.mean().item()
+        feasible[group] = _order_statistic_select(per_sample, accuracy.resolve(group)).item() > 0.0
+    return achieved_accuracy, feasible
 
 
 @torch.no_grad()
@@ -403,7 +447,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
 
             if self.domain_map_fn is not None:
                 targets = self.domain_map_fn(targets)
-            temperature = self.temperatures[group]
+            tau = self.temperatures[group]
             soft_min_acc = _get_min_acc(
                 self.bounded_model,
                 inputs_l,
@@ -411,7 +455,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 targets,
                 self.accuracy,
                 group,
-                temperature,
+                tau,
                 soft=True,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
@@ -423,7 +467,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 targets,
                 self.accuracy,
                 group,
-                temperature,
+                tau,
                 soft=False,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
@@ -448,7 +492,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 "min_acc": min_acc.item(),
                 "min_soft_acc": soft_min_acc.item(),
                 "target_accuracy": target_accuracy,
-                "temperature": temperature,
+                "tau": tau,
                 "penalty": getattr(self, f"constraint{i}").penalty_coefficient().item(),
             }
             observed_constraints = observed_constraints | {
@@ -553,6 +597,8 @@ def compute_rashomon_set(
     certification_method: str = "IBP",
     certification_method_kwargs: dict | None = None,
     temperatures: dict[int | None, float] | None = None,
+    tau_min: float = 0.1,
+    tau_max: float = 100.0,
 ) -> RashomonResult:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -564,7 +610,12 @@ def compute_rashomon_set(
         accuracy (AccuracyRequirement): Specifies the minimum target accuracy (optionally
             per-group). The differentiable soft margin surrogate, its dataset-level
             order-statistic aggregation, and the softmax temperature it depends on (see
-            `temperatures`) are all derived automatically from this single number.
+            `temperatures`) are all derived automatically from this single number. Before
+            calibrating a temperature, the nominal (pre-optimization) model is checked
+            against this literal hard-accuracy target per group; if it fails for any group,
+            calibration and the Rashomon set optimization are skipped entirely (no softmax
+            temperature could satisfy the surrogate in that case either) and the achieved
+            accuracy is reported instead.
         n_iters (int): Number of iterations for optimization.
         primal_learning_rate (float): Learning rate for primal variables. A higher value prioritizes expanding the bbox,
             potentially at the expense of violating the accuracy constraint.
@@ -595,14 +646,22 @@ def compute_rashomon_set(
             affects the checkpoint/final certificates, which are computed by rebuilding a BoundedModel of
             this method from each checkpoint's (param_l, param_u).
         certification_method_kwargs (dict, optional): Extra kwargs forwarded to the certification backend.
-        temperatures (dict, optional): Per-group softmax temperature, keyed by the same group
-            ids as `groups` (`{None: T}` if `group_by` is None). If given, calibration is
-            skipped and these are used directly - needed when a caller must freeze one
-            calibrated temperature across multiple `compute_rashomon_set` calls (e.g. when
-            sampling several reference models that must all be judged by the same surrogate).
+        temperatures (dict, optional): Per-group softmax temperature `tau` (standard
+            convention: `softmax(logits / tau)`), keyed by the same group ids as `groups`
+            (`{None: tau}` if `group_by` is None). If given, calibration is skipped and
+            these are used directly - needed when a caller must freeze one calibrated
+            temperature across multiple `compute_rashomon_set` calls (e.g. when sampling
+            several reference models that must all be judged by the same surrogate).
             If None (the default), a temperature is calibrated automatically per group via
             `_calibrate_temperature`, evaluated once against the nominal (pre-optimization)
             model before the optimization loop starts.
+        tau_min (float): Sharpest candidate temperature tried first during calibration
+            (ignored if `temperatures` is given). Raise this if `tau_min` itself already
+            gives too high a false-negative rate for your data (rare).
+        tau_max (float): Flattest candidate temperature calibration is allowed to fall back
+            to (ignored if `temperatures` is given); calibration raises `ValueError` if no
+            tau in `[tau_min, tau_max]` clears the order-statistic margin. Raise this if you
+            see that error and the model otherwise passes the hard-accuracy precondition.
 
     Returns:
         RashomonResult: The optimized bounded models (one per checkpoint, IBP-parameterized),
@@ -698,12 +757,41 @@ def compute_rashomon_set(
             temperatures=temperatures or {g: 0.0 for g in groups},
         )
 
+    # Before calibrating a temperature, check that the nominal model already satisfies the
+    # literal hard-accuracy target per group. Margin soundness only ever implies hard
+    # accuracy, never the reverse, so if this fails for any group, no softmax temperature in
+    # [0, inf) could satisfy the surrogate constraint either - skip calibration and the
+    # Rashomon set optimization entirely and report the achieved accuracy instead.
+    achieved_accuracy, hard_feasible = _check_hard_feasibility(
+        bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+        multi_label, context_mask,
+    )
+    if not all(hard_feasible.values()):
+        print(
+            "Warning: the nominal model does not satisfy the target hard accuracy for one or "
+            "more groups; skipping temperature calibration and Rashomon set computation."
+        )
+        for group in groups:
+            status = "OK" if hard_feasible[group] else "INFEASIBLE"
+            print(
+                f"  group={group}: target_accuracy={target_accuracies[group]:.3f}, "
+                f"achieved hard accuracy={achieved_accuracy[group]:.3f}  [{status}]"
+            )
+        infeasible_certs = [
+            RashomonCertificate(group=g, min_soft_acc=0.0, min_hard_acc=achieved_accuracy[g])
+            for g in groups
+        ]
+        return RashomonResult(
+            bounded_models=[bounded_model], certificates=[infeasible_certs],
+            temperatures={g: 0.0 for g in groups},
+        )
+
     # Calibrate (or validate caller-supplied) per-group softmax temperatures against the
     # nominal, not-yet-optimized model, before the optimization loop perturbs it.
     if temperatures is None:
         temperatures = _calibrate_temperature(
             bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-            multi_label, context_mask,
+            multi_label, context_mask, start=tau_min, cap=tau_max,
         )
     elif set(temperatures) != set(groups):
         raise ValueError(

@@ -160,7 +160,7 @@ def verify_point(
     x_u: torch.Tensor | None = None,
     lower: bool = True,
     soft: bool = False,
-    soft_temperature: float = 10.0,
+    tau: float = 0.1,
     context_mask: torch.Tensor | None = None,
 ) -> VerificationResult:
     """
@@ -189,7 +189,9 @@ def verify_point(
         lower (bool, optional): Whether to certify the worst-case (lower) bound (True,
             sound certification) or compute the best-case (upper) bound (False).
         soft (bool, optional): If True, also compute a differentiable soft margin.
-        soft_temperature (float, optional): Softmax temperature used for the soft margin.
+        tau (float, optional): Standard softmax temperature used for the soft margin
+            (`softmax(logits / tau)`). As `tau -> 0`, the margin sharpens toward an
+            argmax-style margin; as `tau -> infinity`, it flattens toward uniform.
         context_mask (torch.Tensor, optional): Optional mask applied to the logits
             interval before certification.
 
@@ -215,7 +217,7 @@ def verify_point(
     margin = None
     if soft:
         margin = verify.bound_multi_label_accuracy_margin(
-            logits, mask, T=soft_temperature, lower=lower, aggregation="none",
+            logits, mask, tau=tau, lower=lower, aggregation="none",
         )
 
     logits_l, logits_u = logits
@@ -237,7 +239,7 @@ def verify_dataset(
     X_u: torch.Tensor | None = None,
     lower: bool = True,
     soft: bool = False,
-    soft_temperature: float = 10.0,
+    tau: float = 0.1,
     context_mask: torch.Tensor | None = None,
     batch_size: int | None = None,
 ) -> VerificationResult:
@@ -266,7 +268,7 @@ def verify_dataset(
             together with `X_l`.
         lower (bool, optional): See `verify_point`.
         soft (bool, optional): See `verify_point`.
-        soft_temperature (float, optional): See `verify_point`.
+        tau (float, optional): See `verify_point`.
         context_mask (torch.Tensor, optional): See `verify_point`.
         batch_size (int, optional): If given, verify in chunks of this size instead of
             all at once, to bound peak memory on large datasets.
@@ -287,7 +289,7 @@ def verify_dataset(
         return verify_point(
             bounded_model, admissible,
             x_l=X_l, x_u=X_u, lower=lower, soft=soft,
-            soft_temperature=soft_temperature, context_mask=context_mask,
+            tau=tau, context_mask=context_mask,
         )
 
     chunks = []
@@ -302,7 +304,7 @@ def verify_dataset(
             verify_point(
                 bounded_model, chunk_admissible,
                 x_l=X_l[start:end], x_u=X_u[start:end],
-                lower=lower, soft=soft, soft_temperature=soft_temperature,
+                lower=lower, soft=soft, tau=tau,
                 context_mask=context_mask,
             )
         )

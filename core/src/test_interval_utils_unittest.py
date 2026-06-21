@@ -110,7 +110,7 @@ class GetMinAccTests(unittest.TestCase):
         for target_accuracy in (1.0, 0.8, 0.6, 0.4, 0.2):
             accuracy = AccuracyRequirement(target_accuracy=target_accuracy)
             acc = _get_min_acc(
-                bounded_model, X, X, y, accuracy, group=None, temperature=10.0,
+                bounded_model, X, X, y, accuracy, group=None, tau=10.0,
                 multi_label=True, soft=False,
             )
             expected = _order_statistic_select(per_sample, target_accuracy)
@@ -118,14 +118,14 @@ class GetMinAccTests(unittest.TestCase):
 
     def test_soft_multi_label_matches_independently_computed_order_statistic(self):
         bounded_model, X, y = _build_model_and_bounds()
-        T = 7.0
+        tau = 7.0
         per_sample = verify.bound_multi_label_accuracy_margin(
-            _raw_logits(bounded_model, X, X), y, T=T, lower=True, aggregation="none",
+            _raw_logits(bounded_model, X, X), y, tau=tau, lower=True, aggregation="none",
         )
         for target_accuracy in (1.0, 0.8, 0.6, 0.4, 0.2):
             accuracy = AccuracyRequirement(target_accuracy=target_accuracy)
             acc = _get_min_acc(
-                bounded_model, X, X, y, accuracy, group=None, temperature=T,
+                bounded_model, X, X, y, accuracy, group=None, tau=tau,
                 multi_label=True, soft=True,
             )
             expected = _order_statistic_select(per_sample, target_accuracy)
@@ -139,7 +139,7 @@ class GetMinAccTests(unittest.TestCase):
         )
         acc = _get_min_acc(
             bounded_model, X, X, y, AccuracyRequirement(target_accuracy=1.0),
-            group=None, temperature=10.0, multi_label=True, soft=False,
+            group=None, tau=10.0, multi_label=True, soft=False,
         )
         self.assertTrue(torch.allclose(acc, per_sample.min()))
 
@@ -152,7 +152,7 @@ class GetMinAccTests(unittest.TestCase):
         )
         accuracy = AccuracyRequirement(target_accuracy=0.6)
         acc = _get_min_acc(
-            bounded_model, X, X, targets, accuracy, group=None, temperature=10.0,
+            bounded_model, X, X, targets, accuracy, group=None, tau=10.0,
             multi_label=False, soft=False,
         )
         expected = _order_statistic_select(per_sample, 0.6)
@@ -166,14 +166,14 @@ class GetMinAccIntervalInputTests(unittest.TestCase):
         bounded_model, X, y = _build_model_and_bounds()
         accuracy = AccuracyRequirement(target_accuracy=0.0)
         point_acc = _get_min_acc(
-            bounded_model, X, X, y, accuracy, group=None, temperature=10.0,
+            bounded_model, X, X, y, accuracy, group=None, tau=10.0,
             multi_label=True, soft=False,
         )
 
         eps = 0.05
         X_l, X_u = X - eps, X + eps
         interval_acc = _get_min_acc(
-            bounded_model, X_l, X_u, y, accuracy, group=None, temperature=10.0,
+            bounded_model, X_l, X_u, y, accuracy, group=None, tau=10.0,
             multi_label=True, soft=False,
         )
 
@@ -184,11 +184,11 @@ class GetMinAccIntervalInputTests(unittest.TestCase):
         bounded_model, X, y = _build_model_and_bounds()
         accuracy = AccuracyRequirement(target_accuracy=0.0)
         point_acc = _get_min_acc(
-            bounded_model, X, X, y, accuracy, group=None, temperature=10.0,
+            bounded_model, X, X, y, accuracy, group=None, tau=10.0,
             multi_label=True, soft=False,
         )
         interval_acc = _get_min_acc(
-            bounded_model, X, X.clone(), y, accuracy, group=None, temperature=10.0,
+            bounded_model, X, X.clone(), y, accuracy, group=None, tau=10.0,
             multi_label=True, soft=False,
         )
         self.assertTrue(torch.allclose(point_acc, interval_acc, atol=1e-12))
@@ -243,10 +243,10 @@ class CalibrateTemperatureTests(unittest.TestCase):
         )
         self.assertEqual(set(temperatures), {None})
         candidates = []
-        T = 0.1
-        while T < 100.0:
-            candidates.append(T)
-            T *= 2.0
+        tau = 0.1
+        while tau < 100.0:
+            candidates.append(tau)
+            tau *= 2.0
         candidates.append(100.0)
         self.assertIn(temperatures[None], candidates)
 
@@ -254,9 +254,10 @@ class CalibrateTemperatureTests(unittest.TestCase):
         bounded_model, X, y = _build_model_and_bounds()
         # target_accuracy=1.0 -> k=1 -> every sample must pass. Sample index 1 in this
         # fixture has a failing hard condition (its worst-case valid logit never exceeds
-        # the worst-case invalid logit), so its margin is negative at every T - and gets
-        # *more* negative as T grows, since the softmax concentrates onto the larger
-        # (invalid) worst-case logit. No T can rescue it: this is independent of search range.
+        # the worst-case invalid logit), so its margin is negative at every tau - and gets
+        # *more* negative as tau grows, since the softmax flattens toward uniform regardless
+        # of which logit is actually larger. No tau can rescue it: this is independent of
+        # search range.
         accuracy = AccuracyRequirement(target_accuracy=1.0)
         with self.assertRaises(ValueError) as ctx:
             _calibrate_temperature(
@@ -273,9 +274,11 @@ class CalibrateTemperatureTests(unittest.TestCase):
         group_by = lambda y: y[:, 0].long()
         groups = sorted(group_by(y).unique().tolist())
         # group 0 (y[:, 0]==0, indices {1, 4}) contains a sample whose hard condition fails
-        # at every T - give it a loose target (only the better of its 2 samples need pass).
-        # group 1 (y[:, 0]==1, indices {0, 2, 3}) is all hard-certifiable - give it a tight target.
-        accuracy = AccuracyRequirement(target_accuracy={groups[0]: 0.3, groups[1]: 0.99})
+        # at every tau - give it a loose target (only the better of its 2 samples need pass).
+        # group 1 (y[:, 0]==1, indices {0, 2, 3}) is all hard-certifiable, but the random,
+        # untrained fixture's logit gaps are small, so a moderately tight (not 0.99) target
+        # keeps it within the [0.1, 100] search range.
+        accuracy = AccuracyRequirement(target_accuracy={groups[0]: 0.3, groups[1]: 0.6})
         temperatures = _calibrate_temperature(
             bounded_model, X, X, y, accuracy, groups, group_by,
             multi_label=True, context_mask=None,
@@ -344,6 +347,7 @@ class ComputeRashomonSetSmokeTests(unittest.TestCase):
         n = 8
         x = torch.randn(n, 3)
         y = torch.zeros(n, dtype=torch.long)
+        _train_to_fit(model, x, y)
         dataset = torch.utils.data.TensorDataset(x, y)
         accuracy = AccuracyRequirement(target_accuracy=0.5)
 
@@ -357,12 +361,61 @@ class ComputeRashomonSetSmokeTests(unittest.TestCase):
         )
         self.assertEqual(result.temperatures, {None: forced_temperature})
 
+    def test_infeasible_hard_accuracy_terminates_without_calibration(self):
+        torch.manual_seed(0)
+        model = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2))
+        n = 20
+        x = torch.randn(n, 3)
+        y = torch.randint(0, 2, (n,))  # untrained model, random labels: can't hit 100%
+        dataset = torch.utils.data.TensorDataset(x, y)
+        accuracy = AccuracyRequirement(target_accuracy=1.0)
+
+        result = compute_rashomon_set(
+            model, dataset, accuracy,
+            batch_size=n, certificate_samples=n, n_iters=5,
+        )
+        # the nominal model's literal hard accuracy is below target, so no temperature could
+        # satisfy the surrogate constraint either - the function should report the achieved
+        # accuracy and return the nominal model untouched, without calibrating or optimizing.
+        self.assertEqual(len(result.bounded_models), 1)
+        self.assertTrue(
+            all(
+                torch.equal(pl, pu)
+                for pl, pu in zip(result.bounded_models[0].param_l, result.bounded_models[0].param_u)
+            )
+        )
+        self.assertEqual(result.temperatures, {None: 0.0})
+        cert = result.certificates[0][0]
+        self.assertLess(cert.min_hard_acc, 1.0)
+        self.assertEqual(cert.min_soft_acc, 0.0)
+
+    def test_tau_min_and_tau_max_override_the_search_range(self):
+        torch.manual_seed(0)
+        model = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2))
+        n = 8
+        x = torch.randn(n, 3)
+        y = torch.zeros(n, dtype=torch.long)
+        _train_to_fit(model, x, y)
+        dataset = torch.utils.data.TensorDataset(x, y)
+        accuracy = AccuracyRequirement(target_accuracy=0.5)
+
+        # raising tau_min above the default 0.1 forces calibration to start its search (and,
+        # since this well-fit model already clears the margin at the new floor, to land on)
+        # a strictly sharper-than-default minimum.
+        result = compute_rashomon_set(
+            model, dataset, accuracy,
+            batch_size=n, certificate_samples=n, n_iters=1,
+            tau_min=1.0, tau_max=100.0,
+        )
+        self.assertEqual(result.temperatures, {None: 1.0})
+
     def test_mismatched_temperatures_override_raises(self):
         torch.manual_seed(0)
         model = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2))
         n = 8
         x = torch.randn(n, 3)
         y = torch.zeros(n, dtype=torch.long)
+        _train_to_fit(model, x, y)
         dataset = torch.utils.data.TensorDataset(x, y)
         accuracy = AccuracyRequirement(target_accuracy=0.5)
 
