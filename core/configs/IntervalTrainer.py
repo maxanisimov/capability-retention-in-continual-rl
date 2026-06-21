@@ -1,7 +1,7 @@
 MNIST = {
     "projection_strategy": "sample_largest_closest",
     "n_certificate_samples": 400,
-    "min_acc_limit": 1,
+    "accuracy": 1,
     "min_acc_increment": 0.12,
     "n_iters": 200,
     "primal_learning_rate": 0.33,

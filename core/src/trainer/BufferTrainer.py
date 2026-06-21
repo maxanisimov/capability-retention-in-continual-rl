@@ -1,4 +1,5 @@
 from src.trainer.IntervalTrainer import IntervalTrainer
+from src.rashomon_spec import AccuracyTarget
 from src.buffer import MultiTaskBuffer
 from src.data_utils import get_mnist_tasks
 from src import interval_utils
@@ -17,10 +18,11 @@ class BufferTrainer(IntervalTrainer):
         self,
         model: nn.Module,
         buffer: MultiTaskBuffer,
+        accuracy: AccuracyTarget = 0.9,
         seed: int = 42,
         **rashomon_kwargs: dict,
     ):
-        super().__init__(model=model, seed=seed, **rashomon_kwargs)
+        super().__init__(model=model, accuracy=accuracy, seed=seed, **rashomon_kwargs)
         self.buffer = buffer
 
         self.task_bounds = []

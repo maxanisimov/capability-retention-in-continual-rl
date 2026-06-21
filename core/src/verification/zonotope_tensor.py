@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import torch
 
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 
 # disable some pylint warnings so we can match pytorch's style
 # pylint: disable=missing-docstring, invalid-name

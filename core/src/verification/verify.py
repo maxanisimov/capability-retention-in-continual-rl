@@ -3,7 +3,7 @@
 import torch
 
 from src.verification.zonotope_tensor import ZonotopeTensor
-from src.verification.interval_tensor import IntervalTensor
+from src.IntervalTensor import IntervalTensor
 from src.utils.general import split_generators, InContextHead
 import sklearn
 
@@ -117,10 +117,13 @@ def bound_balanced_accuracy(
 
 
 def bound_soft_accuracy(
-    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True
+    logits: IntervalTensor, targets: torch.Tensor, *, tau: float = 0.1, lower: bool = True
 ) -> torch.Tensor:
     """
-    Compute a lower bound on the soft accuracy of a model given its output logit interval and the true targets.
+    Compute a lower bound on the soft accuracy of a model given its output logit interval and
+    the true targets. `tau` is a standard softmax temperature: `softmax(logits / tau)`. As
+    `tau -> 0`, the softmax sharpens toward argmax; as `tau -> infinity`, it flattens toward
+    uniform.
     """
     targets = targets.squeeze(dim=-1)
     targets_one_hot = torch.nn.functional.one_hot(
@@ -131,13 +134,13 @@ def bound_soft_accuracy(
         worst_case_logits = (
             targets_one_hot * logits_l + (1 - targets_one_hot) * logits_u
         )
-        worst_case_preds = torch.nn.functional.softmax(worst_case_logits * T, dim=1)
+        worst_case_preds = torch.nn.functional.softmax(worst_case_logits / tau, dim=1)
         correct_probs = worst_case_preds[
             torch.arange(worst_case_preds.size(0)), targets
         ]
     else:
         best_case_logits = targets_one_hot * logits_u + (1 - targets_one_hot) * logits_l
-        best_case_preds = torch.nn.functional.softmax(best_case_logits * T, dim=1)
+        best_case_preds = torch.nn.functional.softmax(best_case_logits / tau, dim=1)
         correct_probs = best_case_preds[torch.arange(best_case_preds.size(0)), targets]
     return correct_probs.mean()
 
@@ -199,12 +202,14 @@ def bound_multi_label_accuracy(
         return correct.float().min()
     elif aggregation == 'mean':
         return correct.float().mean()
+    elif aggregation == 'none':
+        return correct.float()
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
 
 def bound_multi_label_soft_accuracy(
-    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True, aggregation: str = 'min'
+    logits: IntervalTensor, targets: torch.Tensor, *, tau: float = 0.1, lower: bool = True, aggregation: str = 'min'
 ) -> torch.Tensor:
     """
     Compute a bound on the soft accuracy of a model for multi-label problems.
@@ -218,7 +223,8 @@ def bound_multi_label_soft_accuracy(
         logits: IntervalTensor containing logit bounds
         targets: Multi-hot tensor of shape (batch_size, n_classes) where 1 indicates
                 a valid action and 0 indicates an invalid action.
-        T: Temperature parameter for softmax (as T approaches infinity, soft accuracy approaches hard accuracy)
+        tau: Standard softmax temperature: `softmax(logits / tau)`. As `tau -> 0`, soft
+            accuracy approaches hard accuracy (sharpens toward argmax).
         lower: Whether to compute lower bound (True) or upper bound (False)
         aggregation: Method to aggregate per-sample correctness into a single bound.
     Returns:
@@ -233,11 +239,11 @@ def bound_multi_label_soft_accuracy(
         # Worst-case: minimise probability on valid actions
         # valid logits at lower bound, invalid logits at upper bound
         worst_case_logits = valid_mask_float * logits_l + (1 - valid_mask_float) * logits_u
-        probabilities = torch.nn.functional.softmax(worst_case_logits * T, dim=1)
+        probabilities = torch.nn.functional.softmax(worst_case_logits / tau, dim=1)
     else:
         # Best-case: maximise probability on valid actions
         best_case_logits = valid_mask_float * logits_u + (1 - valid_mask_float) * logits_l
-        probabilities = torch.nn.functional.softmax(best_case_logits * T, dim=1)
+        probabilities = torch.nn.functional.softmax(best_case_logits / tau, dim=1)
 
     # Sum probability mass on valid actions
     correct_probs = (probabilities * valid_mask_float).sum(dim=1)
@@ -246,11 +252,13 @@ def bound_multi_label_soft_accuracy(
         return correct_probs.min()
     elif aggregation == 'mean':
         return correct_probs.mean()
+    elif aggregation == 'none':
+        return correct_probs
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
 def bound_multi_label_accuracy_margin(
-    logits: IntervalTensor, targets: torch.Tensor, *, T=10, lower: bool = True, aggregation: str = 'min'
+    logits: IntervalTensor, targets: torch.Tensor, *, tau: float = 0.1, lower: bool = True, aggregation: str = 'min'
 ) -> torch.Tensor:
     """
     Compute a soft margin for certifying multi-label accuracy.
@@ -270,8 +278,9 @@ def bound_multi_label_accuracy_margin(
         logits: IntervalTensor containing logit bounds
         targets: Multi-hot tensor of shape (batch_size, n_classes) where 1 indicates
                 a valid action and 0 indicates an invalid action.
-        T: Temperature parameter for softmax. As T approaches infinity, the
-            softmax margin approaches an argmax-style margin.
+        tau: Standard softmax temperature: `softmax(logits / tau)`. As `tau -> 0`, the
+            softmax margin sharpens toward an argmax-style margin; as `tau -> infinity`,
+            it flattens toward uniform.
         lower: Whether to compute the worst-case lower-bound margin (True) or
             best-case upper-bound margin (False).
         aggregation: Method to aggregate per-sample margins ('mean' or 'min').
@@ -288,11 +297,11 @@ def bound_multi_label_accuracy_margin(
         # Worst-case: minimise probability on valid actions
         # valid logits at lower bound, invalid logits at upper bound
         worst_case_logits = valid_mask_float * logits_l + (1 - valid_mask_float) * logits_u
-        probabilities = torch.nn.functional.softmax(worst_case_logits * T, dim=1)
+        probabilities = torch.nn.functional.softmax(worst_case_logits / tau, dim=1)
     else:
         # Best-case: maximise probability on valid actions
         best_case_logits = valid_mask_float * logits_u + (1 - valid_mask_float) * logits_l
-        probabilities = torch.nn.functional.softmax(best_case_logits * T, dim=1)
+        probabilities = torch.nn.functional.softmax(best_case_logits / tau, dim=1)
 
     # Sum probability mass on valid actions
     correct_probs = (probabilities * valid_mask_float).sum(dim=1)
@@ -306,5 +315,7 @@ def bound_multi_label_accuracy_margin(
         return margins.min()
     elif aggregation == 'mean':
         return margins.mean()
+    elif aggregation == 'none':
+        return margins
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation}")

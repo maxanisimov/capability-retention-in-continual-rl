@@ -208,14 +208,17 @@ if __name__ == '__main__':
     print("Expected observation shape:", task1_env.observation_space.shape)
 
     # Use IntervalTrainer to compute the Rashomon set around the pretrained policy
+    # NOTE: `actions` here is a tensor of action indices (with -1 padding), not an
+    # actual (N, n_classes) multi-hot admissible-set mask - compute_rashomon_set now
+    # requires the latter, so this dataset needs to be rebuilt as a proper mask before
+    # this call will be semantically correct (pre-existing issue, not introduced here).
     interval_trainer = IntervalTrainer( # TODO: set accuracy
         model=policy, # SQRL policy network (CategoricalPolicy)
-        # min_acc_limit=interval_trainer_min_accuracy,
+        accuracy=0.9,
         seed=seed,
     )
     interval_trainer.compute_rashomon_set(
         dataset=state_action_torch_dataset, # states and safe actions
-        multi_label=True # NOTE
     )
 
     # Store parameter bounds and certificates

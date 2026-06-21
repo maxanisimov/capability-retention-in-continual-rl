@@ -41,15 +41,6 @@ from experiments.utils.ppo_utils import PPOConfig, evaluate_with_success, ppo_tr
 from src.trainer.IntervalTrainer import IntervalTrainer
 
 
-def _certificate_to_float(certificate: object) -> float:
-    if certificate is None:
-        return float("-inf")
-    if isinstance(certificate, list):
-        vals = [float(v) for v in certificate if v is not None]
-        return min(vals) if vals else float("-inf")
-    return float(certificate)  # type: ignore[arg-type]
-
-
 def _load_source_hidden_size(source_run_dir: Path, arg_hidden_size: int | None) -> int:
     if arg_hidden_size is not None:
         return int(arg_hidden_size)
@@ -189,22 +180,25 @@ def compute_rashomon_bounds(
                 f"Best min valid-action mass={min_action_mass:.6f} < threshold={surrogate_threshold:.6f}",
             )
 
+    # `aggregation` is no longer used: target_accuracy's order-statistic aggregation
+    # (see src.rashomon_spec) replaces the old separate soft/hard/aggregation scheme.
     interval_trainer = IntervalTrainer(
         model=actor,
-        min_acc_limit=surrogate_threshold,
+        accuracy=min_hard_spec,
         seed=seed,
         n_iters=rashomon_n_iters,  # type: ignore[arg-type]
         min_acc_increment=0,
-        T=selected_inverse_temp,
         checkpoint=checkpoint,  # type: ignore[arg-type]
     )
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
-        multi_label=True,
-        aggregation=aggregation,  # type: ignore[arg-type]
+        temperatures={None: 1.0 / selected_inverse_temp},
     )
 
-    cert_values = [_certificate_to_float(cert) for cert in interval_trainer.certificates]
+    cert_values = [
+        min((c.min_hard_acc for c in certs), default=float("-inf"))
+        for certs in interval_trainer.certificates
+    ]
     valid_indices = [i for i, cert in enumerate(cert_values) if cert >= min_hard_spec]
     if not valid_indices:
         best_cert = max(cert_values) if cert_values else float("-inf")

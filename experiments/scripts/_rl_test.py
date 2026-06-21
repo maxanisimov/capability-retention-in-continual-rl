@@ -452,7 +452,8 @@ def main():
     state_indices = torch.tensor([s for s, _ in state_action_dataset], dtype=torch.long)
     nS = env.observation_space.n
     states = torch.nn.functional.one_hot(state_indices, num_classes=nS).float()
-    actions = torch.tensor([a for _, a in state_action_dataset], dtype=torch.long)
+    action_indices = torch.tensor([a for _, a in state_action_dataset], dtype=torch.long)
+    actions = torch.nn.functional.one_hot(action_indices, num_classes=env.nA).float()
 
     state_action_torch_dataset = TensorDataset(states, actions)
     state_action_loader = DataLoader(state_action_torch_dataset, batch_size=8, shuffle=True)
@@ -462,6 +463,7 @@ def main():
 
     interval_trainer = IntervalTrainer(
         model=policy_network.net, # policy network's Sequential part
+        accuracy=0.9,
         seed=2025,
     )
 
