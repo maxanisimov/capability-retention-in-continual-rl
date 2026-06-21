@@ -81,79 +81,93 @@ def _unpack_batch(
     return x, x, y
 
 
+def _to_multi_hot(y: torch.Tensor, n_classes: int, multi_label: bool) -> torch.Tensor:
+    """
+    Normalize `y` into a (N, n_classes) multi-hot admissible-set tensor. Multi-label
+    targets are already multi-hot and pass through unchanged; single-label class-index
+    targets are the M=1 special case of an admissible set, so they're one-hot encoded.
+    """
+    if multi_label:
+        return y.float()
+    return torch.nn.functional.one_hot(y.squeeze(-1) if y.ndim > 1 else y, num_classes=n_classes).float()
+
+
+def _order_statistic_k(target_accuracy: float, n: int) -> int:
+    """
+    1-indexed rank (for `torch.kthvalue`, which returns the k-th *smallest* value) such
+    that requiring the k-th smallest of n per-sample values to be positive is exactly
+    "at least `target_accuracy` fraction of the n samples are positive". `target_accuracy=1.0`
+    gives k=1 (the literal minimum - every sample must pass); smaller targets tolerate a
+    proportionally larger number of failing samples.
+    """
+    # the tiny epsilon guards against float imprecision (e.g. 1.0 - 0.9 != 0.1 exactly)
+    # spuriously truncating down to the next-lower integer.
+    k = int((1.0 - target_accuracy) * n + 1e-9) + 1
+    return max(1, min(n, k))
+
+
+def _order_statistic_select(values: torch.Tensor, target_accuracy: float) -> torch.Tensor:
+    """Select the order statistic of `values` implied by `target_accuracy` (see
+    `_order_statistic_k`). Differentiable: `torch.kthvalue`'s gradient is a one-hot
+    vector onto the selected element, exactly like `torch.min`'s (the k=1 special case)."""
+    k = _order_statistic_k(target_accuracy, values.numel())
+    return torch.kthvalue(values, k).values
+
+
 def _get_min_acc(
     bounded_model: IntervalBoundedModel,
     X_l: torch.Tensor,
     X_u: torch.Tensor,
     y: torch.Tensor,
     accuracy: AccuracyRequirement,
+    group: int | None,
+    temperature: float,
     soft: bool = False,
     lower: bool = True,
     context_mask: torch.Tensor | None = None,
     multi_label: bool = False,
 ) -> torch.Tensor:
     """
-    Compute the minimum accuracy of the model on the given data using IBP.
+    Compute the order-statistic-aggregated accuracy of the model on the given data using
+    IBP. The per-sample surrogate is a softmax margin (soft=True) or a literal
+    admissible-set certification (soft=False); both are aggregated across samples via
+    the exact order statistic that `accuracy.resolve(group)`'s target accuracy implies
+    (see `_order_statistic_select`) - there is no separate mean/min choice.
 
     Args:
         bounded_model: The interval-bounded model
         X_l: Lower bound of the input region (equal to X_u for point inputs)
         X_u: Upper bound of the input region (equal to X_l for point inputs)
-        y: Target labels. For multi-label case, should be a multi-hot tensor of shape
-           (N, n_classes) with 1 for valid actions and 0 otherwise
-        accuracy: Specifies the soft surrogate metric, its temperature, and the
-            within-group sample aggregation to use
-        soft: Whether to use soft accuracy
+        y: Target labels. Multi-hot of shape (N, n_classes) if multi_label, else a
+            class-index tensor of shape (N,) - both are normalized into an admissible-set
+            representation internally (see `_to_multi_hot`).
+        accuracy: Specifies the target accuracy (per group) used to pick the order-statistic rank
+        group: Which group's target accuracy to resolve via `accuracy.resolve(group)`
+        temperature: Softmax temperature for the soft margin (ignored if soft=False)
+        soft: Whether to use the differentiable soft margin (True) or the strict hard
+            certification (False)
         lower: Whether to compute lower bound (True) or upper bound (False)
         context_mask: Optional context mask
-        multi_label: If True, treats y as containing multiple valid labels per sample
+        multi_label: If True, treats y as already multi-hot (multiple valid labels per sample)
 
     Returns:
-        Accuracy bound tensor
+        Order-statistic-aggregated accuracy bound tensor
     """
     logits = IntervalTensor(*bounded_model.bound_forward(X_l, X_u))
     if context_mask is not None:
         logits = logits * context_mask
 
-    if multi_label:
-        if soft:
-            if accuracy.soft_metric == "soft_accuracy":
-                acc = verify.bound_multi_label_soft_accuracy(
-                    logits, y, T=accuracy.soft_temperature, lower=lower,
-                    aggregation=accuracy.aggregation,
-                )
-            elif accuracy.soft_metric == "accuracy_margin":
-                acc = verify.bound_multi_label_accuracy_margin(
-                    logits, y, T=accuracy.soft_temperature, lower=lower,
-                    aggregation=accuracy.aggregation,
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported multi-label soft metric: {accuracy.soft_metric}"
-                )
-        else:
-            # route the hard multi-label "argmax in admissible set" check through the
-            # shared verify_point primitive, so this and ad-hoc pointwise verification
-            # share one code path.
-            from src.verification.api import AdmissibleSet, verify_point
+    mask = _to_multi_hot(y, n_classes=logits.lb.shape[-1], multi_label=multi_label)
 
-            result = verify_point(
-                bounded_model, AdmissibleSet(n_classes=y.shape[-1], multi_hot=y),
-                x_l=X_l, x_u=X_u, lower=lower, context_mask=context_mask,
-            )
-            per_sample = result.certified.float()
-            if accuracy.aggregation == "min":
-                acc = per_sample.min()
-            elif accuracy.aggregation == "mean":
-                acc = per_sample.mean()
-            else:
-                raise ValueError(f"Unsupported aggregation method: {accuracy.aggregation}")
+    if soft:
+        per_sample = verify.bound_multi_label_accuracy_margin(
+            logits, mask, T=temperature, lower=lower, aggregation="none",
+        )
     else:
-        if soft:
-            acc = verify.bound_soft_accuracy(logits, y, T=accuracy.soft_temperature, lower=lower)
-        else:
-            acc = verify.bound_accuracy(logits, y, lower=lower)
-    return acc
+        per_sample = verify.bound_multi_label_accuracy(
+            logits, mask, lower=lower, aggregation="none",
+        )
+    return _order_statistic_select(per_sample, accuracy.resolve(group))
 
 
 def _certify_groups(
@@ -166,6 +180,7 @@ def _certify_groups(
     group_by: Callable[[torch.Tensor], torch.Tensor] | None,
     multi_label: bool,
     context_mask: torch.Tensor | None,
+    temperatures: dict[int | None, float],
 ) -> list[RashomonCertificate]:
     """Certify a bounded model against a certificate batch, once per group."""
     group_ids = group_by(y) if group_by is not None else None
@@ -179,15 +194,81 @@ def _certify_groups(
         if not mask.any():
             continue
         hard_acc = _get_min_acc(
-            bounded_model, X_l[mask], X_u[mask], y[mask], accuracy,
+            bounded_model, X_l[mask], X_u[mask], y[mask], accuracy, group, temperatures[group],
             soft=False, context_mask=context_mask, multi_label=multi_label,
         ).item()
         soft_acc = _get_min_acc(
-            bounded_model, X_l[mask], X_u[mask], y[mask], accuracy,
+            bounded_model, X_l[mask], X_u[mask], y[mask], accuracy, group, temperatures[group],
             soft=True, context_mask=context_mask, multi_label=multi_label,
         ).item()
         certs.append(RashomonCertificate(group=group, min_soft_acc=soft_acc, min_hard_acc=hard_acc))
     return certs
+
+
+def _calibrate_temperature(
+    bounded_model: IntervalBoundedModel,
+    X_l: torch.Tensor,
+    X_u: torch.Tensor,
+    y: torch.Tensor,
+    accuracy: AccuracyRequirement,
+    groups: list[int | None],
+    group_by: Callable[[torch.Tensor], torch.Tensor] | None,
+    multi_label: bool,
+    context_mask: torch.Tensor | None,
+    start: float = 0.1,
+    cap: float = 100.0,
+) -> dict[int | None, float]:
+    """
+    Calibrate a softmax temperature per group: the smallest temperature (searched via
+    geometric doubling from `start`, always also trying `cap` explicitly) at which the
+    order-statistic-aggregated soft margin on `bounded_model` (the nominal, pre-optimization
+    model) is positive, i.e. at which the model is detected as already satisfying its own
+    target accuracy. Margin soundness holds for any T>0 - temperature only affects how many
+    false negatives the surrogate produces, not its correctness - so this calibration is a
+    one-time, per-group search, not something that needs revisiting during optimization.
+    """
+    group_ids = group_by(y) if group_by is not None else None
+    candidates = []
+    T = start
+    while T < cap:
+        candidates.append(T)
+        T *= 2.0
+    candidates.append(cap)
+
+    temperatures: dict[int | None, float] = {}
+    for group in groups:
+        mask = (
+            torch.ones(y.shape[0], dtype=torch.bool, device=y.device)
+            if group is None
+            else group_ids == group
+        )
+        logits = IntervalTensor(*bounded_model.bound_forward(X_l[mask], X_u[mask]))
+        if context_mask is not None:
+            logits = logits * context_mask
+        multi_hot = _to_multi_hot(y[mask], n_classes=logits.lb.shape[-1], multi_label=multi_label)
+
+        target_accuracy = accuracy.resolve(group)
+        best_margin = None
+        chosen = None
+        for candidate in candidates:
+            margin = _order_statistic_select(
+                verify.bound_multi_label_accuracy_margin(
+                    logits, multi_hot, T=candidate, lower=True, aggregation="none",
+                ),
+                target_accuracy,
+            ).item()
+            if best_margin is None or margin > best_margin:
+                best_margin = margin
+            if margin > 0.0:
+                chosen = candidate
+                break
+        if chosen is None:
+            raise ValueError(
+                f"Could not calibrate a softmax temperature in [{start}, {cap}] for "
+                f"group={group} (target_accuracy={target_accuracy}); best margin found: {best_margin:.4f}."
+            )
+        temperatures[group] = chosen
+    return temperatures
 
 
 @torch.no_grad()
@@ -239,6 +320,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
         multi_label: bool = False,
         has_input_intervals: bool = False,
+        temperatures: dict[int | None, float] | None = None,
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -248,6 +330,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.obj_alpha = obj_alpha
         self.group_by = group_by
         self.has_input_intervals = has_input_intervals
+        self.temperatures = temperatures
 
         full_batch = next(iter(torch.utils.data.DataLoader(
             dataloader.dataset, batch_size=len(dataloader.dataset), shuffle=False,
@@ -320,12 +403,15 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
 
             if self.domain_map_fn is not None:
                 targets = self.domain_map_fn(targets)
+            temperature = self.temperatures[group]
             soft_min_acc = _get_min_acc(
                 self.bounded_model,
                 inputs_l,
                 inputs_u,
                 targets,
                 self.accuracy,
+                group,
+                temperature,
                 soft=True,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
@@ -336,15 +422,19 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 inputs_u,
                 targets,
                 self.accuracy,
+                group,
+                temperature,
                 soft=False,
                 context_mask=self.context_mask,
                 multi_label=self.multi_label,
             )
 
-            soft_limit, hard_limit = self.accuracy.resolve(group)
-            defect = soft_limit - soft_min_acc
+            # the target accuracy was already consumed picking the order-statistic rank
+            # inside _get_min_acc, so the constraint threshold here is always fixed at 0.
+            target_accuracy = self.accuracy.resolve(group)
+            defect = -soft_min_acc
             setattr(self, f"defect{i}", defect)
-            defect_strict = hard_limit - min_acc
+            defect_strict = -min_acc
             setattr(self, f"defect_strict{i}", defect_strict)
             constraint_state = cooper.ConstraintState(
                 violation=getattr(self, f"defect{i}"),
@@ -357,8 +447,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 "strict_defect": getattr(self, f"defect_strict{i}").item(),
                 "min_acc": min_acc.item(),
                 "min_soft_acc": soft_min_acc.item(),
-                "target_min_acc": hard_limit,
-                "target_min_soft_acc": soft_limit,
+                "target_accuracy": target_accuracy,
+                "temperature": temperature,
                 "penalty": getattr(self, f"constraint{i}").penalty_coefficient().item(),
             }
             observed_constraints = observed_constraints | {
@@ -462,6 +552,7 @@ def compute_rashomon_set(
     has_input_intervals: bool = False,
     certification_method: str = "IBP",
     certification_method_kwargs: dict | None = None,
+    temperatures: dict[int | None, float] | None = None,
 ) -> RashomonResult:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -470,9 +561,10 @@ def compute_rashomon_set(
         model (torch.nn.Sequential): The model to optimize.
         dataset (torch.utils.data.Dataset): The dataset for certification. Yields (x, y) batches
             by default, or (x_l, x_u, y) batches if has_input_intervals=True.
-        accuracy (AccuracyRequirement): Specifies the soft/hard accuracy limits (optionally
-            per-group), the soft surrogate metric and temperature, and the within-group sample
-            aggregation.
+        accuracy (AccuracyRequirement): Specifies the minimum target accuracy (optionally
+            per-group). The differentiable soft margin surrogate, its dataset-level
+            order-statistic aggregation, and the softmax temperature it depends on (see
+            `temperatures`) are all derived automatically from this single number.
         n_iters (int): Number of iterations for optimization.
         primal_learning_rate (float): Learning rate for primal variables. A higher value prioritizes expanding the bbox,
             potentially at the expense of violating the accuracy constraint.
@@ -494,7 +586,7 @@ def compute_rashomon_set(
             If None, all parameters are used.
         group_by (Callable, optional): Function applied to each minibatch's `y` (or per-row multi-hot
             admissible-set tensor) producing an integer group-id tensor. Each unique group gets its own
-            Lagrangian constraint with its own (soft_min, hard_min) limits, resolved via
+            Lagrangian constraint with its own target accuracy and calibrated temperature, resolved via
             `accuracy.resolve(group)`. If None, all samples form a single global group (group id None).
         has_input_intervals (bool): If True, `dataset` yields (x_l, x_u, y) batches (input-region
             certification) instead of (x, y) point batches.
@@ -503,10 +595,19 @@ def compute_rashomon_set(
             affects the checkpoint/final certificates, which are computed by rebuilding a BoundedModel of
             this method from each checkpoint's (param_l, param_u).
         certification_method_kwargs (dict, optional): Extra kwargs forwarded to the certification backend.
+        temperatures (dict, optional): Per-group softmax temperature, keyed by the same group
+            ids as `groups` (`{None: T}` if `group_by` is None). If given, calibration is
+            skipped and these are used directly - needed when a caller must freeze one
+            calibrated temperature across multiple `compute_rashomon_set` calls (e.g. when
+            sampling several reference models that must all be judged by the same surrogate).
+            If None (the default), a temperature is calibrated automatically per group via
+            `_calibrate_temperature`, evaluated once against the nominal (pre-optimization)
+            model before the optimization loop starts.
 
     Returns:
-        RashomonResult: The optimized bounded models (one per checkpoint, IBP-parameterized) and their
-            certificates (one list of per-group RashomonCertificate per checkpoint).
+        RashomonResult: The optimized bounded models (one per checkpoint, IBP-parameterized),
+            their certificates (one list of per-group RashomonCertificate per checkpoint), and
+            the per-group softmax temperature used (calibrated, or as given via `temperatures`).
     """
     device = next(model.parameters()).device
     objective_fn = custom_objective if custom_objective is not None else _objective_fn
@@ -577,11 +678,11 @@ def compute_rashomon_set(
     groups: list[int | None] = (
         sorted(group_by(y_cert).unique().tolist()) if group_by is not None else [None]
     )
-    resolved_limits = {g: accuracy.resolve(g) for g in groups}
+    target_accuracies = {g: accuracy.resolve(g) for g in groups}
 
-    if all(s <= 0.0 and h <= 0.0 for s, h in resolved_limits.values()):
+    if all(p <= 0.0 for p in target_accuracies.values()):
         print(
-            "Warning: both soft_min and hard_min <= 0.0 for every group; returning without computing Rashomon set."
+            "Warning: target accuracy <= 0.0 for every group; returning without computing Rashomon set."
         )
         if outer_bbox is not None:
             bounded_model = copy.deepcopy(outer_bbox)
@@ -592,17 +693,32 @@ def compute_rashomon_set(
                 pl.data = p - MAX_PARAMETER_WIDTH
                 pu.data = p + MAX_PARAMETER_WIDTH
         zero_certs = [RashomonCertificate(group=g, min_soft_acc=0.0, min_hard_acc=0.0) for g in groups]
-        return RashomonResult(bounded_models=[bounded_model], certificates=[zero_certs])
+        return RashomonResult(
+            bounded_models=[bounded_model], certificates=[zero_certs],
+            temperatures=temperatures or {g: 0.0 for g in groups},
+        )
+
+    # Calibrate (or validate caller-supplied) per-group softmax temperatures against the
+    # nominal, not-yet-optimized model, before the optimization loop perturbs it.
+    if temperatures is None:
+        temperatures = _calibrate_temperature(
+            bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+            multi_label, context_mask,
+        )
+    elif set(temperatures) != set(groups):
+        raise ValueError(
+            f"`temperatures` must cover exactly `groups`={groups}, got keys={list(temperatures)}."
+        )
+    print(f"Calibrated temperatures: {temperatures}")
 
     # Check initial constraint satisfaction feasibility
     with torch.no_grad():
         initial_certs = _certify_groups(
             bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-            multi_label, context_mask,
+            multi_label, context_mask, temperatures,
         )
     for cert in initial_certs:
-        soft_limit, _ = resolved_limits[cert.group]
-        defect = soft_limit - cert.min_soft_acc
+        defect = -cert.min_soft_acc
         if defect != defect:  # NaN check
             raise ValueError("Initial bmodel results in NaN defect for the constraint.")
         print(
@@ -615,18 +731,19 @@ def compute_rashomon_set(
         )
         outer_certs = _certify_groups(
             outer_bbox, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-            multi_label, context_mask,
+            multi_label, context_mask, temperatures,
         )
         if all(
-            cert.min_soft_acc > resolved_limits[cert.group][0]
-            and cert.min_hard_acc > resolved_limits[cert.group][1]
+            cert.min_soft_acc > 0.0 and cert.min_hard_acc > 0.0
             for cert in outer_certs
         ):
             print(
                 "Warning: outer bounding box already satisfies both thresholds for every group. "
                 "No need to compute Rashomon set."
             )
-            return RashomonResult(bounded_models=[outer_bbox], certificates=[outer_certs])
+            return RashomonResult(
+                bounded_models=[outer_bbox], certificates=[outer_certs], temperatures=temperatures,
+            )
 
     # Instantiate the Constrained Minimization Problem (CMP)
     cmp = BboxOptimizationCMP(
@@ -641,6 +758,7 @@ def compute_rashomon_set(
         group_by=group_by,
         multi_label=multi_label,
         has_input_intervals=has_input_intervals,
+        temperatures=temperatures,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -666,11 +784,11 @@ def compute_rashomon_set(
     )
 
     # --- Optimization Loop ---
-    print(f"Computing Rashomon set with limits: {resolved_limits}")
+    print(f"Computing Rashomon set with target accuracies: {target_accuracies}")
     obj = objective_fn(bounded_model, obj_alpha)
     initial_certs = _certify_groups(
         bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-        multi_label, context_mask,
+        multi_label, context_mask, temperatures,
     )
     print(
         "Initial bbox: ",
@@ -717,7 +835,7 @@ def compute_rashomon_set(
     obj = objective_fn(bounded_model, obj_alpha)
     final_certs = _certify_groups(
         bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-        multi_label, context_mask,
+        multi_label, context_mask, temperatures,
     )
     print(
         "Final bbox: ",
@@ -747,7 +865,7 @@ def compute_rashomon_set(
         checkpoint_certs.append(
             _certify_groups(
                 cert_model, X_l_cert, X_u_cert, og_y_cert, accuracy, groups, group_by,
-                multi_label, context_mask,
+                multi_label, context_mask, temperatures,
             )
         )
 
@@ -760,7 +878,9 @@ def compute_rashomon_set(
         print(f"Checkpoint certificates: {checkpoint_certs}")
 
     print(f"{' Finished Computing Rashomon set ':-^80}")
-    return RashomonResult(bounded_models=checkpoint_models, certificates=checkpoint_certs)
+    return RashomonResult(
+        bounded_models=checkpoint_models, certificates=checkpoint_certs, temperatures=temperatures,
+    )
 
 
 def create_violation_mask(model: nn.Module, bounded_model: BoundedModel):

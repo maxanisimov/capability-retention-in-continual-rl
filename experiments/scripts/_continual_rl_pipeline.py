@@ -211,7 +211,7 @@ if __name__ == '__main__':
     # Use IntervalTrainer to compute the Rashomon set around the pretrained policy
     interval_trainer = IntervalTrainer( # TODO: set accuracy
         model=policy, # SQRL policy network (CategoricalPolicy)
-        accuracy=AccuracyRequirement(soft_min=0.9), # was the implicit default before AccuracyRequirement
+        accuracy=AccuracyRequirement(target_accuracy=0.9), # was the implicit default before AccuracyRequirement
         seed=seed,
     )
     interval_trainer.compute_rashomon_set(

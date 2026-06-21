@@ -1,16 +1,15 @@
 """Specification types for Rashomon-set computation: accuracy requirements and results.
 
-Replaces the scattered min_acc_limit/min_soft_acc_limit/min_hard_acc_limit/
-soft_acc_temperature/aggregation/multi_label_soft_metric parameters (and the
-task_labels-positional-list-based per-task limits) with a single explicit
-AccuracyRequirement, and the ad hoc tuple-of-lists return shape of
-compute_rashomon_set with a uniformly-typed RashomonResult.
+Replaces the scattered soft_min/hard_min/soft_metric/soft_temperature/aggregation
+parameters with a single `target_accuracy`: the differentiable surrogate (a softmax
+margin), its dataset-level aggregation (an exact order statistic), and the softmax
+temperature it depends on are all constructed and calibrated automatically from this
+one number. See `interval_utils._calibrate_temperature`/`_order_statistic_select`.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Literal
 
 from abstract_gradient_training.bounded_models import IntervalBoundedModel
 
@@ -18,41 +17,27 @@ from abstract_gradient_training.bounded_models import IntervalBoundedModel
 @dataclasses.dataclass
 class AccuracyRequirement:
     """
-    Specifies the certified-accuracy constraint(s) for a Rashomon-set search.
+    Specifies the minimum certified accuracy for a Rashomon-set search.
 
-    `soft_min`/`hard_min` may be a single float shared across every group, or a dict
-    keyed by group id (the values produced by `compute_rashomon_set`'s `group_by`
-    function) for per-group limits.
-
-    Attributes:
-        soft_min: Minimum soft (differentiable) accuracy used as the Lagrangian
-            constraint during optimization.
-        hard_min: Minimum hard (strict, certified) accuracy used as the strict
-            constraint. Defaults to `soft_min` if None.
-        soft_metric: Differentiable surrogate used for the soft constraint - either
-            softmax probability mass on admissible/correct classes ("soft_accuracy")
-            or a margin relative to the soundness threshold ("accuracy_margin").
-        soft_temperature: Softmax temperature used by `soft_metric`.
-        aggregation: How per-sample correctness is reduced to a single number within
-            a group ("mean" or "min" - "min" is the worst-case sample in the group).
+    `target_accuracy` may be a single float shared across every group, or a dict keyed
+    by group id (the values produced by `compute_rashomon_set`'s `group_by` function)
+    for per-group targets. Both the differentiable soft surrogate (a margin) and the
+    strict hard certificate are aggregated across the dataset (or group) via the exact
+    order statistic this target implies - `target_accuracy=1.0` requires every sample
+    to clear the constraint (today's old strict "min" behavior); lower values tolerate
+    a proportionally larger fraction of failing samples.
     """
 
-    soft_min: float | dict[int, float]
-    hard_min: float | dict[int, float] | None = None
-    soft_metric: Literal["soft_accuracy", "accuracy_margin"] = "soft_accuracy"
-    soft_temperature: float = 10.0
-    aggregation: Literal["mean", "min"] = "mean"
+    target_accuracy: float | dict[int, float]
 
-    def resolve(self, group: int) -> tuple[float, float]:
-        """
-        Look up the (soft_min, hard_min) limits for a given group id, falling back to
-        a shared float if `soft_min`/`hard_min` aren't dicts, and falling back to
-        `soft_min` if `hard_min` is None.
-        """
-        soft = self.soft_min[group] if isinstance(self.soft_min, dict) else self.soft_min
-        hard_source = self.hard_min if self.hard_min is not None else self.soft_min
-        hard = hard_source[group] if isinstance(hard_source, dict) else hard_source
-        return soft, hard
+    def resolve(self, group: int) -> float:
+        """Look up the target accuracy for a given group id, falling back to a shared
+        float if `target_accuracy` isn't a dict."""
+        return (
+            self.target_accuracy[group]
+            if isinstance(self.target_accuracy, dict)
+            else self.target_accuracy
+        )
 
 
 @dataclasses.dataclass
@@ -70,3 +55,4 @@ class RashomonResult:
 
     bounded_models: list[IntervalBoundedModel]  # optimization-time boxes, one per checkpoint
     certificates: list[list[RashomonCertificate]]  # per checkpoint, per group
+    temperatures: dict[int | None, float]  # per-group calibrated (or caller-supplied) softmax temperature

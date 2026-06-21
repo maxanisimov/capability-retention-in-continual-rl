@@ -18,7 +18,7 @@ class BufferTrainer(IntervalTrainer):
         self,
         model: nn.Module,
         buffer: MultiTaskBuffer,
-        accuracy: AccuracyRequirement = AccuracyRequirement(soft_min=0.9),
+        accuracy: AccuracyRequirement = AccuracyRequirement(target_accuracy=0.9),
         seed: int = 42,
         **rashomon_kwargs: dict,
     ):

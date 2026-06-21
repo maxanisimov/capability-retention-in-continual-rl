@@ -40,6 +40,7 @@ class IntervalTrainer(BaseTrainer):
         self.rashomon_kwargs = rashomon_kwargs
         self.final_certificates = []
         self.certificates = []
+        self.temperatures = {}
 
     def get_current_bbox(self) -> BoundedModel | None:
         """Get the current bounding box."""
@@ -166,6 +167,7 @@ class IntervalTrainer(BaseTrainer):
         group_by: Callable | None = None,
         certification_method: str = "IBP",
         certification_method_kwargs: dict | None = None,
+        temperatures: dict[int | None, float] | None = None,
         **kwargs: dict,
     ) -> None:
         """
@@ -196,20 +198,9 @@ class IntervalTrainer(BaseTrainer):
             context_mask = None
 
         resolved_accuracy = AccuracyRequirement(
-            soft_min=self._resolve_min_acc_limit(
-                base_limit=self.accuracy.soft_min, task_acc=float(task_acc),
+            target_accuracy=self._resolve_min_acc_limit(
+                base_limit=self.accuracy.target_accuracy, task_acc=float(task_acc),
             ),
-            hard_min=self._resolve_min_acc_limit(
-                base_limit=(
-                    self.accuracy.hard_min
-                    if self.accuracy.hard_min is not None
-                    else self.accuracy.soft_min
-                ),
-                task_acc=float(task_acc),
-            ),
-            soft_metric=self.accuracy.soft_metric,
-            soft_temperature=self.accuracy.soft_temperature,
-            aggregation=self.accuracy.aggregation,
         )
 
         result = interval_utils.compute_rashomon_set(
@@ -229,10 +220,12 @@ class IntervalTrainer(BaseTrainer):
             group_by=group_by,
             certification_method=certification_method,
             certification_method_kwargs=certification_method_kwargs,
+            temperatures=temperatures,
             **{**self.rashomon_kwargs, **kwargs},
         )
         self.bounds = result.bounded_models
         self.certificates = result.certificates
+        self.temperatures = result.temperatures
         # we are now in any of the rashomon sets, but we'll use the last which should be the biggest
         # (but maybe not the best)
         self._last_projection = len(result.bounded_models) - 1

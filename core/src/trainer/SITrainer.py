@@ -14,7 +14,7 @@ class SITrainer(IntervalTrainer):
     def __init__(
         self,
         model: nn.Module,
-        accuracy: AccuracyRequirement = AccuracyRequirement(soft_min=0.9),
+        accuracy: AccuracyRequirement = AccuracyRequirement(target_accuracy=0.9),
         projection_strategy: str = "closest",
         n_certificate_samples=256,
         min_acc_increment=0.05,

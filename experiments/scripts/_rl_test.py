@@ -463,7 +463,7 @@ def main():
 
     interval_trainer = IntervalTrainer(
         model=policy_network.net, # policy network's Sequential part
-        accuracy=AccuracyRequirement(soft_min=0.9),
+        accuracy=AccuracyRequirement(target_accuracy=0.9),
         seed=2025,
     )
 
