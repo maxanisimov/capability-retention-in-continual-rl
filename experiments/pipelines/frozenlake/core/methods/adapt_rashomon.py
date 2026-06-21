@@ -25,7 +25,6 @@ from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
 )
 from experiments.utils.gymnasium_utils import plot_episode
 from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
-from src.rashomon_spec import AccuracyRequirement
 from src.trainer.IntervalTrainer import IntervalTrainer
 
 
@@ -171,24 +170,20 @@ def compute_rashomon_bounds(
                 f"Best min valid-action mass={min_action_mass:.6f} < threshold={surrogate_threshold:.6f}",
             )
 
+    # `aggregation` is no longer used: target_accuracy's order-statistic aggregation
+    # (see src.rashomon_spec) replaces the old separate soft/hard/aggregation scheme.
     cert_min_threshold = 1.0
     interval_trainer = IntervalTrainer(
         model=actor,
-        accuracy=AccuracyRequirement(
-            soft_min=surrogate_threshold,
-            hard_min=cert_min_threshold,
-            soft_temperature=selected_inverse_temp,
-            aggregation=aggregation, # type: ignore
-        ),
+        accuracy=cert_min_threshold,
         seed=seed,
         n_iters=rashomon_n_iters, # type: ignore
         min_acc_increment=0,
         checkpoint=checkpoint, # type: ignore
     )
-    # multi_label = (max_valid_actions > 1.0)
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
-        multi_label=True,
+        temperatures={None: 1.0 / selected_inverse_temp},
     )
 
     cert_values = [

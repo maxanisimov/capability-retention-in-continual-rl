@@ -1,5 +1,5 @@
 from src.trainer import IntervalTrainer
-from src.rashomon_spec import AccuracyRequirement
+from src.rashomon_spec import AccuracyTarget
 from typing import Callable
 
 import torch.nn as nn
@@ -13,7 +13,7 @@ class FisherTrainer(IntervalTrainer):
     def __init__(
         self,
         model: nn.Module,
-        accuracy: AccuracyRequirement = AccuracyRequirement(target_accuracy=0.9),
+        accuracy: AccuracyTarget = 0.9,
         projection_strategy: str = "closest",
         n_certificate_samples=256,
         min_acc_increment=0.05,

@@ -7,6 +7,7 @@ from src.data_utils import (
     _extract_targets,
     get_context_sets,
     create_holdout_set,
+    OneHotTargets,
 )
 from src.utils.general import InContextHead, print_colored
 from src import models
@@ -126,7 +127,11 @@ def run_buffer(buffer_size: int, seed: int, config: wandb.config, paradigm="TIL"
 
             buffer_trainer.recall_dataset, (buffer_X, buffer_y) = buffer_trainer.buffer.consume_merge()
             print("Recall dataset size:", len(buffer_trainer.recall_dataset))
-            dataset = torch.utils.data.TensorDataset(buffer_X, buffer_y)
+            # compute_rashomon_set now requires y pre-encoded as a (N, n_classes) multi-hot
+            # admissible-set tensor (single-label targets are the M=1 special case: one-hot).
+            dataset = torch.utils.data.TensorDataset(
+                buffer_X, torch.nn.functional.one_hot(buffer_y, num_classes=10).float()
+            )
             buffer_trainer.compute_rashomon_set(
                 dataset, use_outer_bbox=False, batch_size=len(dataset), context_id=i-1 if paradigm == "TIL" else None
             )
@@ -169,7 +174,12 @@ def run_buffer(buffer_size: int, seed: int, config: wandb.config, paradigm="TIL"
         buffer_trainer.min_acc_limit = lower_bounds
 
         if i < len(train_tasks) - 1:
-            buffer_trainer.compute_rashomon_set(test, context_id=i if paradigm == "TIL" else None)
+            # NOTE: for paradigm=="DIL", domain_map_fn (`labels % 2`) assumes sparse integer
+            # labels and would need to become a one-hot-aware label-merging projection before
+            # this one-hot wrap is correct on that path - left as a known gap, not fixed here.
+            buffer_trainer.compute_rashomon_set(
+                OneHotTargets(test, n_classes=10), context_id=i if paradigm == "TIL" else None
+            )
             if len(buffer):
                 buffer_trainer.add_to_buffer(buffer, task_id=i, k=CONFIG["buffer_k"])
         else:

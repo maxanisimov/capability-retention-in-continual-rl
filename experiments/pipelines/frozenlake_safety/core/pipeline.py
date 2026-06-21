@@ -589,7 +589,6 @@ def _compute_rashomon_bounds(
     inverse_temp_max: int,
     checkpoint: int,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], object, dict[str, Any]]:
-    from src.rashomon_spec import AccuracyRequirement
     from src.trainer.IntervalTrainer import IntervalTrainer
 
     validate_rashomon_payload(rashomon_payload)
@@ -622,12 +621,7 @@ def _compute_rashomon_bounds(
 
     interval_trainer = IntervalTrainer(
         model=actor,
-        accuracy=AccuracyRequirement(
-            soft_min=surrogate_threshold,
-            hard_min=1.0,
-            soft_temperature=selected_inverse_temp,
-            aggregation="min",
-        ),
+        accuracy=1.0,
         min_acc_increment=0,
         seed=seed,
         n_iters=n_iters,
@@ -635,7 +629,7 @@ def _compute_rashomon_bounds(
     )
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
-        multi_label=True,
+        temperatures={None: 1.0 / selected_inverse_temp},
     )
     cert_values = [
         min((c.min_hard_acc for c in certs), default=float("-inf"))

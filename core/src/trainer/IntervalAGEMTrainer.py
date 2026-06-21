@@ -1,6 +1,6 @@
 from src.trainer import IntervalTrainer, AGEMTrainer
 from src.regulariser import BaseRegulariser
-from src.rashomon_spec import AccuracyRequirement
+from src.rashomon_spec import AccuracyTarget
 from src.data_utils import get_batch
 import src.utils.general as utils
 
@@ -15,7 +15,7 @@ class IntervalAGEMTrainer(IntervalTrainer):
     def __init__(
         self,
         model: nn.Module,
-        accuracy: AccuracyRequirement = AccuracyRequirement(target_accuracy=0.9),
+        accuracy: AccuracyTarget = 0.9,
         projection_strategy: str = "closest",
         n_certificate_samples: int = 256,
         min_acc_increment: float = 0.05,

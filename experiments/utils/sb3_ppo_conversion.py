@@ -18,9 +18,7 @@ from experiments.utils.sb3_ppo_conversion import sb3_ppo_to_sequential
 model = PPO.load("ppo_cartpole")
 policy_net = sb3_ppo_to_sequential(model.policy, head="pi")  # action logits
 
-result = compute_rashomon_set(
-    policy_net, dataset, AccuracyRequirement(target_accuracy=0.85),
-)
+result = compute_rashomon_set(policy_net, dataset, accuracy=0.85)
 ```
 """
 

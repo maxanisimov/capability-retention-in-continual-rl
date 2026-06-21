@@ -30,6 +30,28 @@ class TensorWrapper(Dataset):
         return original_targets.long()
 
 
+class OneHotTargets(Dataset):
+    """
+    Wraps a dataset of (x, y) pairs so y is one-hot encoded: the (N, n_classes)
+    multi-hot admissible-set tensor `compute_rashomon_set`/`IntervalTrainer` expect
+    (single-label targets are the M=1 special case of that encoding).
+    """
+
+    def __init__(self, dataset: Dataset, n_classes: int):
+        self.dataset = dataset
+        self.n_classes = n_classes
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        x, y = self.dataset[idx]
+        y = torch.nn.functional.one_hot(
+            torch.as_tensor(y, dtype=torch.long), num_classes=self.n_classes
+        ).float()
+        return x, y
+
+
 def get_emnist_digits(
     root: str = "./data",
     train_val_split_ratio: float = 0.8,

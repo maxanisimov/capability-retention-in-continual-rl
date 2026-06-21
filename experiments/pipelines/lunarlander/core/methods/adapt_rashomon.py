@@ -42,7 +42,6 @@ from experiments.pipelines.lunarlander.core.orchestration.run_paths import (
     seed_run_dir as _seed_run_dir,
 )
 from experiments.utils.ppo_utils import PPOConfig, evaluate_with_success, ppo_train
-from src.rashomon_spec import AccuracyRequirement
 from src.trainer.IntervalTrainer import IntervalTrainer
 
 
@@ -252,14 +251,11 @@ def compute_rashomon_bounds(
                 f"Best min valid-action mass={min_action_mass:.6f} < threshold={surrogate_threshold:.6f}",
             )
 
+    # `aggregation` is no longer used: target_accuracy's order-statistic aggregation
+    # (see src.rashomon_spec) replaces the old separate soft/hard/aggregation scheme.
     interval_trainer = IntervalTrainer(
         model=actor,
-        accuracy=AccuracyRequirement(
-            soft_min=surrogate_threshold,
-            hard_min=min_hard_spec,
-            soft_temperature=selected_inverse_temp,
-            aggregation=aggregation,  # type: ignore[arg-type]
-        ),
+        accuracy=min_hard_spec,
         seed=seed,
         n_iters=rashomon_n_iters,  # type: ignore[arg-type]
         min_acc_increment=0,
@@ -267,7 +263,7 @@ def compute_rashomon_bounds(
     )
     interval_trainer.compute_rashomon_set(
         dataset=rashomon_dataset,
-        multi_label=True,
+        temperatures={None: 1.0 / selected_inverse_temp},
     )
 
     cert_values = [

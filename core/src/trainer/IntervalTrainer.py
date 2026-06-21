@@ -1,7 +1,7 @@
 from src.trainer.BaseTrainer import BaseTrainer
 from src.regulariser.BaseRegulariser import BaseRegulariser
 from abstract_gradient_training.bounded_models import BoundedModel
-from src.rashomon_spec import AccuracyRequirement
+from src.rashomon_spec import AccuracyTarget
 import src.interval_utils as interval_utils
 import src.utils.general as utils
 
@@ -18,7 +18,7 @@ class IntervalTrainer(BaseTrainer):
     def __init__(
         self,
         model: nn.Module,
-        accuracy: AccuracyRequirement,
+        accuracy: AccuracyTarget,
         projection_strategy: str = "closest",
         n_certificate_samples=256,
         min_acc_increment: float | None = 0.05,
@@ -162,7 +162,6 @@ class IntervalTrainer(BaseTrainer):
         use_outer_bbox: bool = True,
         context_id: int | None = None,
         param_mask: Iterable | None = None,
-        multi_label: bool = False,
         has_input_intervals: bool = False,
         group_by: Callable | None = None,
         certification_method: str = "IBP",
@@ -171,7 +170,9 @@ class IntervalTrainer(BaseTrainer):
         **kwargs: dict,
     ) -> None:
         """
-        Compute the Rashomon set on the given data.
+        Compute the Rashomon set on the given data. `y` must already be encoded as a
+        (N, n_classes) multi-hot admissible-set tensor (single-label targets are the
+        M=1 special case: one-hot).
         """
         dl = torch.utils.data.DataLoader(
             dataset, batch_size=self.n_certificate_samples, shuffle=True
@@ -185,10 +186,7 @@ class IntervalTrainer(BaseTrainer):
         self._set_context(self.model, context_id)
 
         model_class_preds = self.model(X_l).argmax(dim=1)
-        if not multi_label:
-            task_acc = (model_class_preds == y).float().mean()
-        else:
-            task_acc = float(numpy.mean([y[i][pred].item() > 0 for i, pred in enumerate(model_class_preds)]))
+        task_acc = float(numpy.mean([y[i][pred].item() > 0 for i, pred in enumerate(model_class_preds)]))
 
         if isinstance(self.model[-1], utils.InContextHead):
             model = self.model[:-1]
@@ -197,10 +195,8 @@ class IntervalTrainer(BaseTrainer):
             model = self.model
             context_mask = None
 
-        resolved_accuracy = AccuracyRequirement(
-            target_accuracy=self._resolve_min_acc_limit(
-                base_limit=self.accuracy.target_accuracy, task_acc=float(task_acc),
-            ),
+        resolved_accuracy = self._resolve_min_acc_limit(
+            base_limit=self.accuracy, task_acc=task_acc,
         )
 
         result = interval_utils.compute_rashomon_set(
@@ -215,7 +211,6 @@ class IntervalTrainer(BaseTrainer):
             else None,
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
             param_mask=param_mask,
-            multi_label=multi_label,
             has_input_intervals=has_input_intervals,
             group_by=group_by,
             certification_method=certification_method,
