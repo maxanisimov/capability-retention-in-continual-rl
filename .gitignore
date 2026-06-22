@@ -127,24 +127,15 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-!experiments/pipelines/mountaincar/core/env/
-!experiments/pipelines/mountaincar/core/env/*.py
-!experiments/pipelines/cartpole/core/env/
-!experiments/pipelines/cartpole/core/env/*.py
-!experiments/pipelines/acrobot/core/env/
-!experiments/pipelines/acrobot/core/env/*.py
-!experiments/pipelines/carracing/core/env/
-!experiments/pipelines/carracing/core/env/*.py
-!experiments/pipelines/breakout/core/env/
-!experiments/pipelines/breakout/core/env/*.py
+# Environments (repo-root virtualenvs only — anchored with a leading "/" so
+# this never blanket-matches a nested "core/env/" package directory)
+/.env
+/.venv
+/env/
+/venv/
+/ENV/
+/env.bak/
+/venv.bak/
 
 # Spyder project settings
 .spyderproject

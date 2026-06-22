@@ -76,11 +76,36 @@ def _parse_pipeline_spec(spec: str) -> tuple[str, str, str | None]:
     return family, pipeline, title
 
 
+_PIPELINE_CATEGORIES = ("safety_retention", "trajectory_retention", "envs")
+
+
+def _resolve_family_root(family: str, pipelines_root: Path) -> Path:
+    if "/" in family:
+        category, _, name = family.partition("/")
+        return pipelines_root / category / name
+    matches = [
+        pipelines_root / category / family
+        for category in _PIPELINE_CATEGORIES
+        if (pipelines_root / category / family).exists()
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"Pipeline family directory not found for '{family}' under "
+            f"{', '.join(str(pipelines_root / c) for c in _PIPELINE_CATEGORIES)}.",
+        )
+    if len(matches) > 1:
+        formatted = "\n".join(f"  - {m.relative_to(pipelines_root)}" for m in matches)
+        raise RuntimeError(
+            f"Pipeline family '{family}' is ambiguous across categories:\n{formatted}\n"
+            "Use '<category>/<name>' (e.g. 'safety_retention/frozenlake') to disambiguate.",
+        )
+    return matches[0]
+
+
 def _resolve_pipeline_spec(spec: str) -> tuple[str, Path]:
     family, pipeline, title = _parse_pipeline_spec(spec)
-    family_root = avg_perf._repo_root() / "experiments" / "pipelines" / family
-    if not family_root.exists():
-        raise FileNotFoundError(f"Pipeline family directory not found: {family_root}")
+    pipelines_root = avg_perf._repo_root() / "experiments" / "pipelines"
+    family_root = _resolve_family_root(family, pipelines_root)
 
     artifacts_dir = family_root / "artifacts" / "runs" / pipeline
     if artifacts_dir.is_dir():

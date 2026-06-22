@@ -1,0 +1,1075 @@
+default:
+  env_id: LunarLander-v3
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    enable_wind: false
+    wind_power:
+    turbulence_power:
+    initial_random_strength:
+    dispersion_strength:
+    main_engine_power:
+    side_engine_power:
+    leg_spring_torque:
+    lander_mass_scale:
+    leg_mass_scale:
+    linear_damping:
+    angular_damping:
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power:
+      side_engine_power:
+      leg_spring_torque:
+      lander_mass_scale:
+      leg_mass_scale:
+      linear_damping:
+      angular_damping:
+  downstream:
+    task_id: 1.0
+    gravity: -6.0
+    enable_wind: false
+    wind_power:
+    turbulence_power:
+    initial_random_strength:
+    dispersion_strength:
+    main_engine_power:
+    side_engine_power:
+    leg_spring_torque:
+    lander_mass_scale:
+    leg_mass_scale:
+    linear_damping:
+    angular_damping:
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -6.0
+      main_engine_power:
+      side_engine_power:
+      leg_spring_torque:
+      lander_mass_scale:
+      leg_mass_scale:
+      linear_damping:
+      angular_damping:
+dynamics_shift:
+  env_id: LunarLander-v3
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    enable_wind: false
+    wind_power:
+    turbulence_power:
+    initial_random_strength:
+    dispersion_strength:
+    main_engine_power:
+    side_engine_power:
+    leg_spring_torque:
+    lander_mass_scale:
+    leg_mass_scale:
+    linear_damping:
+    angular_damping:
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power:
+      side_engine_power:
+      leg_spring_torque:
+      lander_mass_scale:
+      leg_mass_scale:
+      linear_damping:
+      angular_damping:
+  downstream:
+    task_id: 1.0
+    gravity: -6.0
+    enable_wind: true
+    wind_power: 8.0
+    turbulence_power: 1.0
+    initial_random_strength:
+    dispersion_strength:
+    main_engine_power:
+    side_engine_power:
+    leg_spring_torque:
+    lander_mass_scale:
+    leg_mass_scale:
+    linear_damping:
+    angular_damping:
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.05
+    action_noise_mode: previous
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: false
+    dynamics:
+      gravity: -6.0
+      main_engine_power:
+      side_engine_power:
+      leg_spring_torque:
+      lander_mass_scale:
+      leg_mass_scale:
+      linear_damping:
+      angular_damping:
+    stochasticity:
+      enable_wind: true
+      wind_power: 8.0
+      turbulence_power: 1.0
+      initial_random_strength:
+      dispersion_strength:
+      action_noise_prob: 0.05
+      action_noise_mode: previous
+deterministic:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power:
+    side_engine_power:
+    leg_spring_torque:
+    lander_mass_scale:
+    leg_mass_scale:
+    linear_damping:
+    angular_damping:
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power:
+      side_engine_power:
+      leg_spring_torque:
+      lander_mass_scale:
+      leg_mass_scale:
+      linear_damping:
+      angular_damping:
+  downstream:
+    task_id: 1.0
+    gravity: -1.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power:
+    side_engine_power:
+    leg_spring_torque:
+    lander_mass_scale:
+    leg_mass_scale:
+    linear_damping:
+    angular_damping:
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -1.0
+      main_engine_power:
+      side_engine_power:
+      leg_spring_torque:
+      lander_mass_scale:
+      leg_mass_scale:
+      linear_damping:
+      angular_damping:
+deterministic_dynamics_hard:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -11.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 11.0
+    side_engine_power: 0.35
+    leg_spring_torque: 20.0
+    lander_mass_scale: 1.3
+    leg_mass_scale: 1.2
+    linear_damping: 0.20
+    angular_damping: 0.30
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -11.0
+      main_engine_power: 11.0
+      side_engine_power: 0.35
+      leg_spring_torque: 20.0
+      lander_mass_scale: 1.3
+      leg_mass_scale: 1.2
+      linear_damping: 0.20
+      angular_damping: 0.30
+deterministic_vehicle_light:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 0.2
+    leg_mass_scale: 0.2
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 0.2
+      leg_mass_scale: 0.2
+      linear_damping: 0.0
+      angular_damping: 0.0
+deterministic_vehicle_heavy:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 3
+    leg_mass_scale: 2
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 3
+      leg_mass_scale: 2
+      linear_damping: 0.0
+      angular_damping: 0.0
+deterministic_vehicle_underpowered:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 10.5
+    side_engine_power: 0.45
+    leg_spring_torque: 35.0
+    lander_mass_scale: 1.1
+    leg_mass_scale: 1.1
+    linear_damping: 0.05
+    angular_damping: 0.08
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 10.5
+      side_engine_power: 0.45
+      leg_spring_torque: 35.0
+      lander_mass_scale: 1.1
+      leg_mass_scale: 1.1
+      linear_damping: 0.05
+      angular_damping: 0.08
+deterministic_vehicle_agile:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 14.5
+    side_engine_power: 0.9
+    leg_spring_torque: 55.0
+    lander_mass_scale: 0.85
+    leg_mass_scale: 0.8
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 14.5
+      side_engine_power: 0.9
+      leg_spring_torque: 55.0
+      lander_mass_scale: 0.85
+      leg_mass_scale: 0.8
+      linear_damping: 0.0
+      angular_damping: 0.0
+deterministic_vehicle_sluggish:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 11.0
+    side_engine_power: 0.4
+    leg_spring_torque: 25.0
+    lander_mass_scale: 1.2
+    leg_mass_scale: 1.15
+    linear_damping: 0.25
+    angular_damping: 0.35
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 11.0
+      side_engine_power: 0.4
+      leg_spring_torque: 25.0
+      lander_mass_scale: 1.2
+      leg_mass_scale: 1.15
+      linear_damping: 0.25
+      angular_damping: 0.35
+deterministic_vehicle_twitchy:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity:
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 15.0
+    side_engine_power: 1.5
+    leg_spring_torque: 60.0
+    lander_mass_scale: 0.5
+    leg_mass_scale: 0.4
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity:
+      main_engine_power: 15.0
+      side_engine_power: 1.5
+      leg_spring_torque: 60.0
+      lander_mass_scale: 0.5
+      leg_mass_scale: 0.4
+      linear_damping: 0.0
+      angular_damping: 0.0
+cond_twitchy_plus:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -10.2
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 14.8
+    side_engine_power: 1.25
+    leg_spring_torque: 55.0
+    lander_mass_scale: 0.62
+    leg_mass_scale: 0.50
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -10.2
+      main_engine_power: 14.8
+      side_engine_power: 1.25
+      leg_spring_torque: 55.0
+      lander_mass_scale: 0.62
+      leg_mass_scale: 0.50
+      linear_damping: 0.0
+      angular_damping: 0.0
+cond_underpowered_moderate:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -10.8
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 11.3
+    side_engine_power: 0.43
+    leg_spring_torque: 28.0
+    lander_mass_scale: 1.25
+    leg_mass_scale: 1.15
+    linear_damping: 0.14
+    angular_damping: 0.20
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -10.8
+      main_engine_power: 11.3
+      side_engine_power: 0.43
+      leg_spring_torque: 28.0
+      lander_mass_scale: 1.25
+      leg_mass_scale: 1.15
+      linear_damping: 0.14
+      angular_damping: 0.20
+cond_twitchy_tradeoff_mild:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -10.1
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.7
+    side_engine_power: 1.05
+    leg_spring_torque: 45.0
+    lander_mass_scale: 0.83
+    leg_mass_scale: 0.74
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -10.1
+      main_engine_power: 13.7
+      side_engine_power: 1.05
+      leg_spring_torque: 45.0
+      lander_mass_scale: 0.83
+      leg_mass_scale: 0.74
+      linear_damping: 0.0
+      angular_damping: 0.0
+cond_twitchy_tradeoff_medium:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -10.2
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 14.1
+    side_engine_power: 1.20
+    leg_spring_torque: 50.0
+    lander_mass_scale: 0.74
+    leg_mass_scale: 0.64
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -10.2
+      main_engine_power: 14.1
+      side_engine_power: 1.20
+      leg_spring_torque: 50.0
+      lander_mass_scale: 0.74
+      leg_mass_scale: 0.64
+      linear_damping: 0.0
+      angular_damping: 0.0
+cond_twitchy_tradeoff_hard:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -10.35
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 14.7
+    side_engine_power: 1.35
+    leg_spring_torque: 55.0
+    lander_mass_scale: 0.64
+    leg_mass_scale: 0.54
+    linear_damping: 0.01
+    angular_damping: 0.02
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+
+    deterministic: true
+    dynamics:
+      gravity: -10.35
+      main_engine_power: 14.7
+      side_engine_power: 1.35
+      leg_spring_torque: 55.0
+      lander_mass_scale: 0.64
+      leg_mass_scale: 0.54
+      linear_damping: 0.01
+      angular_damping: 0.02
+cond_twitchy_tradeoff_extreme:
+  env_id: LunarLander-v4
+  continuous: false
+  append_task_id: true
+  source:
+    task_id: 0.0
+    gravity: -10.0
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 13.0
+    side_engine_power: 0.6
+    leg_spring_torque: 40.0
+    lander_mass_scale: 1.0
+    leg_mass_scale: 1.0
+    linear_damping: 0.0
+    angular_damping: 0.0
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.0
+      main_engine_power: 13.0
+      side_engine_power: 0.6
+      leg_spring_torque: 40.0
+      lander_mass_scale: 1.0
+      leg_mass_scale: 1.0
+      linear_damping: 0.0
+      angular_damping: 0.0
+  downstream:
+    task_id: 1.0
+    gravity: -10.55
+    terrain_heights: [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 2.7, 2.5, 2.3, 2.1, 1.9, 1.7]
+    enable_wind: false
+    wind_power: 0.0
+    turbulence_power: 0.0
+    initial_random_strength: 0.0
+    dispersion_strength: 0.0
+    main_engine_power: 15.3
+    side_engine_power: 1.50
+    leg_spring_torque: 60.0
+    lander_mass_scale: 0.56
+    leg_mass_scale: 0.46
+    linear_damping: 0.02
+    angular_damping: 0.03
+    action_repeat: 0
+    action_delay: 0
+    action_noise_prob: 0.0
+    action_noise_mode: noop
+    mark_out_of_viewport_as_unsafe: false
+    deterministic: true
+    dynamics:
+      gravity: -10.55
+      main_engine_power: 15.3
+      side_engine_power: 1.50
+      leg_spring_torque: 60.0
+      lander_mass_scale: 0.56
+      leg_mass_scale: 0.46
+      linear_damping: 0.02
+      angular_damping: 0.03

@@ -211,8 +211,8 @@ def resolve_pipeline_dir(
 
     root = _repo_root() / "experiments" / "pipelines"
     search_patterns = [
-        ("artifacts/runs", root.glob(f"*/artifacts/runs/{pipeline}")),
-        ("outputs", root.glob(f"*/outputs/{pipeline}")),
+        ("artifacts/runs", root.glob(f"*/*/artifacts/runs/{pipeline}")),
+        ("outputs", root.glob(f"*/*/outputs/{pipeline}")),
     ]
     for location_name, candidates_iter in search_patterns:
         candidates = sorted({path.resolve() for path in candidates_iter if path.is_dir()})

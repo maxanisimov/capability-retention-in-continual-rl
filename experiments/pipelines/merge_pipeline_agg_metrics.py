@@ -491,8 +491,31 @@ def _sort_tables(
     return sorted(tables, key=lambda table: (order.get(table.setting, len(order)), table.setting))
 
 
+_PIPELINE_CATEGORIES = ("safety_retention", "trajectory_retention", "envs")
+
+
 def _default_input_root_for_pipeline(pipeline: str) -> Path:
-    return _repo_root() / "experiments" / "pipelines" / pipeline / "artifacts" / "runs"
+    pipelines_root = _repo_root() / "experiments" / "pipelines"
+    if "/" in pipeline:
+        category, _, name = pipeline.partition("/")
+        return pipelines_root / category / name / "artifacts" / "runs"
+    matches = [
+        pipelines_root / category / pipeline
+        for category in _PIPELINE_CATEGORIES
+        if (pipelines_root / category / pipeline).is_dir()
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"No pipeline named '{pipeline}' found under "
+            f"{', '.join(str(pipelines_root / c) for c in _PIPELINE_CATEGORIES)}.",
+        )
+    if len(matches) > 1:
+        formatted = "\n".join(f"  - {m.relative_to(pipelines_root)}" for m in matches)
+        raise RuntimeError(
+            f"Pipeline name '{pipeline}' is ambiguous across categories:\n{formatted}\n"
+            "Pass --pipeline '<category>/<name>' (e.g. 'safety_retention/frozenlake') to disambiguate.",
+        )
+    return matches[0] / "artifacts" / "runs"
 
 
 def _resolve_input_paths(args: argparse.Namespace) -> tuple[list[Path], Path | None]:
@@ -522,7 +545,9 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "Pipeline name under experiments/pipelines, e.g. lunarlander or frozenlake. "
+            "Pipeline name under experiments/pipelines, e.g. lunarlander or "
+            "trajectory_retention/frozenlake (category prefix required when the bare "
+            "name exists under more than one category, e.g. 'frozenlake'). "
             "Ignored when --input-root or --tables is supplied."
         ),
     )
