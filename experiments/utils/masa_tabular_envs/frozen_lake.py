@@ -65,6 +65,7 @@ class CustomFrozenLake(TabularEnv):
         if self.initial_state_distrib.sum() <= 0.0:
             raise ValueError("FrozenLake desc must contain at least one start cell 'S'.")
         self.initial_state_distrib /= self.initial_state_distrib.sum()
+        self._start_state = int(np.flatnonzero(self.initial_state_distrib)[0])
 
         self.P = _build_transition_dict(
             self.desc,

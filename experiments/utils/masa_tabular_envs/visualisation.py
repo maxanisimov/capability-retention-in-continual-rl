@@ -649,11 +649,16 @@ def _render_native_background(env: Any, render_env: Any) -> np.ndarray:
     if not hasattr(render_env, "render"):
         raise ValueError(f"{type(render_env).__name__} does not expose render().")
 
+    # Render via the unwrapped env so Gymnasium's OrderEnforcer wrapper (which
+    # requires reset() before render()) doesn't apply; calling reset() here
+    # would mutate caller-visible env state, which plot_tabular_shield must not do.
+    unwrapped_render_env = getattr(render_env, "unwrapped", render_env)
+
     old_render_mode = getattr(env, "render_mode", None)
     try:
         if old_render_mode != "rgb_array":
             env.render_mode = "rgb_array"
-        frame = render_env.render()
+        frame = unwrapped_render_env.render()
     finally:
         if hasattr(env, "render_mode"):
             env.render_mode = old_render_mode

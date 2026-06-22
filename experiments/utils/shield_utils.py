@@ -1,4 +1,24 @@
-"""Safety shield synthesis utilities for tabular Gymnasium environments."""
+"""Safety shield synthesis utilities for tabular Gymnasium environments.
+
+Scope: this module performs exact tabular value iteration. Both
+``_almost_sure_safe_set`` (deterministic shields) and
+``_eventual_unsafe_risk_value_iteration`` (probabilistic shields, the safety
+critic used to derive ``action_risk``) require a fully enumerated transition
+matrix ``P(s'|s,a)`` of shape ``(n_states, n_states, n_actions)`` up front and
+perform exact Bellman backups over it (``O(|S|^2 * |A|)`` per iteration) -
+there is no environment-rollout/sampling code path. This is by design: every
+environment in ``experiments.utils.masa_tabular_envs`` has a small, finite,
+enumerable state space, so exact VI is both tractable and gives certified
+(non-approximate) risk bounds.
+
+It does **not** generalise to continuous-state or image-observation
+("non-tabular") environments without replacing exact VI with a fundamentally
+different algorithm - e.g. fitted/neural value iteration over sampled
+transitions with a learned critic - which would also give up the exact
+convergence guarantee in favour of empirical generalisation. Extending shield
+synthesis to non-tabular environments is tracked as separate future work, not
+in scope for this module.
+"""
 
 from __future__ import annotations
 

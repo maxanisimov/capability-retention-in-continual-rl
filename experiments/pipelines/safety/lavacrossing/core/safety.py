@@ -139,7 +139,7 @@ def synthesise_lavacrossing_shield(
             theta=theta,
             max_vi_steps=max_vi_steps,
             unsafe_cost_threshold=unsafe_cost_threshold,
-            use_masa_helper=False,
+            use_masa_helper=True,
             return_info=True,
         )
     finally:

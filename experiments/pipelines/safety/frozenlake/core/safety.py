@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import TensorDataset
 
 from experiments.pipelines.safety.frozenlake.core.env import ACTION_DELTAS, grid_shape, state_index_to_obs
+from experiments.utils.masa_tabular_envs.frozen_lake import CustomFrozenLake
 from experiments.utils.shield_utils import ShieldSynthesisInfo, ShieldType, synthesise_shield
 
 
@@ -74,13 +75,14 @@ def frozenlake_transition_matrix(env_map: list[str] | tuple[str, ...]) -> np.nda
     """Return deterministic FrozenLake dynamics as P[next_state, state, action]."""
     nrow, ncol = grid_shape(env_map)
     n_states = nrow * ncol
-    matrix = np.zeros((n_states, n_states, 4), dtype=np.float64)
-
-    for state in range(n_states):
-        cell = _cell(env_map, state)
-        for action in range(4):
-            next_state = state if cell in {"H", "G"} else _next_state_index(env_map, state, action)
-            matrix[next_state, state, action] = 1.0
+    env = CustomFrozenLake(desc=list(env_map), is_slippery=False)
+    try:
+        matrix = np.asarray(env.get_transition_matrix(), dtype=np.float64)
+    finally:
+        env.close()
+    expected_shape = (n_states, n_states, 4)
+    if matrix.shape != expected_shape:
+        raise ValueError(f"Expected transition matrix shape {expected_shape}, got {matrix.shape}.")
     return matrix
 
 
@@ -103,7 +105,7 @@ def synthesise_frozenlake_shield(
     unsafe_cost_threshold: float = 0.5,
 ) -> tuple[np.ndarray, ShieldSynthesisInfo]:
     """Synthesise a tabular shield for a non-slippery FrozenLake map."""
-    env = gym.make("FrozenLake-v1", desc=list(env_map), is_slippery=False)
+    env = CustomFrozenLake(desc=list(env_map), is_slippery=False)
     try:
         shield, info = synthesise_shield(
             env,
@@ -115,7 +117,7 @@ def synthesise_frozenlake_shield(
             theta=theta,
             max_vi_steps=max_vi_steps,
             unsafe_cost_threshold=unsafe_cost_threshold,
-            use_masa_helper=False,
+            use_masa_helper=True,
             return_info=True,
         )
     finally:
