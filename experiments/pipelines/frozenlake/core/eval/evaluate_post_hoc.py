@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 import yaml
 
+from experiments.pipelines._shared.adaptation_utils import load_yaml as _load_yaml
 from experiments.pipelines.frozenlake.core.methods.source_train import build_actor_critic, make_env_from_layout
 from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
     NOADAPT_POLICY_SUBDIR,
@@ -30,10 +31,6 @@ POLICY_KIND_TO_DIR = {
     "downstream_ewc": "downstream_ewc",
     "downstream_rashomon": "downstream_rashomon",
 }
-
-
-def _load_yaml(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _policy_dir(outputs_root: Path, layout: str, seed: int, kind: str) -> Path:

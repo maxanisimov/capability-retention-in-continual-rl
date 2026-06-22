@@ -214,9 +214,6 @@ experiments/**/notebooks/artifacts/
 
 # Local legacy/research material not included in public release by default
 .github/
-experiments/archive/
-experiments/pipelines/archive/
-experiments/pipelines/*/archive/
+experiments/**/archive/
 experiments/notebooks/
 experiments/notes/
-experiments/utils/archive/

@@ -9,6 +9,8 @@ os.environ["SDL_AUDIODRIVER"] = "dummy" # to disable ALSA warnings when running 
 import torch
 import yaml
 
+from experiments.pipelines._shared.adaptation_utils import load_yaml as _load_yaml
+from experiments.pipelines._shared.adaptation_utils import neutralize_task_feature
 from experiments.pipelines.frozenlake.core.methods.source_train import build_actor_critic, make_env_from_layout
 from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
     default_adapt_ppo_settings_file,
@@ -21,10 +23,6 @@ from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
 )
 from experiments.utils.gymnasium_utils import plot_episode
 from experiments.utils.ppo_utils import PPOConfig, evaluate, ppo_train
-
-
-def _load_yaml(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _find_layout_with_ppo(layout: str, current_file: Path) -> Path | None:
@@ -46,29 +44,6 @@ def _find_layout_with_ppo(layout: str, current_file: Path) -> Path | None:
         if isinstance(layout_cfg, dict) and isinstance(layout_cfg.get("ppo", None), dict):
             return candidate
     return None
-
-
-def neutralize_task_feature(
-    model: torch.nn.Sequential,
-    task_feature_index: int,
-    target_task_value: float,
-) -> None:
-    """Neutralize task-id contribution in the first linear layer for target task value.
-
-    For first-layer pre-activation: z = Wx + b, with x_task = target_task_value,
-    this applies:
-        b <- b - W_task * target_task_value
-        W_task <- 0
-    so the task feature no longer shifts activations at adaptation start.
-    """
-    first = model[0]
-    if not isinstance(first, torch.nn.Linear):
-        raise ValueError("Expected first layer to be torch.nn.Linear for task-feature neutralization.")
-
-    with torch.no_grad():
-        w_task = first.weight[:, task_feature_index].clone()
-        first.bias[:] = first.bias - w_task * target_task_value
-        first.weight[:, task_feature_index] = 0.0
 
 
 def main() -> None:

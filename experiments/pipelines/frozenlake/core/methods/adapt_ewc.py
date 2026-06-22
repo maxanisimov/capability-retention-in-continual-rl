@@ -11,6 +11,8 @@ import numpy as np
 import torch
 import yaml
 
+from experiments.pipelines._shared.adaptation_utils import load_yaml as _load_yaml
+from experiments.pipelines._shared.adaptation_utils import neutralize_task_feature
 from experiments.pipelines.frozenlake.core.methods.source_train import build_actor_critic, make_env_from_layout
 from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
     default_adapt_ewc_settings_file,
@@ -25,10 +27,6 @@ from experiments.pipelines.frozenlake.core.orchestration.run_paths import (
 from experiments.utils.ewc_ppo import EWCPPOConfig, compute_ewc_state, ewc_ppo_train
 from experiments.utils.gymnasium_utils import plot_episode
 from experiments.utils.ppo_utils import evaluate
-
-
-def _load_yaml(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _find_layout_with_ppo(layout: str, current_file: Path) -> Path | None:
@@ -50,22 +48,6 @@ def _find_layout_with_ppo(layout: str, current_file: Path) -> Path | None:
         if isinstance(layout_cfg, dict) and isinstance(layout_cfg.get("ppo", None), dict):
             return candidate
     return None
-
-
-def neutralize_task_feature(
-    model: torch.nn.Sequential,
-    task_feature_index: int,
-    target_task_value: float,
-) -> None:
-    """Neutralize first-layer task feature contribution for target task value."""
-    first = model[0]
-    if not isinstance(first, torch.nn.Linear):
-        raise ValueError("Expected first layer to be torch.nn.Linear for task-feature neutralization.")
-
-    with torch.no_grad():
-        w_task = first.weight[:, task_feature_index].clone()
-        first.bias[:] = first.bias - w_task * target_task_value
-        first.weight[:, task_feature_index] = 0.0
 
 
 def main() -> None:

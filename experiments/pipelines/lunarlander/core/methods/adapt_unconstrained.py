@@ -19,6 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[5]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from experiments.pipelines._shared.adaptation_utils import neutralize_task_feature
 from experiments.pipelines.lunarlander.core.env.env_factory import (
     _make_lunarlander_env,
 )
@@ -60,22 +61,6 @@ def _load_source_hidden_size(source_run_dir: Path, arg_hidden_size: int | None) 
             if isinstance(run_settings, dict) and run_settings.get("hidden_size") is not None:
                 return int(run_settings["hidden_size"])
     return 256
-
-
-def neutralize_task_feature(
-    model: torch.nn.Sequential,
-    task_feature_index: int,
-    target_task_value: float,
-) -> None:
-    """Neutralize first-layer task feature contribution for target task value."""
-    first = model[0]
-    if not isinstance(first, torch.nn.Linear):
-        raise ValueError("Expected first layer to be torch.nn.Linear for task-feature neutralization.")
-
-    with torch.no_grad():
-        w_task = first.weight[:, task_feature_index].clone()
-        first.bias[:] = first.bias - w_task * target_task_value
-        first.weight[:, task_feature_index] = 0.0
 
 
 def main() -> None:
