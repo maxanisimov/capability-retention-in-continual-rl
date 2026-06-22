@@ -76,14 +76,12 @@ def run_seed_pool(
     build_cmd: Callable[[int], list[str]],
     log_dir: Path,
     poll_seconds: float = 1.0,
-    busy_wait_on_empty: bool = False,
 ) -> int:
     """Run one subprocess per seed, CPU-pinned, at most one seed per core at a time.
 
-    busy_wait_on_empty preserves a lunarlander-specific guard (skip the sleep/poll
-    when no run is active yet) that frozenlake's original loop did not have.
+    seeds must already be deduplicated by the caller (callers print the run count
+    before invoking this, so deduplication has to happen there, not here).
     """
-    seeds = dedupe_preserve_order(seeds)
     if not seeds:
         raise ValueError("No seeds provided.")
     if not cores:
@@ -103,10 +101,7 @@ def run_seed_pool(
             active.append(run)
             print(f"[start] seed={seed} core={core} pid={run.process.pid} log={run.log_path}")
 
-        if busy_wait_on_empty and not active:
-            continue
-
-        time.sleep(max(poll_seconds, 0.1))
+        time.sleep(poll_seconds)
         still_active: list[SeedRun] = []
         for run in active:
             return_code = run.process.poll()

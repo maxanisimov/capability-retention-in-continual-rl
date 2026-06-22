@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         cores=core_pool,
         build_cmd=lambda seed: _build_worker_cmd(args, seed=seed, passthrough=passthrough),
         log_dir=log_dir,
-        poll_seconds=args.poll_seconds,
+        poll_seconds=max(args.poll_seconds, 0.1),
     )
 
 

@@ -262,7 +262,6 @@ def main() -> int:
         build_cmd=lambda seed: _build_worker_cmd(args, seed=seed, passthrough=passthrough),
         log_dir=log_dir,
         poll_seconds=args.poll_seconds,
-        busy_wait_on_empty=True,
     )
 
 
