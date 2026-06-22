@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))\" | { read -r f; if [ -n \"$f\" ] && [[ \"$f\" == *.py ]]; then /vol/bitbucket/ma5923/_projects/CertifiedContinualLearning/.venv/bin/ruff check --fix \"$f\"; /vol/bitbucket/ma5923/_projects/CertifiedContinualLearning/.venv/bin/ruff format \"$f\"; fi; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
