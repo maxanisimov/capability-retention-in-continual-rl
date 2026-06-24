@@ -12,7 +12,7 @@ from gymnasium.envs.registration import register, registry
 
 
 LUNARLANDER_V4_ID = "LunarLander-v4"
-LUNARLANDER_V4_ENTRY_POINT = "experiments.pipelines.trajectory_retention.lunarlander.tunable_lunarlander:TunableLunarLander"
+LUNARLANDER_V4_ENTRY_POINT = "experiments.pipelines.trajectory_retention.lunarlander.core.env.tunable_lunarlander:TunableLunarLander"
 
 
 class _DispersionRNGProxy:

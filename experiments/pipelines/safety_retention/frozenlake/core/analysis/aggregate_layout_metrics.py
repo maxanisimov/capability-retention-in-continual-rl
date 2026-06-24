@@ -1,9 +1,8 @@
-"""Aggregate FrozenLake Safety per-policy metrics across seeds and export CSV + LaTeX."""
+"""Aggregate FrozenLake safety metrics across seeds and export CSV + LaTeX."""
 
 from __future__ import annotations
 
-import argparse
-import csv
+from dataclasses import dataclass
 import math
 from pathlib import Path
 from statistics import pstdev
@@ -11,99 +10,126 @@ from typing import Any
 
 import yaml
 
-from experiments.pipelines.safety_retention.frozenlake.core.paths import default_outputs_root
+from experiments.pipelines.safety_retention.frozenlake.core.paths import (
+    DOWNSTREAM_EWC_SUBDIR,
+    DOWNSTREAM_RASHOMON_SUBDIR,
+    DOWNSTREAM_UNCONSTRAINED_SUBDIR,
+    NOADAPT_POLICY_SUBDIR,
+    layout_run_root,
+)
 
 
-POLICY_ORDER = [
-    "noadapt",
-    "downstream_unconstrained",
-    "downstream_ewc",
-    "downstream_rashomon",
+@dataclass(frozen=True)
+class MetricSpec:
+    key: str
+    label: str
+    nested_path: tuple[str, ...]
+    flat_key: str
+
+
+@dataclass(frozen=True)
+class MetricAggregate:
+    n: int
+    mean: float | None
+    std: float | None
+
+
+@dataclass(frozen=True)
+class MethodAggregate:
+    layout: str
+    method: str
+    method_label: str
+    num_seeds: int
+    metrics: dict[str, MetricAggregate]
+
+
+METHOD_ORDER = [
+    NOADAPT_POLICY_SUBDIR,
+    DOWNSTREAM_UNCONSTRAINED_SUBDIR,
+    DOWNSTREAM_EWC_SUBDIR,
+    DOWNSTREAM_RASHOMON_SUBDIR,
 ]
 
-POLICY_RENAME = {
-    "noadapt": "NoAdapt",
+METHOD_LABELS = {
+    NOADAPT_POLICY_SUBDIR: "NoAdapt",
     "source": "NoAdapt",
-    "downstream_unconstrained": "Unconstrained",
-    "downstream_ewc": "EWC",
-    "downstream_rashomon": "Rashomon",
+    DOWNSTREAM_UNCONSTRAINED_SUBDIR: "Unconstrained",
+    DOWNSTREAM_EWC_SUBDIR: "EWC",
+    DOWNSTREAM_RASHOMON_SUBDIR: "Rashomon",
 }
 
-RAW_TO_AGG_METRIC = {
-    "source_total_reward": {
-        "source_mean_reward": "source_total_reward",
-    },
-    "downstream_total_reward": {
-        "downstream_mean_reward": "downstream_total_reward",
-    },
-    "source_success_rate": {
-        "source_success_rate": "source_success_rate",
-    },
-    "downstream_success_rate": {
-        "downstream_success_rate": "downstream_success_rate",
-    },
-    "source_failure_rate": {
-        "source_failure_rate": "source_failure_rate",
-    },
-    "downstream_failure_rate": {
-        "downstream_failure_rate": "downstream_failure_rate",
-    },
-    "source_safety_rate": {
-        "source_safety_critical_state_safety_rate": "source_safety_rate",
-    },
-    "downstream_safety_rate": {
-        "downstream_safety_critical_state_safety_rate": "downstream_safety_rate",
-    },
-    "source_greedy_trajectory_safety": {
-        "source_greedy_trajectory_safety": "source_greedy_trajectory_safety",
-    },
-    "downstream_greedy_trajectory_safety": {
-        "downstream_greedy_trajectory_safety": "downstream_greedy_trajectory_safety",
-    },
+METRIC_SPECS = {
+    "source_safety_critical_state_safety_rate": MetricSpec(
+        key="source_safety_critical_state_safety_rate",
+        label="Source Safety-Critical Safety",
+        nested_path=("task_metrics", "source", "safety_critical_state_safety_rate"),
+        flat_key="source_safety_critical_state_safety_rate",
+    ),
+    "source_greedy_trajectory_safety": MetricSpec(
+        key="source_greedy_trajectory_safety",
+        label="Source Greedy Trajectory Safety",
+        nested_path=("task_metrics", "source", "greedy_trajectory_safety"),
+        flat_key="source_greedy_trajectory_safety",
+    ),
+    "source_total_reward": MetricSpec(
+        key="source_total_reward",
+        label="Source Total Reward",
+        nested_path=("task_metrics", "source", "total_reward"),
+        flat_key="source_total_reward",
+    ),
+    "downstream_safety_critical_state_safety_rate": MetricSpec(
+        key="downstream_safety_critical_state_safety_rate",
+        label="Downstream Safety-Critical Safety",
+        nested_path=("task_metrics", "downstream", "safety_critical_state_safety_rate"),
+        flat_key="downstream_safety_critical_state_safety_rate",
+    ),
+    "downstream_greedy_trajectory_safety": MetricSpec(
+        key="downstream_greedy_trajectory_safety",
+        label="Downstream Greedy Trajectory Safety",
+        nested_path=("task_metrics", "downstream", "greedy_trajectory_safety"),
+        flat_key="downstream_greedy_trajectory_safety",
+    ),
+    "downstream_total_reward": MetricSpec(
+        key="downstream_total_reward",
+        label="Downstream Total Reward",
+        nested_path=("task_metrics", "downstream", "total_reward"),
+        flat_key="downstream_total_reward",
+    ),
 }
 
-DEFAULT_METRIC_GROUPS = [
-    "source_safety_rate",
+DEFAULT_METRICS = [
+    "source_safety_critical_state_safety_rate",
     "source_greedy_trajectory_safety",
     "source_total_reward",
-    "downstream_total_reward",
-]
-
-PREFERRED_METRIC_ORDER = [
-    "source_total_reward",
-    "source_success_rate",
-    "source_safety_rate",
-    "source_greedy_trajectory_safety",
-    "downstream_total_reward",
-    "downstream_success_rate",
-    "downstream_safety_rate",
+    "downstream_safety_critical_state_safety_rate",
     "downstream_greedy_trajectory_safety",
-    "downstream_minus_source_total_reward",
-    "source_failure_rate",
-    "downstream_failure_rate",
+    "downstream_total_reward",
 ]
 
-
-def _normalize_policy_dir_name(policy_name: str) -> str:
-    if policy_name == "source":
-        return "noadapt"
-    return policy_name
+DEFAULT_CSV_NAME = "aggregate_metrics_frozenlake_safety.csv"
+DEFAULT_TEX_NAME = "aggregate_metrics_frozenlake_safety.tex"
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected dict in YAML file: {path}")
-    return data
+def _normalize_method(method: str) -> str:
+    if method == "source":
+        return NOADAPT_POLICY_SUBDIR
+    return method
 
 
-def _seed_from_name(name: str) -> int | None:
+def _seed_from_dir_name(name: str) -> int | None:
     if not name.startswith("seed_"):
         return None
     suffix = name.removeprefix("seed_")
     if not suffix.isdigit():
         return None
     return int(suffix)
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a YAML mapping in {path}.")
+    return data
 
 
 def _safe_float(value: object) -> float | None:
@@ -118,8 +144,32 @@ def _safe_float(value: object) -> float | None:
     return as_float
 
 
+def _dig(mapping: dict[str, Any], path: tuple[str, ...]) -> object | None:
+    current: object = mapping
+    for part in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _extract_metric(summary: dict[str, Any], spec: MetricSpec) -> float | None:
+    results = summary.get("run_results")
+    if not isinstance(results, dict):
+        results = summary
+
+    for container in (results, summary):
+        value = _safe_float(_dig(container, spec.nested_path))
+        if value is not None:
+            return value
+        value = _safe_float(container.get(spec.flat_key))
+        if value is not None:
+            return value
+    return None
+
+
 def _mean(values: list[float]) -> float:
-    return sum(values) / len(values)
+    return float(sum(values) / len(values))
 
 
 def _std(values: list[float]) -> float:
@@ -128,77 +178,122 @@ def _std(values: list[float]) -> float:
     return float(pstdev(values))
 
 
-def _extract_task_metrics(
-    summary: dict[str, Any],
+def _summary_path(seed_dir: Path, method: str) -> Path:
+    canonical = seed_dir / method / "run_summary.yaml"
+    if method == NOADAPT_POLICY_SUBDIR and not canonical.exists():
+        legacy = seed_dir / "source" / "run_summary.yaml"
+        if legacy.exists():
+            return legacy
+    return canonical
+
+
+def aggregate_metrics(
     *,
-    raw_to_agg_metric: dict[str, str],
-    compute_relative_to_source: bool,
-) -> dict[str, float]:
-    results = summary.get("run_results")
-    if not isinstance(results, dict):
-        results = summary
+    outputs_root: Path,
+    layout: str,
+    rl: str,
+    deterministic: bool,
+    metric_keys: list[str] | None = None,
+    methods: list[str] | None = None,
+    seeds: set[int] | None = None,
+) -> list[MethodAggregate]:
+    """Read per-seed summaries and aggregate selected metrics per method."""
 
-    out: dict[str, float] = {}
-    source_total_reward: float | None = None
-    downstream_total_reward: float | None = None
+    selected_metrics = list(metric_keys or DEFAULT_METRICS)
+    unknown_metrics = [metric for metric in selected_metrics if metric not in METRIC_SPECS]
+    if unknown_metrics:
+        raise ValueError(f"Unknown metric(s): {', '.join(unknown_metrics)}")
 
-    for raw_key, agg_key in raw_to_agg_metric.items():
-        as_float = _safe_float(results.get(raw_key))
-        if as_float is None:
+    selected_methods = list(methods or METHOD_ORDER)
+    selected_methods = list(dict.fromkeys(_normalize_method(method) for method in selected_methods))
+
+    layout_dir = layout_run_root(outputs_root, layout, rl, deterministic)
+    if not layout_dir.exists():
+        raise FileNotFoundError(f"Run output directory not found: {layout_dir}")
+
+    values_by_method: dict[str, dict[str, list[float]]] = {
+        method: {metric: [] for metric in selected_metrics} for method in selected_methods
+    }
+    seeds_by_method: dict[str, set[int]] = {method: set() for method in selected_methods}
+    found_summary = False
+
+    seed_dirs = sorted(
+        (path for path in layout_dir.glob("seed_*") if path.is_dir()),
+        key=lambda path: (_seed_from_dir_name(path.name) is None, path.name),
+    )
+    for seed_dir in seed_dirs:
+        seed = _seed_from_dir_name(seed_dir.name)
+        if seed is None:
             continue
-        out[agg_key] = as_float
-        if agg_key == "source_total_reward":
-            source_total_reward = as_float
-        if agg_key == "downstream_total_reward":
-            downstream_total_reward = as_float
+        if seeds is not None and seed not in seeds:
+            continue
 
-    if (
-        compute_relative_to_source
-        and source_total_reward is not None
-        and downstream_total_reward is not None
-    ):
-        out["downstream_minus_source_total_reward"] = (
-            downstream_total_reward - source_total_reward
+        for method in selected_methods:
+            summary_path = _summary_path(seed_dir, method)
+            if not summary_path.exists():
+                continue
+
+            found_summary = True
+            summary = _load_yaml(summary_path)
+            seeds_by_method[method].add(seed)
+            for metric_key in selected_metrics:
+                value = _extract_metric(summary, METRIC_SPECS[metric_key])
+                if value is not None:
+                    values_by_method[method][metric_key].append(value)
+
+    if not found_summary:
+        raise FileNotFoundError(f"No run_summary.yaml files found under {layout_dir}/seed_*/")
+
+    rows: list[MethodAggregate] = []
+    for method in selected_methods:
+        if not seeds_by_method[method]:
+            continue
+        metric_aggs: dict[str, MetricAggregate] = {}
+        for metric_key in selected_metrics:
+            values = values_by_method[method][metric_key]
+            metric_aggs[metric_key] = MetricAggregate(
+                n=len(values),
+                mean=_mean(values) if values else None,
+                std=_std(values) if values else None,
+            )
+        rows.append(
+            MethodAggregate(
+                layout=layout,
+                method=method,
+                method_label=METHOD_LABELS.get(method, method),
+                num_seeds=len(seeds_by_method[method]),
+                metrics=metric_aggs,
+            ),
         )
-    return out
+
+    if not rows:
+        raise RuntimeError("No selected methods had usable run summaries.")
+    return rows
 
 
-def _ordered_metrics(metric_names: set[str]) -> list[str]:
-    ordered = [metric for metric in PREFERRED_METRIC_ORDER if metric in metric_names]
-    remaining = sorted(metric for metric in metric_names if metric not in set(ordered))
-    return ordered + remaining
+def _format_number(value: float, precision: int) -> str:
+    threshold = 0.5 * (10 ** -precision)
+    if abs(value) < threshold:
+        value = 0.0
+    return f"{value:.{precision}f}"
 
 
-def _format_metric_header(metric_name: str) -> str:
-    return metric_name.replace("_", " ").title()
+def _format_pm_text(aggregate: MetricAggregate, precision: int) -> str:
+    if aggregate.mean is None or aggregate.std is None:
+        return ""
+    return (
+        f"{_format_number(aggregate.mean, precision)} "
+        f"± {_format_number(aggregate.std, precision)}"
+    )
 
 
-def _format_pm(mean_value: float, std_value: float, *, bold_mean: bool = False) -> str:
-    def _r2(v: float) -> str:
-        rounded = round(v, 2)
-        if abs(rounded) < 0.005:
-            rounded = 0.0
-        return f"{rounded:.2f}"
-
-    mean_str = _r2(mean_value)
-    std_str = _r2(std_value)
-    if bold_mean:
-        return rf"$\mathbf{{{mean_str}}} \pm {std_str}$"
-    return rf"${mean_str} \pm {std_str}$"
-
-
-def _metric_selection_rule(metric_name: str) -> str | None:
-    if metric_name.endswith("total_reward"):
-        return "max"
-    if metric_name.endswith("success_rate"):
-        return "max"
-    if metric_name.endswith("safety_rate"):
-        return "max"
-    if metric_name.endswith("greedy_trajectory_safety"):
-        return "max"
-    if metric_name.endswith("failure_rate"):
-        return "min"
-    return None
+def _format_pm_latex(aggregate: MetricAggregate, precision: int) -> str:
+    if aggregate.mean is None or aggregate.std is None:
+        return "-"
+    return (
+        f"${_format_number(aggregate.mean, precision)} "
+        rf"\pm {_format_number(aggregate.std, precision)}$"
+    )
 
 
 def _escape_latex(text: str) -> str:
@@ -220,267 +315,90 @@ def _escape_latex(text: str) -> str:
     return out
 
 
-def _build_latex_table_from_csv(csv_path: Path, *, layout: str) -> str:
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+def _latex_label_fragment(text: str) -> str:
+    out = "".join(ch if ch.isalnum() else "_" for ch in text)
+    return "_".join(part for part in out.split("_") if part)
 
-    if not rows:
-        raise ValueError(f"CSV has no data rows: {csv_path}")
 
-    metric_names: list[str] = []
-    for col in rows[0].keys():
-        if col.endswith("_mean"):
-            metric = col.removesuffix("_mean")
-            if f"{metric}_std" in rows[0]:
-                metric_names.append(metric)
-    metric_names = _ordered_metrics(set(metric_names))
-    if not metric_names:
-        raise ValueError("No metric mean/std column pairs found in CSV.")
+def write_csv(
+    rows: list[MethodAggregate],
+    output_csv: Path,
+    *,
+    metric_keys: list[str],
+    precision: int,
+) -> None:
+    import csv
 
-    sorted_rows: list[dict[str, str]] = []
-    by_policy = {row["policy"]: row for row in rows if "policy" in row}
-    for policy in POLICY_ORDER:
-        if policy in by_policy:
-            sorted_rows.append(by_policy[policy])
-    for row in rows:
-        policy = row.get("policy", "")
-        if policy not in POLICY_ORDER:
-            sorted_rows.append(row)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["layout", "method", "method_label", "num_seeds"] + metric_keys
+    with output_csv.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            payload: dict[str, object] = {
+                "layout": row.layout,
+                "method": row.method,
+                "method_label": row.method_label,
+                "num_seeds": row.num_seeds,
+            }
+            for metric_key in metric_keys:
+                payload[metric_key] = _format_pm_text(row.metrics[metric_key], precision)
+            writer.writerow(payload)
 
-    best_mean_by_metric: dict[str, float] = {}
-    for metric in metric_names:
-        rule = _metric_selection_rule(metric)
-        if rule is None:
-            continue
-        mean_key = f"{metric}_mean"
-        values: list[float] = []
-        for row in sorted_rows:
-            raw = row.get(mean_key, "")
-            if raw == "":
-                continue
-            try:
-                values.append(float(raw))
-            except (TypeError, ValueError):
-                continue
-        if not values:
-            continue
-        best_mean_by_metric[metric] = max(values) if rule == "max" else min(values)
 
-    col_spec = "l" + "c" * len(metric_names)
-    header_cells = ["Policy"] + [_escape_latex(_format_metric_header(m)) for m in metric_names]
-
-    lines: list[str] = [
+def build_latex_table(
+    rows: list[MethodAggregate],
+    *,
+    metric_keys: list[str],
+    precision: int,
+    layout: str,
+) -> str:
+    column_spec = "lc" + ("c" * len(metric_keys))
+    headers = ["Method", "N"] + [METRIC_SPECS[metric].label for metric in metric_keys]
+    lines = [
         r"\begin{table}[t]",
         r"\centering",
         r"\small",
-        rf"\begin{{tabular}}{{{col_spec}}}",
-        r"\toprule",
-        " & ".join(header_cells) + r" \\",
-        r"\midrule",
+        rf"\begin{{tabular}}{{{column_spec}}}",
+        r"\hline",
+        " & ".join(_escape_latex(header) for header in headers) + r" \\",
+        r"\hline",
     ]
-
-    for row in sorted_rows:
-        policy_raw = row.get("policy", "")
-        policy_name = POLICY_RENAME.get(policy_raw, policy_raw)
-        row_cells: list[str] = [_escape_latex(policy_name)]
-        for metric in metric_names:
-            mean_key = f"{metric}_mean"
-            std_key = f"{metric}_std"
-            mean_raw = row.get(mean_key, "")
-            std_raw = row.get(std_key, "")
-            if mean_raw == "" or std_raw == "":
-                row_cells.append("-")
-                continue
-            mean_value = float(mean_raw)
-            std_value = float(std_raw)
-            cell = _format_pm(mean_value, std_value)
-            best_mean = best_mean_by_metric.get(metric)
-            if best_mean is not None and math.isclose(mean_value, best_mean, abs_tol=1e-12):
-                cell = _format_pm(mean_value, std_value, bold_mean=True)
-            row_cells.append(cell)
-        lines.append(" & ".join(row_cells) + r" \\")
-
+    for row in rows:
+        cells = [_escape_latex(row.method_label), str(row.num_seeds)]
+        cells.extend(_format_pm_latex(row.metrics[metric], precision) for metric in metric_keys)
+        lines.append(" & ".join(cells) + r" \\")
     lines.extend(
         [
-            r"\bottomrule",
+            r"\hline",
             r"\end{tabular}",
-            rf"\caption{{FrozenLake Safety ({_escape_latex(layout)}): aggregated metrics across seeds.}}",
-            rf"\label{{tab:frozenlake_safety_{_escape_latex(layout)}_aggregated_metrics}}",
+            (
+                r"\caption{FrozenLake safety "
+                f"({_escape_latex(layout)}): aggregated metrics across seeds.}}"
+            ),
+            rf"\label{{tab:frozenlake_safety_{_latex_label_fragment(layout)}_metrics}}",
             r"\end{table}",
         ],
     )
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Aggregate source/downstream run_summary metrics per policy across seeds "
-            "for one FrozenLake Safety layout, then export CSV and LaTeX."
-        ),
-    )
-    parser.add_argument(
-        "--pipeline",
-        "--layout",
-        type=str,
-        dest="layout",
-        default="diagonal_4x4",
-        help="Layout/pipeline name under outputs (default: diagonal_4x4).",
-    )
-    parser.add_argument(
-        "--outputs-root",
-        type=Path,
-        default=default_outputs_root(),
-        help="Outputs root containing <layout>/seed_*/<policy>/run_summary.yaml.",
-    )
-    parser.add_argument(
-        "--policies",
-        nargs="+",
-        default=None,
-        help="Optional policy directory filter.",
-    )
-    parser.add_argument(
-        "--metric-groups",
-        nargs="+",
-        choices=sorted(RAW_TO_AGG_METRIC.keys()),
-        default=list(DEFAULT_METRIC_GROUPS),
-        help=(
-            "Metric groups to aggregate. "
-            f"Default: {' '.join(DEFAULT_METRIC_GROUPS)}."
-        ),
-    )
-    parser.add_argument(
-        "--compute-relative-to-source",
-        action="store_true",
-        help=(
-            "Also compute downstream_minus_source_total_reward from per-seed "
-            "downstream and source total rewards."
-        ),
-    )
-    parser.add_argument(
-        "--output-csv",
-        type=Path,
-        default=None,
-        help="Optional CSV path. Default: outputs/<layout>/aggregate_layout_metrics.csv",
-    )
-    parser.add_argument(
-        "--output-tex",
-        type=Path,
-        default=None,
-        help="Optional LaTeX path. Default: outputs/<layout>/aggregate_layout_metrics.tex",
-    )
-    args = parser.parse_args()
-
-    layout = str(args.layout)
-    layout_dir = args.outputs_root / layout
-    if not layout_dir.exists():
-        raise FileNotFoundError(f"Layout outputs directory not found: {layout_dir}")
-
-    selected_policies = (
-        None
-        if args.policies is None
-        else list(dict.fromkeys(_normalize_policy_dir_name(policy) for policy in args.policies))
-    )
-
-    selected_metric_groups = list(args.metric_groups)
-    raw_to_agg_metric: dict[str, str] = {}
-    for metric_group in selected_metric_groups:
-        raw_to_agg_metric.update(RAW_TO_AGG_METRIC[metric_group])
-
-    # policy -> seed -> metric -> value
-    policy_seed_metrics: dict[str, dict[int, dict[str, float]]] = {}
-    discovered_metric_names: set[str] = set()
-    total_found = 0
-
-    for seed_dir in sorted(layout_dir.glob("seed_*"), key=lambda p: p.name):
-        if not seed_dir.is_dir():
-            continue
-        seed = _seed_from_name(seed_dir.name)
-        if seed is None:
-            continue
-
-        for summary_path in sorted(seed_dir.glob("*/run_summary.yaml")):
-            total_found += 1
-            raw_policy = summary_path.parent.name
-            policy = _normalize_policy_dir_name(raw_policy)
-            if selected_policies is not None and policy not in selected_policies:
-                continue
-
-            summary = _load_yaml(summary_path)
-            metrics = _extract_task_metrics(
-                summary,
-                raw_to_agg_metric=raw_to_agg_metric,
-                compute_relative_to_source=bool(args.compute_relative_to_source),
-            )
-            if not metrics:
-                print(
-                    "[skip] No usable selected metrics "
-                    f"(metric_groups={selected_metric_groups}, "
-                    f"compute_relative_to_source={bool(args.compute_relative_to_source)}) "
-                    f"in {summary_path}",
-                )
-                continue
-
-            policy_seed_metrics.setdefault(policy, {})
-            if seed in policy_seed_metrics[policy]:
-                print(
-                    f"[warn] Duplicate summary for policy={policy} seed={seed}; "
-                    f"overwriting with {summary_path}",
-                )
-            policy_seed_metrics[policy][seed] = metrics
-            discovered_metric_names.update(metrics.keys())
-
-    if total_found == 0:
-        raise FileNotFoundError(f"No run_summary.yaml files found under {layout_dir}/seed_*/")
-    if not policy_seed_metrics:
-        raise RuntimeError("No usable task metrics were found in discovered run summaries.")
-
-    policy_names = sorted(policy_seed_metrics.keys())
-    if selected_policies is not None:
-        policy_names = [policy for policy in selected_policies if policy in policy_seed_metrics]
-    if not policy_names:
-        raise RuntimeError("No policies matched the selection with usable metrics.")
-
-    ordered_metrics = _ordered_metrics(discovered_metric_names)
-
-    output_csv = args.output_csv or (layout_dir / "aggregate_layout_metrics.csv")
-    output_tex = args.output_tex or (layout_dir / "aggregate_layout_metrics.tex")
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
+def write_latex_table(
+    rows: list[MethodAggregate],
+    output_tex: Path,
+    *,
+    metric_keys: list[str],
+    precision: int,
+    layout: str,
+) -> None:
     output_tex.parent.mkdir(parents=True, exist_ok=True)
-
-    fieldnames = ["layout", "policy", "num_seeds"]
-    for metric in ordered_metrics:
-        fieldnames.append(f"{metric}_mean")
-        fieldnames.append(f"{metric}_std")
-
-    with output_csv.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for policy in policy_names:
-            seed_map = policy_seed_metrics[policy]
-            row: dict[str, object] = {
-                "layout": layout,
-                "policy": policy,
-                "num_seeds": len(seed_map),
-            }
-            for metric in ordered_metrics:
-                values = [seed_map[s][metric] for s in sorted(seed_map) if metric in seed_map[s]]
-                if values:
-                    row[f"{metric}_mean"] = f"{_mean(values):.6f}"
-                    row[f"{metric}_std"] = f"{_std(values):.6f}"
-                else:
-                    row[f"{metric}_mean"] = ""
-                    row[f"{metric}_std"] = ""
-            writer.writerow(row)
-
-    latex = _build_latex_table_from_csv(output_csv, layout=layout)
-    output_tex.write_text(latex + "\n", encoding="utf-8")
-
-    print(f"Wrote aggregate metrics CSV: {output_csv}")
-    print(f"Wrote aggregate metrics LaTeX table: {output_tex}")
-
-
-if __name__ == "__main__":
-    main()
+    output_tex.write_text(
+        build_latex_table(
+            rows,
+            metric_keys=metric_keys,
+            precision=precision,
+            layout=layout,
+        )
+        + "\n",
+        encoding="utf-8",
+    )

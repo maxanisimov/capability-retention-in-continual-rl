@@ -11,7 +11,12 @@ from typing import Any
 
 import yaml
 
-from experiments.pipelines.trajectory_retention.lunarlander.core.orchestration.run_paths import default_outputs_root
+from experiments.pipelines.trajectory_retention.lunarlander.core.orchestration.run_paths import (
+    RL_CHOICES,
+    default_outputs_root,
+    legacy_outputs_root,
+    validate_rl,
+)
 
 
 POLICY_ORDER = [
@@ -196,6 +201,23 @@ def _escape_latex(text: str) -> str:
     return out
 
 
+def _resolve_layout_dir(outputs_root: Path, task_setting: str, rl: str) -> Path:
+    tagged = outputs_root / task_setting / rl
+    if tagged.exists():
+        return tagged
+    pretag = outputs_root / task_setting
+    if pretag.exists():
+        return pretag
+    if outputs_root != legacy_outputs_root():
+        legacy_tagged = legacy_outputs_root() / task_setting / rl
+        if legacy_tagged.exists():
+            return legacy_tagged
+        legacy_pretag = legacy_outputs_root() / task_setting
+        if legacy_pretag.exists():
+            return legacy_pretag
+    return tagged
+
+
 def _build_latex_table_from_csv(csv_path: Path, *, task_setting: str) -> str:
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -313,6 +335,7 @@ def main() -> None:
         default=None,
         help="Alias for --pipeline.",
     )
+    parser.add_argument("--rl", type=str, default="ppo", choices=RL_CHOICES)
     parser.add_argument(
         "--outputs-root",
         type=Path,
@@ -360,8 +383,9 @@ def main() -> None:
     task_setting = args.task_setting or args.layout
     if task_setting is None:
         raise ValueError("Provide --pipeline (or alias --layout).")
+    validate_rl(args.rl)
 
-    layout_dir = args.outputs_root / task_setting
+    layout_dir = _resolve_layout_dir(args.outputs_root, task_setting, args.rl)
     if not layout_dir.exists():
         raise FileNotFoundError(f"Pipeline outputs directory not found: {layout_dir}")
     selected_policies = (

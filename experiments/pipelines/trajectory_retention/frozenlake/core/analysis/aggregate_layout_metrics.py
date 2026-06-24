@@ -12,8 +12,10 @@ from typing import Any
 import yaml
 
 from experiments.pipelines.trajectory_retention.frozenlake.core.orchestration.run_paths import (
+    RL_CHOICES,
     default_outputs_root,
     legacy_outputs_root,
+    validate_rl,
 )
 
 
@@ -295,13 +297,21 @@ def _build_latex_table_from_csv(csv_path: Path, *, layout: str) -> str:
     return "\n".join(lines)
 
 
-def _resolve_layout_dir(outputs_root: Path, layout: str) -> Path:
-    layout_dir = outputs_root / layout
-    if not layout_dir.exists() and outputs_root != legacy_outputs_root():
-        legacy_layout_dir = legacy_outputs_root() / layout
-        if legacy_layout_dir.exists():
-            return legacy_layout_dir
-    return layout_dir
+def _resolve_layout_dir(outputs_root: Path, layout: str, rl: str) -> Path:
+    tagged = outputs_root / layout / rl
+    if tagged.exists():
+        return tagged
+    pretag = outputs_root / layout
+    if pretag.exists():
+        return pretag
+    if outputs_root != legacy_outputs_root():
+        legacy_tagged = legacy_outputs_root() / layout / rl
+        if legacy_tagged.exists():
+            return legacy_tagged
+        legacy_pretag = legacy_outputs_root() / layout
+        if legacy_pretag.exists():
+            return legacy_pretag
+    return tagged
 
 
 def main() -> None:
@@ -320,6 +330,7 @@ def main() -> None:
         help="Layout/pipeline name under outputs, e.g. diagonal_20x20.",
     )
     parser.add_argument("--task-setting", type=str, dest="layout", help=argparse.SUPPRESS)
+    parser.add_argument("--rl", type=str, default="ppo", choices=RL_CHOICES)
     parser.add_argument(
         "--outputs-root",
         type=Path,
@@ -366,9 +377,10 @@ def main() -> None:
 
     if args.layout is None:
         raise ValueError("Provide --pipeline (or alias --layout).")
+    validate_rl(args.rl)
 
     layout = str(args.layout)
-    layout_dir = _resolve_layout_dir(args.outputs_root, layout)
+    layout_dir = _resolve_layout_dir(args.outputs_root, layout, args.rl)
     if not layout_dir.exists():
         raise FileNotFoundError(f"Layout outputs directory not found: {layout_dir}")
 

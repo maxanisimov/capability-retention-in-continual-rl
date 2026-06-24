@@ -8,6 +8,42 @@ from pathlib import Path
 NOADAPT_POLICY_SUBDIR = "noadapt"
 LEGACY_SOURCE_POLICY_SUBDIR = "source"
 
+RL_CHOICES = ("ppo",)
+
+SOURCE_MODE = "source"
+DOWNSTREAM_MODES = ("downstream_unconstrained", "downstream_ewc", "downstream_rashomon")
+ALL_MODES = (SOURCE_MODE, *DOWNSTREAM_MODES)
+
+MODE_TO_DEFAULT_RUN_SUBDIR = {
+    SOURCE_MODE: NOADAPT_POLICY_SUBDIR,
+    "downstream_unconstrained": "downstream_unconstrained",
+    "downstream_ewc": "downstream_ewc",
+    "downstream_rashomon": "downstream_rashomon",
+}
+
+MODE_TO_REQUIRED_ARTIFACTS = {
+    SOURCE_MODE: ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml"),
+    "downstream_unconstrained": ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml"),
+    "downstream_ewc": ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml", "ewc_state.pt"),
+    "downstream_rashomon": (
+        "actor.pt",
+        "critic.pt",
+        "training_data.pt",
+        "run_summary.yaml",
+        "rashomon_dataset.pt",
+        "rashomon_bounded_model.pt",
+        "rashomon_param_bounds.pt",
+    ),
+}
+
+
+def validate_rl(rl: str) -> None:
+    if rl not in RL_CHOICES:
+        raise NotImplementedError(
+            f"--rl '{rl}' is not implemented. Only {RL_CHOICES} exist today "
+            f"(core/methods/ is PPO-only); add support there to use another algorithm.",
+        )
+
 
 def pipeline_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -69,8 +105,17 @@ def default_adapt_rashomon_settings_file() -> Path:
     return settings_root() / "adaptation" / "rashomon.yaml"
 
 
-def seed_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
-    return outputs_root / layout / f"seed_{seed}"
+def seed_run_dir(outputs_root: Path, layout: str, seed: int, *, rl: str = "ppo") -> Path:
+    return outputs_root / layout / rl / f"seed_{seed}"
+
+
+def mode_run_dir(outputs_root: Path, layout: str, seed: int, mode: str, *, rl: str = "ppo") -> Path:
+    return seed_run_dir(outputs_root, layout, seed, rl=rl) / MODE_TO_DEFAULT_RUN_SUBDIR[mode]
+
+
+def is_mode_complete(outputs_root: Path, layout: str, seed: int, mode: str, *, rl: str = "ppo") -> bool:
+    run_dir = mode_run_dir(outputs_root, layout, seed, mode, rl=rl)
+    return all((run_dir / artifact).exists() for artifact in MODE_TO_REQUIRED_ARTIFACTS[mode])
 
 
 def _policy_subdir_candidates(policy_subdir: str) -> tuple[str, ...]:
@@ -81,24 +126,36 @@ def _policy_subdir_candidates(policy_subdir: str) -> tuple[str, ...]:
     return (policy_subdir,)
 
 
-def resolve_default_source_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
+def _pretag_seed_run_dir(outputs_root: Path, layout: str, seed: int) -> Path:
+    """Path shape used before the <rl> tag was introduced: <outputs_root>/<layout>/seed_<n>."""
+    return outputs_root / layout / f"seed_{seed}"
+
+
+def resolve_default_source_run_dir(outputs_root: Path, layout: str, seed: int, *, rl: str = "ppo") -> Path:
     """Prefer the new noadapt layout; fall back to legacy source directories."""
     candidates = [
-        seed_run_dir(outputs_root, layout, seed) / subdir
+        seed_run_dir(outputs_root, layout, seed, rl=rl) / subdir
+        for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
+    ]
+    pretag_candidates = [
+        _pretag_seed_run_dir(outputs_root, layout, seed) / subdir
         for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
     ]
     legacy_candidates = [
         (outputs_root / f"seed_{seed}") / subdir
         for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
     ]
-    for candidate in [*candidates, *legacy_candidates]:
+    for candidate in [*candidates, *pretag_candidates, *legacy_candidates]:
         if candidate.exists():
             return candidate
 
     global_legacy = legacy_outputs_root()
     if outputs_root != global_legacy:
         global_candidates = [
-            seed_run_dir(global_legacy, layout, seed) / subdir
+            seed_run_dir(global_legacy, layout, seed, rl=rl) / subdir
+            for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
+        ] + [
+            _pretag_seed_run_dir(global_legacy, layout, seed) / subdir
             for subdir in _policy_subdir_candidates(NOADAPT_POLICY_SUBDIR)
         ] + [
             (global_legacy / f"seed_{seed}") / subdir
@@ -108,28 +165,35 @@ def resolve_default_source_run_dir(outputs_root: Path, layout: str, seed: int) -
             if candidate.exists():
                 return candidate
 
-    return seed_run_dir(outputs_root, layout, seed) / NOADAPT_POLICY_SUBDIR
+    return seed_run_dir(outputs_root, layout, seed, rl=rl) / NOADAPT_POLICY_SUBDIR
 
 
-def resolve_policy_dir(outputs_root: Path, layout: str, seed: int, policy_subdir: str) -> Path:
+def resolve_policy_dir(outputs_root: Path, layout: str, seed: int, policy_subdir: str, *, rl: str = "ppo") -> Path:
     """Resolve a policy directory with legacy fallback candidates."""
     candidate_subdirs = _policy_subdir_candidates(policy_subdir)
     candidates = [
-        seed_run_dir(outputs_root, layout, seed) / subdir
+        seed_run_dir(outputs_root, layout, seed, rl=rl) / subdir
+        for subdir in candidate_subdirs
+    ]
+    pretag_candidates = [
+        _pretag_seed_run_dir(outputs_root, layout, seed) / subdir
         for subdir in candidate_subdirs
     ]
     legacy_candidates = [
         (outputs_root / f"seed_{seed}") / subdir
         for subdir in candidate_subdirs
     ]
-    for candidate in [*candidates, *legacy_candidates]:
+    for candidate in [*candidates, *pretag_candidates, *legacy_candidates]:
         if candidate.exists():
             return candidate
 
     global_legacy = legacy_outputs_root()
     if outputs_root != global_legacy:
         global_candidates = [
-            seed_run_dir(global_legacy, layout, seed) / subdir
+            seed_run_dir(global_legacy, layout, seed, rl=rl) / subdir
+            for subdir in candidate_subdirs
+        ] + [
+            _pretag_seed_run_dir(global_legacy, layout, seed) / subdir
             for subdir in candidate_subdirs
         ] + [
             (global_legacy / f"seed_{seed}") / subdir
@@ -139,4 +203,4 @@ def resolve_policy_dir(outputs_root: Path, layout: str, seed: int, policy_subdir
             if candidate.exists():
                 return candidate
 
-    return seed_run_dir(outputs_root, layout, seed) / candidate_subdirs[0]
+    return seed_run_dir(outputs_root, layout, seed, rl=rl) / candidate_subdirs[0]

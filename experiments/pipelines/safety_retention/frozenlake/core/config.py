@@ -25,6 +25,9 @@ SETTINGS_SOURCE = (
 )
 N_ACTIONS = 4
 OBS_DIM = 3
+LAYOUT_NAME = LAYOUT
+SOURCE_MAP: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["source_map"])
+DOWNSTREAM_MAP: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["downstream_map"])
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ class PipelineConfig:
     source_map: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["source_map"])
     downstream_map: tuple[str, ...] = tuple(str(r) for r in TASKS_SETTINGS["downstream_map"])
     max_episode_steps: int = int(TASKS_SETTINGS["max_episode_steps"])
+    deterministic: bool = bool(TASKS_SETTINGS.get("deterministic", True))
     source_task_num: float = float(REFERENCE_SETTINGS["adaptation_ppo"]["source_task_num"])
     downstream_task_num: float = float(REFERENCE_SETTINGS["adaptation_ppo"]["downstream_task_num"])
     reference_layout: str = LAYOUT
@@ -102,6 +106,7 @@ def get_pipeline_config(layout: str) -> PipelineConfig:
         source_map=tuple(str(r) for r in tasks["source_map"]),
         downstream_map=tuple(str(r) for r in tasks["downstream_map"]),
         max_episode_steps=int(tasks["max_episode_steps"]),
+        deterministic=bool(tasks.get("deterministic", True)),
         source_task_num=float(s["adaptation_ppo"]["source_task_num"]),
         downstream_task_num=float(s["adaptation_ppo"]["downstream_task_num"]),
         reference_layout=layout,

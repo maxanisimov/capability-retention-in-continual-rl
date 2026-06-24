@@ -165,12 +165,13 @@ def make_env(
     task_num: float,
     max_episode_steps: int,
     shaped: bool = False,
+    is_slippery: bool = False,
     render_mode: str | None = None,
 ) -> gym.Env:
     env = gym.make(
         "FrozenLake-v1",
         desc=list(env_map),
-        is_slippery=False,
+        is_slippery=is_slippery,
         max_episode_steps=max_episode_steps,
         render_mode=render_mode,
     )

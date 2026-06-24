@@ -1,4 +1,10 @@
-"""Safety dataset, rollout, and supervised fine-tuning utilities."""
+"""Safety dataset, rollout, and supervised fine-tuning utilities.
+
+All safety analysis here (`_next_state_index`, `safe_action_mask_for_state`,
+the Rashomon dataset/certificates) assumes deterministic FrozenLake
+transitions. It is only sound when the environment is built with
+`is_slippery=False` (i.e. `deterministic=True`).
+"""
 
 from __future__ import annotations
 
