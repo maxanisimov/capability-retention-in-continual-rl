@@ -62,9 +62,9 @@ from stable_baselines3 import PPO
 
 from experiments.utils.ppo_utils import ActorParamBounds
 from experiments.utils.projected_optimizers import ProjectedAdam
-from experiments.utils.sb3_clamped_ppo import (
-    _resolve_feature_actor_names_for_policy,
-    _resolve_policy,
+from experiments.utils.sb3_policy_introspection import (
+    resolve_feature_actor_names_for_policy,
+    resolve_policy,
 )
 
 ProjectionTarget = Literal["feature_actor", "all"]
@@ -81,11 +81,11 @@ def projection_target_parameter_names(
     returns the actor branch names (sorted, canonical); ``"all"`` returns every
     policy parameter name in ``named_parameters`` order.
     """
-    policy = _resolve_policy(model_or_policy)
+    policy = resolve_policy(model_or_policy)
     if projection_target == "all":
         return [name for name, _ in policy.named_parameters()]
     if projection_target == "feature_actor":
-        return _resolve_feature_actor_names_for_policy(policy, dict(policy.named_parameters()))
+        return resolve_feature_actor_names_for_policy(policy, dict(policy.named_parameters()))
     raise ValueError(
         f"Unsupported projection_target={projection_target!r}; "
         "expected 'feature_actor' or 'all'.",
