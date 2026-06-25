@@ -1,0 +1,12 @@
+# Task library for the CustomColourGridWorld-v0 pipeline.
+# See CustomBridgeCrossing/settings/tasks/tasks.yaml for the schema description.
+#
+#   python synthesise_shield.py --env CustomColourGridWorld-v0 --task customcolourgridworld_default
+#   python plot_shield.py       --env CustomColourGridWorld-v0 --task customcolourgridworld_default
+
+customcolourgridworld_default:
+  env: CustomColourGridWorld-v0
+  env_kwargs: null
+  seed: 0
+  stochasticity:
+    slip_prob: 0.0

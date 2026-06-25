@@ -1,0 +1,38 @@
+# Task library for the CustomMediaStreaming family pipeline.
+# See CustomBridgeCrossing/settings/tasks/tasks.yaml for the schema description.
+#
+# Stochasticity here is the buffer dynamics: the chunk arrival/drain rates, applied to the
+# env constructor (v0/v2: fast_rate/slow_rate/out_rate; v3: the danger up/down probs).
+#
+# WARNING: the existing artifact lives under a corrupted directory name
+#   artifacts/shields/custoььувшфыекуфьштпм0_default/   (mixed-Cyrillic typo)
+# which does NOT match the canonical task label below. Regenerate it with the clean label
+# and delete the corrupted directory:
+#
+#   python synthesise_shield.py --env CustomMediaStreaming-v0 --task custommediastreaming_default
+#   python plot_shield.py       --env CustomMediaStreaming-v0 --task custommediastreaming_default
+
+custommediastreaming_default:
+  env: CustomMediaStreaming-v0
+  env_kwargs: null
+  stochasticity:
+    fast_rate: 0.0
+    slow_rate: 0.0
+    out_rate: 0.0
+
+custommediastreamingv2_default:
+  env: CustomMediaStreamingV2-v0
+  env_kwargs: null
+  stochasticity:
+    fast_rate: 0.0
+    slow_rate: 0.0
+    out_rate: 0.0
+
+custommediastreamingv3_default:
+  env: CustomMediaStreamingV3-v0
+  env_kwargs: null
+  stochasticity:
+    slow_danger_down_prob: 0.0
+    slow_danger_up_prob: 0.0
+    fast_danger_up_prob: 0.0
+    fast_danger_down_prob: 0.0

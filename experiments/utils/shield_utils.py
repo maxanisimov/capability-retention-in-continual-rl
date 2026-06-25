@@ -214,6 +214,141 @@ def synthesise_probabilistic_shield(
     )
 
 
+def synthesise_shield_from_successor_dict(
+    env: Any,
+    label_fn: LabelFn,
+    cost_fn: CostFn,
+    *,
+    shield_type: ShieldType = "deterministic",
+    risk_threshold: float = 0.0,
+    theta: float = 1e-10,
+    max_vi_steps: int = 1000,
+    unsafe_cost_threshold: float = 0.5,
+    return_info: bool = False,
+) -> np.ndarray | tuple[np.ndarray, ShieldSynthesisInfo]:
+    """Synthesise a shield from an env's sparse successor-states dict.
+
+    Equivalent to :func:`synthesise_shield` but consumes the sparse
+    ``(successor_states, transition_probs)`` representation exposed by
+    ``TabularEnv.get_successor_states_dict()`` instead of a dense
+    ``(n_states, n_states, n_actions)`` transition matrix. This is required for the
+    larger tabular envs (e.g. Pacman), whose dense matrix would be ``O(|S|^2)`` and is
+    therefore never materialised; the exact value iteration itself only needs the sparse
+    successor support, so this path is both correct and memory-efficient.
+
+    ``successor_states[s]`` is the list of successor state ids reachable from ``s`` (its
+    support across all actions); ``transition_probs[(s, a)]`` is the probability vector over
+    that support for action ``a``.
+    """
+
+    _require_gymnasium()
+    if shield_type not in {"deterministic", "probabilistic"}:
+        raise ValueError("shield_type must be either 'deterministic' or 'probabilistic'.")
+    if not 0.0 <= risk_threshold <= 1.0:
+        raise ValueError(f"risk_threshold must be in [0, 1], got {risk_threshold}.")
+
+    unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+    if not isinstance(unwrapped.action_space, spaces.Discrete):
+        raise TypeError(
+            "Shield synthesis only supports discrete action spaces, got "
+            f"{type(unwrapped.action_space).__name__}.",
+        )
+    dict_result = (
+        unwrapped.get_successor_states_dict()
+        if hasattr(unwrapped, "get_successor_states_dict")
+        else None
+    )
+    if not dict_result:
+        raise ValueError(
+            f"{type(unwrapped).__name__} does not expose a successor-states dict via "
+            "get_successor_states_dict().",
+        )
+    successors, transition_probs = dict_result
+
+    n_actions = int(unwrapped.action_space.n)
+    if isinstance(unwrapped.observation_space, spaces.Discrete):
+        n_states = int(unwrapped.observation_space.n)
+    else:
+        n_states = int(getattr(unwrapped, "_n_states"))
+
+    successor_states_matrix, probabilities = _successor_arrays_from_dict(
+        successors, transition_probs, n_states=n_states, n_actions=n_actions,
+    )
+
+    safe_states = _safe_states(label_fn, cost_fn, n_states, unsafe_cost_threshold)
+    winning_set = _almost_sure_safe_set(
+        successor_states_matrix, probabilities, set(safe_states.tolist()),
+    )
+    winning_states = np.array(sorted(int(s) for s in winning_set), dtype=np.int64)
+
+    if shield_type == "deterministic":
+        shield = _deterministic_shield(successor_states_matrix, probabilities, winning_states)
+        info = ShieldSynthesisInfo(
+            successor_states_matrix=successor_states_matrix,
+            probabilities=probabilities,
+            winning_states=winning_states,
+            safe_states=safe_states,
+        )
+    else:
+        state_risk, action_risk, steps, residual = _eventual_unsafe_risk_value_iteration(
+            successor_states_matrix,
+            probabilities,
+            label_fn,
+            cost_fn,
+            winning_states,
+            theta=theta,
+            max_steps=max_vi_steps,
+            unsafe_cost_threshold=unsafe_cost_threshold,
+        )
+        shield = (action_risk <= risk_threshold + theta).astype(int)
+        shield[np.setdiff1d(np.arange(n_states), safe_states), :] = 0
+        info = ShieldSynthesisInfo(
+            successor_states_matrix=successor_states_matrix,
+            probabilities=probabilities,
+            winning_states=winning_states,
+            safe_states=safe_states,
+            state_risk=state_risk,
+            action_risk=action_risk,
+            vi_steps=steps,
+            vi_residual=residual,
+        )
+
+    if return_info:
+        return shield, info
+    return shield
+
+
+def _successor_arrays_from_dict(
+    successors: Any,
+    transition_probs: Any,
+    *,
+    n_states: int,
+    n_actions: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the sparse ``(successor_states_matrix, probabilities)`` arrays used by value
+    iteration from an env's successor-states dict."""
+    supports = [list(successors.get(state, [])) for state in range(n_states)]
+    max_successors = max((len(support) for support in supports), default=0)
+    if max_successors == 0:
+        raise ValueError("successor-states dict does not contain any reachable successors.")
+
+    successor_states_matrix = -np.ones((max_successors, n_states), dtype=np.int64)
+    probabilities = np.zeros((max_successors, n_states, n_actions), dtype=np.float64)
+    for state in range(n_states):
+        support = supports[state]
+        k = len(support)
+        if k == 0:
+            continue
+        successor_states_matrix[:k, state] = np.asarray(support, dtype=np.int64)
+        for action in range(n_actions):
+            probs = transition_probs.get((state, action))
+            if probs is None:
+                continue
+            probs = np.asarray(probs, dtype=np.float64)
+            probabilities[: probs.shape[0], state, action] = probs
+    return successor_states_matrix, probabilities
+
+
 def _require_gymnasium() -> None:
     if gym is None or spaces is None:
         raise ModuleNotFoundError("gymnasium is required to synthesise shields.")

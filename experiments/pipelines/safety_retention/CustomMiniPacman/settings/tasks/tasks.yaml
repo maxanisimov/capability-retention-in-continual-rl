@@ -1,0 +1,19 @@
+# Task library for the CustomMiniPacman family pipeline.
+# See CustomBridgeCrossing/settings/tasks/tasks.yaml for the schema description.
+#
+# Stochasticity here is `ghost_rand_prob`: probability the ghost moves randomly rather than
+# chasing. It is applied to the env constructor; 0.0 makes the ghost always chase, i.e. the
+# env is fully deterministic. CustomMiniPacman-v0 state is agent x ghost x food, so plotting
+# renders 2-D slices with the non-position features held fixed; fixed_features lists the
+# slices to render (one PNG each).
+#
+#   python synthesise_shield.py --env CustomMiniPacman-v0 --task minipacman_default
+#   python plot_shield.py       --env CustomMiniPacman-v0 --task minipacman_default \
+#       --fixed-features '{"ghost_y": 1, "ghost_x": 1}' \
+#       --fixed-features '{"ghost_y": 3, "ghost_x": 8}'
+
+minipacman_default:
+  env: CustomMiniPacman-v0
+  env_kwargs: null
+  stochasticity:
+    ghost_rand_prob: 0.0

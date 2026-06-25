@@ -145,6 +145,27 @@ def plot_tabular_shield(
     return ax
 
 
+def build_shield_layout(
+    env: Any,
+    *,
+    fixed_features: Mapping[str, Any] | None = None,
+) -> "_ShieldLayout":
+    """Return the rendered background plus per-cell / per-action layout for a shield slice.
+
+    The returned object exposes ``background`` (the env's rgb_array frame), ``cells``
+    (each with ``state`` and screen geometry), ``action_deltas`` (per-action screen
+    direction as a fraction of a cell), ``action_names``, ``nrow``, ``ncol`` and ``title``.
+    This is the public entry point external plotters use to overlay their own per-action
+    annotations (e.g. an eventual-safety-probability colormap) on the native frame.
+    """
+
+    return _build_layout(
+        _unwrap(env),
+        _normalise_fixed_features(fixed_features),
+        render_env=env,
+    )
+
+
 def render_tabular_shield_background(
     env: Any,
     *,
@@ -366,9 +387,14 @@ def _colour_bomb_v3_layout(
         for row in range(size)
         for col in range(size)
     )
+    # Render the frame with the active colour zone matching the slice, keeping the
+    # start agent cell purely for display.
+    render_state = zone * grid_area + (int(env._start_state) % grid_area)
     return _ShieldLayout(
         background=(
-            _render_native_background(env, render_env) if render_background else None
+            _render_native_background(env, render_env, render_state=render_state)
+            if render_background
+            else None
         ),
         nrow=size,
         ncol=size,
@@ -455,9 +481,28 @@ def _pacman_layout(
             )
     if not cells:
         raise ValueError("fixed_features does not leave any valid Pacman states.")
+    # Render the frame with the ghost (and other fixed features) at the requested
+    # slice, keeping the start agent cell purely for display.
+    start = env._reverse_state_map[int(env._start_state)]
+    render_key = (
+        start[0],
+        start[1],
+        fixed["agent_direction"],
+        fixed["ghost_y"],
+        fixed["ghost_x"],
+        fixed["ghost_direction"],
+        fixed["food"],
+    )
+    render_state = (
+        int(env._state_map[render_key])
+        if render_key in env._state_map
+        else int(cells[0].state)
+    )
     return _ShieldLayout(
         background=(
-            _render_native_background(env, render_env) if render_background else None
+            _render_native_background(env, render_env, render_state=render_state)
+            if render_background
+            else None
         ),
         nrow=int(env._n_row),
         ncol=int(env._n_col),
@@ -645,7 +690,12 @@ def _deltas_from_action_map(
     return deltas
 
 
-def _render_native_background(env: Any, render_env: Any) -> np.ndarray:
+def _render_native_background(
+    env: Any,
+    render_env: Any,
+    *,
+    render_state: int | None = None,
+) -> np.ndarray:
     if not hasattr(render_env, "render"):
         raise ValueError(f"{type(render_env).__name__} does not expose render().")
 
@@ -654,12 +704,23 @@ def _render_native_background(env: Any, render_env: Any) -> np.ndarray:
     # would mutate caller-visible env state, which plot_tabular_shield must not do.
     unwrapped_render_env = getattr(render_env, "unwrapped", render_env)
 
+    # ``render_state`` lets a slice render the background from a state whose
+    # non-coordinate features (e.g. Pacman's ghost, the colour-bomb active zone)
+    # match the requested ``fixed_features``, since the renderers decode those
+    # features straight from ``env._state``. The original state is restored below
+    # so the call stays side-effect-free.
+    set_state = render_state is not None and hasattr(env, "_state")
+    old_state = getattr(env, "_state", None)
     old_render_mode = getattr(env, "render_mode", None)
     try:
+        if set_state:
+            env._state = int(render_state)
         if old_render_mode != "rgb_array":
             env.render_mode = "rgb_array"
         frame = unwrapped_render_env.render()
     finally:
+        if set_state:
+            env._state = old_state
         if hasattr(env, "render_mode"):
             env.render_mode = old_render_mode
 

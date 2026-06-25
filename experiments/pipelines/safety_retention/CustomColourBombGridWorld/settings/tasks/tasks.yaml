@@ -1,0 +1,24 @@
+# Task library for the CustomColourBombGridWorldV2-v0 pipeline.
+# See CustomBridgeCrossing/settings/tasks/tasks.yaml for the schema description.
+# NOTE: the task label drops the "Bomb" infix, matching the existing artifact directory.
+#
+#   python synthesise_shield.py --env CustomColourBombGridWorldV2-v0 --task customcolourgridworldv2_default
+#   python plot_shield.py       --env CustomColourBombGridWorldV2-v0 --task customcolourgridworldv2_default
+
+customcolourgridworld_default:
+  env: CustomColourBombGridWorld-v0
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.0
+
+customcolourgridworldv2_default:
+  env: CustomColourBombGridWorldV2-v0
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.0
+
+customcolourgridworldv3_default:
+  env: CustomColourBombGridWorldV3-v0
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.0

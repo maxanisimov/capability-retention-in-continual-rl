@@ -1,0 +1,33 @@
+# Task library for the CustomBridgeCrossing family pipeline.
+#
+# Each top-level key is a task label passed to synthesise_shield.py / plot_shield.py via
+# --task. A task block describes the ENVIRONMENT instance; it does NOT contain shield-
+# synthesis settings (risk threshold, shield type), which belong to the shield, not the task.
+#
+# Schema (shared by every family's tasks.yaml):
+#   env:           the concrete gym id to construct (must match the --env you pass).
+#   env_kwargs:    optional dict of non-dynamics constructor kwargs (e.g. layout); null = none.
+#   stochasticity: dict of dynamics kwargs APPLIED to the env constructor. Edit these and the
+#                  env that synthesise_shield.py builds (and the shield it computes) change to
+#                  match; plot_shield.py then reuses the same kwargs via the saved shield.
+#   seed:          optional episode seed (informational; synthesis uses --seed).
+#   fixed_features: optional list of plot slices (non-position features held fixed).
+# Precedence for constructor kwargs: env_kwargs < stochasticity < a one-off --env-kwargs CLI.
+#
+# For this env the dynamics knob is `slip_prob` (probability the agent moves in an unintended
+# direction). Setting it below the env default makes the bridge crossing more deterministic.
+#
+#   python synthesise_shield.py --env CustomBridgeCrossing-v0 --task custombridgecrossing_default
+#   python plot_shield.py       --env CustomBridgeCrossing-v0 --task custombridgecrossing_default
+
+custombridgecrossing_default:
+  env: CustomBridgeCrossing-v0
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.00
+
+custombridgecrossingv2_default:
+  env: CustomBridgeCrossingV2-v0
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.0
