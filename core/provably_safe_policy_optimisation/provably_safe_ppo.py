@@ -32,7 +32,11 @@ import torch as th
 from gymnasium import spaces
 
 from provably_safe_policy_optimisation._projection_logging import record_shield_window
+from provably_safe_policy_optimisation.policy_introspection import (
+    extract_feature_actor_parameters_and_network,
+)
 from provably_safe_policy_optimisation.projected_ppo import ProjectedPPO
+from provably_safe_policy_optimisation.safe_init import SafeInitReport, run_safe_init
 from provably_safe_policy_optimisation.shield import Shield, as_shield
 
 
@@ -104,6 +108,28 @@ class ProvablySafePPO(ProjectedPPO):
 
         policy.forward = shielded_forward  # type: ignore[method-assign]
         self._shield_forward_wrapped = True
+
+    def pretrain_on_shield(self, **kwargs: Any) -> SafeInitReport:
+        """Make the actor propose safe actions before ``learn()``.
+
+        Behaviourally clones the shield's safe actions (so the greedy action is safe),
+        then — for box/discrete shields — certifies greedy-safety over each region via
+        IBP, refining the worst-case margin until certified. If projection bounds are
+        attached, parameters are re-projected afterwards. See :func:`run_safe_init` for
+        keyword arguments.
+        """
+        # copy_modules=False: the returned Sequential shares the live actor parameters.
+        _, actor_seq = extract_feature_actor_parameters_and_network(self, copy_modules=False)
+        report = run_safe_init(
+            self,
+            logits_fn=lambda obs_t: self.policy.get_distribution(obs_t).distribution.logits,
+            certify_seq=actor_seq,
+            params=list(actor_seq.parameters()),
+            **kwargs,
+        )
+        if self.policy.optimizer.has_bounds:
+            self.policy.optimizer.project_now()
+        return report
 
     def shield_diagnostics(self) -> dict[str, float]:
         """Cumulative shield intervention diagnostics (see ``Shield.diagnostics``)."""

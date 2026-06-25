@@ -212,7 +212,20 @@ class RegionShield(Shield):
 
         self._conditions = conditions
         self._fallback_index = len(regions)
+        # Axis-aligned box bounds per region (set by from_boxes); enables IBP
+        # certification. None for predicate-based regions (empirical checks only).
+        self._boxes: list[tuple[np.ndarray, np.ndarray]] | None = None
         super().__init__(mask, obs_to_state=self._classify, no_safe_action=no_safe_action, seed=seed)
+
+    @property
+    def has_boxes(self) -> bool:
+        """Whether regions have axis-aligned box bounds (required for IBP certification)."""
+        return self._boxes is not None
+
+    @property
+    def boxes(self) -> list[tuple[np.ndarray, np.ndarray]] | None:
+        """Per-region ``(low, high)`` bounds, or ``None`` for predicate-based regions."""
+        return self._boxes
 
     @staticmethod
     def _validate_actions(actions: Any, n_actions: int, where: Any) -> np.ndarray:
@@ -252,6 +265,7 @@ class RegionShield(Shield):
         region matches when ``lows <= obs <= highs`` element-wise (closed intervals).
         """
         regions: list[tuple[Callable[[np.ndarray], Any], Any]] = []
+        box_bounds: list[tuple[np.ndarray, np.ndarray]] = []
         for i, (lows, highs, safe_actions) in enumerate(boxes):
             low = np.asarray(lows, dtype=np.float64).reshape(-1)
             high = np.asarray(highs, dtype=np.float64).reshape(-1)
@@ -264,7 +278,10 @@ class RegionShield(Shield):
                 return bool(np.all((obs >= low) & (obs <= high)))
 
             regions.append((condition, safe_actions))
-        return cls(regions, n_actions, **kwargs)
+            box_bounds.append((low, high))
+        shield = cls(regions, n_actions, **kwargs)
+        shield._boxes = box_bounds
+        return shield
 
 
 def as_shield(shield: Any, obs_to_state: ObsToState | None = None, *, seed: int | None = None) -> Shield:

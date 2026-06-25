@@ -32,6 +32,7 @@ from provably_safe_policy_optimisation.policy_introspection import (
     resolve_feature_actor_names_for_policy,
     resolve_policy,
 )
+from provably_safe_policy_optimisation.safe_init import SafeInitReport
 from provably_safe_policy_optimisation.shield import RegionShield, Shield, as_shield
 
 # SB3-dependent training classes (optional: only if stable-baselines3 installed).
@@ -59,6 +60,7 @@ __all__ = [
     "ProvablySafeDQN",
     "ProvablySafePPO",
     "RegionShield",
+    "SafeInitReport",
     "Shield",
     "as_shield",
     "extract_feature_actor_parameters_and_network",

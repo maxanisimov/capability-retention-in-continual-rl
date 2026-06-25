@@ -29,6 +29,7 @@ from gymnasium import spaces
 
 from provably_safe_policy_optimisation._projection_logging import record_shield_window
 from provably_safe_policy_optimisation.projected_dqn import ProjectedDQN
+from provably_safe_policy_optimisation.safe_init import SafeInitReport, run_safe_init
 from provably_safe_policy_optimisation.shield import Shield, as_shield
 
 
@@ -79,6 +80,27 @@ class ProvablySafeDQN(ProjectedDQN):
         shielded = self._shield.override(states, action).reshape(np.asarray(action).shape)
         # Discrete action space: stored (buffer) action equals the executed action.
         return shielded, shielded
+
+    def pretrain_on_shield(self, **kwargs: Any) -> SafeInitReport:
+        """Make the q-network propose safe actions before ``learn()``.
+
+        Behaviourally clones the shield's safe actions (so ``argmax Q`` is safe), then —
+        for box/discrete shields — certifies greedy-safety over each region via IBP,
+        refining the worst-case margin until certified. After pretraining the target
+        network is hard-synced and (if projection bounds are attached) parameters are
+        re-projected into bounds. See :func:`run_safe_init` for keyword arguments.
+        """
+        report = run_safe_init(
+            self,
+            logits_fn=lambda obs_t: self.policy.q_net(obs_t),
+            certify_seq=self.policy.q_net.q_net,
+            params=list(self.policy.q_net.parameters()),
+            **kwargs,
+        )
+        self.policy.q_net_target.load_state_dict(self.policy.q_net.state_dict())
+        if self.policy.optimizer.has_bounds:
+            self.policy.optimizer.project_now()
+        return report
 
     def shield_diagnostics(self) -> dict[str, float]:
         """Cumulative shield intervention diagnostics (see ``Shield.diagnostics``)."""
