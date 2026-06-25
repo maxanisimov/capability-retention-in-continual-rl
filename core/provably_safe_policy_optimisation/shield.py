@@ -1,14 +1,20 @@
-"""Runtime safety shield for discrete state-action spaces.
+"""Runtime safety shields for discrete actions.
 
-A shield is a binary mask ``(n_states, n_actions)`` where ``mask[s, a] == 1`` means
-action ``a`` is *safe* in state ``s`` (the representation produced by
-``experiments.utils.shield_utils.synthesise_shield`` and stored in ``shield_q.pt``
-artifacts). At runtime the shield maps an observation to a discrete state, and if a
-chosen action is unsafe it overrides it by sampling **uniformly from that state's safe
-actions**.
+A shield maps an observation to an integer index and overrides unsafe actions using a
+binary mask ``(n_index, n_actions)`` where ``mask[i, a] == 1`` means action ``a`` is
+*safe* at index ``i``. If a chosen action is unsafe it is replaced by an action sampled
+**uniformly from that index's safe actions**.
 
-This module is independent of how the shield was synthesised; users supply a finished
-mask (hand-built, from ``synthesise_shield``, or loaded from disk).
+Two flavours, sharing the same override engine and diagnostics:
+
+* :class:`Shield` -- discrete states: index = state id (the representation produced by
+  ``experiments.utils.shield_utils.synthesise_shield`` and stored in ``shield_q.pt``).
+* :class:`RegionShield` -- continuous states: index = region id, where the continuous
+  observation space is split into disjoint regions, each with a fixed safe-action set
+  (e.g. MountainCar: "position < 1.0 -> only push right is safe").
+
+This module is independent of how a shield was synthesised; users supply a finished mask
+(``Shield``) or a set of regions (``RegionShield``).
 """
 
 from __future__ import annotations
@@ -150,6 +156,115 @@ class Shield:
             "no_safe_state": int(self._n_no_safe_state),
             "intervention_rate": self.intervention_rate,
         }
+
+
+class RegionShield(Shield):
+    """A continuous-state shield: disjoint regions, each with a fixed safe-action set.
+
+    The continuous observation space is partitioned into ordered regions. A region is a
+    predicate over a single observation vector; the first region whose predicate holds is
+    the observation's index. Observations matching no region fall into a trailing
+    *fallback* index (all actions safe by default). Internally this is a :class:`Shield`
+    whose ``obs_to_state`` is the region classifier and whose mask is indexed by region,
+    so it works unchanged with ``ProvablySafeDQN``/``ProvablySafePPO``.
+
+    Parameters
+    ----------
+    regions:
+        Ordered list of ``(condition, safe_actions)``. ``condition`` is a callable taking
+        a single observation vector and returning a bool; ``safe_actions`` is an iterable
+        of action indices. Regions are assumed disjoint; ties resolve first-match-wins.
+    n_actions:
+        Size of the discrete action space.
+    default_safe_actions:
+        Safe actions for observations matching no region. ``None`` (default) means *all*
+        actions are safe (unconstrained).
+    no_safe_action, seed:
+        Forwarded to :class:`Shield`.
+    """
+
+    def __init__(
+        self,
+        regions: list[tuple[Callable[[np.ndarray], Any], Any]],
+        n_actions: int,
+        *,
+        default_safe_actions: Any = None,
+        no_safe_action: Literal["keep", "raise"] = "keep",
+        seed: int | None = None,
+    ) -> None:
+        if n_actions <= 0:
+            raise ValueError(f"n_actions must be positive; got {n_actions}.")
+        conditions: list[Callable[[np.ndarray], Any]] = []
+        # mask rows: one per region + a trailing fallback row.
+        mask = np.zeros((len(regions) + 1, n_actions), dtype=int)
+        for i, region in enumerate(regions):
+            condition, safe_actions = region
+            if not callable(condition):
+                raise ValueError(f"Region {i}: condition must be callable.")
+            conditions.append(condition)
+            mask[i, self._validate_actions(safe_actions, n_actions, i)] = 1
+        fallback = (
+            np.arange(n_actions)
+            if default_safe_actions is None
+            else self._validate_actions(default_safe_actions, n_actions, "fallback")
+        )
+        mask[len(regions), fallback] = 1
+
+        self._conditions = conditions
+        self._fallback_index = len(regions)
+        super().__init__(mask, obs_to_state=self._classify, no_safe_action=no_safe_action, seed=seed)
+
+    @staticmethod
+    def _validate_actions(actions: Any, n_actions: int, where: Any) -> np.ndarray:
+        arr = np.asarray(list(actions), dtype=np.int64).reshape(-1)
+        if arr.size and (arr.min() < 0 or arr.max() >= n_actions):
+            raise ValueError(f"Region {where}: safe_actions must be in [0, {n_actions}); got {arr.tolist()}.")
+        return arr
+
+    def _classify(self, obs: Any) -> np.ndarray:
+        if hasattr(obs, "detach"):  # torch.Tensor
+            obs = obs.detach().cpu().numpy()
+        batch = np.asarray(obs, dtype=np.float64)
+        if batch.ndim == 1:
+            batch = batch.reshape(1, -1)
+        region_ids = np.full(batch.shape[0], self._fallback_index, dtype=np.int64)
+        assigned = np.zeros(batch.shape[0], dtype=bool)
+        for idx, condition in enumerate(self._conditions):
+            for row in np.flatnonzero(~assigned):
+                if bool(condition(batch[row])):
+                    region_ids[row] = idx
+                    assigned[row] = True
+            if assigned.all():
+                break
+        return region_ids
+
+    @classmethod
+    def from_boxes(
+        cls,
+        boxes: list[tuple[Any, Any, Any]],
+        n_actions: int,
+        **kwargs: Any,
+    ) -> "RegionShield":
+        """Build a ``RegionShield`` from axis-aligned boxes.
+
+        ``boxes`` is a list of ``(lows, highs, safe_actions)`` where ``lows``/``highs`` are
+        per-dimension bounds (use ``-np.inf``/``np.inf`` for unconstrained dimensions). A
+        region matches when ``lows <= obs <= highs`` element-wise (closed intervals).
+        """
+        regions: list[tuple[Callable[[np.ndarray], Any], Any]] = []
+        for i, (lows, highs, safe_actions) in enumerate(boxes):
+            low = np.asarray(lows, dtype=np.float64).reshape(-1)
+            high = np.asarray(highs, dtype=np.float64).reshape(-1)
+            if low.shape != high.shape:
+                raise ValueError(f"Box {i}: lows and highs must have the same shape; got {low.shape} vs {high.shape}.")
+            if np.any(low > high):
+                raise ValueError(f"Box {i}: lows must be <= highs in every dimension.")
+
+            def condition(obs: np.ndarray, low=low, high=high) -> bool:
+                return bool(np.all((obs >= low) & (obs <= high)))
+
+            regions.append((condition, safe_actions))
+        return cls(regions, n_actions, **kwargs)
 
 
 def as_shield(shield: Any, obs_to_state: ObsToState | None = None, *, seed: int | None = None) -> Shield:
