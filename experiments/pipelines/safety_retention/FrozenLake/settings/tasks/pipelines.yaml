@@ -1,0 +1,23 @@
+diagonal_4x4:
+  source:
+    task: diagonal_4x4_source
+  downstream:
+    task: diagonal_4x4_downstream
+
+diagonal_6x6:
+  source:
+    task: diagonal_6x6_source
+  downstream:
+    task: diagonal_6x6_downstream
+
+diagonal_4x4_stochastic:
+  source:
+    task: diagonal_4x4_stochastic_source
+  downstream:
+    task: diagonal_4x4_stochastic_downstream
+
+diagonal_6x6_stochastic:
+  source:
+    task: diagonal_6x6_stochastic_source
+  downstream:
+    task: diagonal_6x6_stochastic_downstream

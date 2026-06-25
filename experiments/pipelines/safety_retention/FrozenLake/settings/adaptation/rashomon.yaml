@@ -1,0 +1,47 @@
+diagonal_4x4:
+  rashomon:
+    rashomon_n_iters: 20000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+    rashomon_surrogate_aggregation: min
+    rashomon_min_hard_spec: 1.0
+    safety_finetune_lr: 0.01
+    safety_finetune_max_epochs: 3000
+
+diagonal_6x6:
+  rashomon:
+    rashomon_n_iters: 100000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+    rashomon_surrogate_aggregation: min
+    rashomon_min_hard_spec: 1.0
+    safety_finetune_lr: 0.01
+    safety_finetune_max_epochs: 3000
+
+# Stochastic pipelines reuse the deterministic Rashomon hyperparameters as a
+# starting point; tune separately as needed for slippery dynamics. NOTE: the
+# Rashomon safety certificate assumes deterministic transitions, so it is NOT
+# sound for these stochastic pipelines (see core/safety.py / validate_deterministic).
+diagonal_4x4_stochastic:
+  rashomon:
+    rashomon_n_iters: 20000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+    rashomon_surrogate_aggregation: min
+    rashomon_min_hard_spec: 1.0
+    safety_finetune_lr: 0.01
+    safety_finetune_max_epochs: 3000
+
+diagonal_6x6_stochastic:
+  rashomon:
+    rashomon_n_iters: 100000
+    inverse_temp_start: 10
+    inverse_temp_max: 1000
+    rashomon_checkpoint: 100
+    rashomon_surrogate_aggregation: min
+    rashomon_min_hard_spec: 1.0
+    safety_finetune_lr: 0.01
+    safety_finetune_max_epochs: 3000

@@ -1,0 +1,127 @@
+# Task library for the FrozenLake family pipeline.
+# See CustomBridgeCrossing/settings/tasks/tasks.yaml for the shared schema description.
+#
+# Each task block follows the same shape as the other safety environments:
+#   env:           the gym id to construct (FrozenLake-v1).
+#   env_kwargs:    non-dynamics constructor config -- here the `map` and `max_episode_steps`.
+#   stochasticity: the dynamics block. For FrozenLake it is `deterministic` plus
+#                  `slip_probability` (probability the agent does NOT move in the intended
+#                  direction; mapped to Gymnasium's success_rate = 1 - slip_probability).
+#                  Deterministic tasks must keep slip_probability: 0.0.
+#
+#   python synthesise_shield.py --task diagonal_4x4_stochastic_source
+#   python plot_shield.py       --task diagonal_4x4_stochastic_source
+
+diagonal_4x4_source:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFHH
+    - FFFH
+    - HFFF
+    - HFFG
+    max_episode_steps: 16
+  stochasticity:
+    deterministic: true
+    slip_probability: 0.0
+
+diagonal_4x4_downstream:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFFH
+    - FHFH
+    - FFFF
+    - HFFG
+    max_episode_steps: 16
+  stochasticity:
+    deterministic: true
+    slip_probability: 0.0
+
+diagonal_6x6_source:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFHHHH
+    - FFFHHH
+    - HFFFHH
+    - HFFFHH
+    - HHFFFF
+    - HHHFFG
+    max_episode_steps: 36
+  stochasticity:
+    deterministic: true
+    slip_probability: 0.0
+
+diagonal_6x6_downstream:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFFHHH
+    - FHFHHH
+    - FFFFHH
+    - HFFFHH
+    - HHFFFF
+    - HHHFFG
+    max_episode_steps: 36
+  stochasticity:
+    deterministic: true
+    slip_probability: 0.0
+
+# Stochastic variants: same maps as the deterministic tasks above, but with slippery
+# FrozenLake dynamics (deterministic: false, slip_probability > 0).
+diagonal_4x4_stochastic_source:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFHH
+    - FFFH
+    - HFFF
+    - HFFG
+    max_episode_steps: 16
+  stochasticity:
+    deterministic: false
+    slip_probability: 0.2
+
+diagonal_4x4_stochastic_downstream:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFFH
+    - FHFH
+    - FFFF
+    - HFFG
+    max_episode_steps: 16
+  stochasticity:
+    deterministic: false
+    slip_probability: 0.2
+
+diagonal_6x6_stochastic_source:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFHHHH
+    - FFFHHH
+    - HFFFHH
+    - HFFFHH
+    - HHFFFF
+    - HHHFFG
+    max_episode_steps: 36
+  stochasticity:
+    deterministic: false
+    slip_probability: 0.2
+
+diagonal_6x6_stochastic_downstream:
+  env: FrozenLake-v1
+  env_kwargs:
+    map:
+    - SFFHHH
+    - FHFHHH
+    - FFFFHH
+    - HFFFHH
+    - HHFFFF
+    - HHHFFG
+    max_episode_steps: 36
+  stochasticity:
+    deterministic: false
+    slip_probability: 0.2
