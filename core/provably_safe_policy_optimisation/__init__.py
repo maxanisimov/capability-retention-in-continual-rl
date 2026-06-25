@@ -32,6 +32,7 @@ from provably_safe_policy_optimisation.policy_introspection import (
     resolve_feature_actor_names_for_policy,
     resolve_policy,
 )
+from provably_safe_policy_optimisation.shield import Shield, as_shield
 
 # SB3-dependent training classes (optional: only if stable-baselines3 installed).
 try:
@@ -40,10 +41,14 @@ try:
         ProjectedPPO,
         projection_target_parameter_names,
     )
+    from provably_safe_policy_optimisation.provably_safe_dqn import ProvablySafeDQN
+    from provably_safe_policy_optimisation.provably_safe_ppo import ProvablySafePPO
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     ProjectedDQN = None
     ProjectedPPO = None
     projection_target_parameter_names = None
+    ProvablySafeDQN = None
+    ProvablySafePPO = None
 
 __all__ = [
     "ActorParamBounds",
@@ -51,6 +56,10 @@ __all__ = [
     "ProjectedDQN",
     "ProjectedPPO",
     "ProjectionResult",
+    "ProvablySafeDQN",
+    "ProvablySafePPO",
+    "Shield",
+    "as_shield",
     "extract_feature_actor_parameters_and_network",
     "project_to_interval_union",
     "projection_target_parameter_names",
