@@ -29,6 +29,7 @@ import torch
 
 from provably_safe_policy_optimisation.projection import (
     ActorParamBounds,
+    ProjectionResult,
     project_to_interval_union,
     validate_and_prepare_param_interval_bounds,
 )
@@ -74,9 +75,16 @@ class ProjectedAdam(torch.optim.Adam):
         self._projection_params: list[torch.nn.Parameter] = self._projected_params
         self._bounds_l_sets: list[list[torch.Tensor]] | None = None
         self._bounds_u_sets: list[list[torch.Tensor]] | None = None
-        # Lightweight telemetry.
-        self._step_calls = 0
-        self._projected_elements = 0
+        # Diagnostics (cumulative over all bounded steps; see projection_diagnostics).
+        self._step_calls = 0                  # optimizer steps taken while bounds active
+        self._projection_active_steps = 0     # steps where >=1 element was clamped
+        self._projected_elements = 0          # cumulative out-of-bounds entries clamped
+        self._boundary_elements = 0           # cumulative entries on a box face after projection
+        self._displacement_l2_sum = 0.0       # sum of per-step L2 projection magnitudes
+        self._displacement_linf_sum = 0.0     # sum of per-step L-inf projection magnitudes
+        self._max_displacement_l2 = 0.0       # running max per-step L2 magnitude
+        self._max_displacement_linf = 0.0     # running max per-step L-inf magnitude
+        self._selected_box_counts: dict[int, int] = {}  # histogram of selected box index
 
     @property
     def has_bounds(self) -> bool:
@@ -137,12 +145,104 @@ class ProjectedAdam(torch.optim.Adam):
     def step(self, closure: Any = None) -> Any:  # type: ignore[override]
         loss = super().step(closure)
         if self._bounds_l_sets is not None and self._bounds_u_sets is not None:
-            n_projected = project_to_interval_union(
+            result = project_to_interval_union(
                 self._projection_params,
                 self._bounds_l_sets,
                 self._bounds_u_sets,
                 distance_norm=self._distance_norm,
             )
-            self._step_calls += 1
-            self._projected_elements += int(n_projected)
+            self._record(result)
         return loss
+
+    def _record(self, result: ProjectionResult) -> None:
+        """Fold a single-step :class:`ProjectionResult` into cumulative counters."""
+        self._step_calls += 1
+        if result.n_projected > 0:
+            self._projection_active_steps += 1
+        self._projected_elements += int(result.n_projected)
+        self._boundary_elements += int(result.n_boundary)
+        self._displacement_l2_sum += float(result.displacement_l2)
+        self._displacement_linf_sum += float(result.displacement_linf)
+        self._max_displacement_l2 = max(self._max_displacement_l2, float(result.displacement_l2))
+        self._max_displacement_linf = max(self._max_displacement_linf, float(result.displacement_linf))
+        idx = int(result.selected_set_index)
+        self._selected_box_counts[idx] = self._selected_box_counts.get(idx, 0) + 1
+
+    @property
+    def constrained_element_count(self) -> int:
+        """Total number of scalar entries currently under projection."""
+        if self._bounds_l_sets is None:
+            return 0
+        return int(sum(p.numel() for p in self._projection_params))
+
+    def projection_diagnostics(self) -> dict[str, Any]:
+        """Return cumulative projection diagnostics.
+
+        Keys
+        ----
+        bounded_steps:
+            Optimizer steps taken while bounds were attached (the denominator).
+        projection_active_steps / projection_active_fraction:
+            Steps (and their fraction) in which at least one parameter was
+            actually outside the bounds and had to be clamped.
+        projected_elements_total:
+            Cumulative number of scalar entries clamped.
+        mean_projected_elements_per_step / mean_projected_elements_per_active_step:
+            Average clamped entries per bounded step, and per *active* step.
+        constrained_element_count / mean_projected_fraction_per_step:
+            Size of the constrained parameter set, and the average fraction of
+            it clamped per bounded step.
+        mean/max_displacement_l2, mean/max_displacement_linf:
+            How far (L2 and L-inf) the projection pushed parameters back into
+            bounds, averaged over bounded steps and the running maximum.
+        boundary_elements_total / mean_boundary_elements_per_step:
+            Entries sitting exactly on a box face after projection (active
+            constraints / pinned weights).
+        selected_box_counts:
+            Histogram {box_index: count} of which box was projected onto (only
+            informative for union-of-boxes; always {0: ...} for a single box).
+        """
+        steps = self._step_calls
+        active = self._projection_active_steps
+        constrained = self.constrained_element_count
+        return {
+            "bounded_steps": int(steps),
+            "projection_active_steps": int(active),
+            "projection_active_fraction": (active / steps) if steps else 0.0,
+            "projected_elements_total": int(self._projected_elements),
+            "mean_projected_elements_per_step": (self._projected_elements / steps) if steps else 0.0,
+            "mean_projected_elements_per_active_step": (self._projected_elements / active) if active else 0.0,
+            "constrained_element_count": int(constrained),
+            "mean_projected_fraction_per_step": (
+                self._projected_elements / (steps * constrained) if steps and constrained else 0.0
+            ),
+            "mean_displacement_l2": (self._displacement_l2_sum / steps) if steps else 0.0,
+            "max_displacement_l2": float(self._max_displacement_l2),
+            "mean_displacement_linf": (self._displacement_linf_sum / steps) if steps else 0.0,
+            "max_displacement_linf": float(self._max_displacement_linf),
+            "boundary_elements_total": int(self._boundary_elements),
+            "mean_boundary_elements_per_step": (self._boundary_elements / steps) if steps else 0.0,
+            "selected_box_counts": dict(self._selected_box_counts),
+        }
+
+    def _raw_diag_counters(self) -> dict[str, float]:
+        """Raw cumulative counters used to compute per-window logging deltas."""
+        return {
+            "bounded_steps": float(self._step_calls),
+            "projection_active_steps": float(self._projection_active_steps),
+            "projected_elements": float(self._projected_elements),
+            "displacement_l2_sum": float(self._displacement_l2_sum),
+            "max_displacement_l2": float(self._max_displacement_l2),
+        }
+
+    def reset_projection_diagnostics(self) -> None:
+        """Zero all cumulative diagnostics (e.g. to measure a fresh window)."""
+        self._step_calls = 0
+        self._projection_active_steps = 0
+        self._projected_elements = 0
+        self._boundary_elements = 0
+        self._displacement_l2_sum = 0.0
+        self._displacement_linf_sum = 0.0
+        self._max_displacement_l2 = 0.0
+        self._max_displacement_linf = 0.0
+        self._selected_box_counts = {}

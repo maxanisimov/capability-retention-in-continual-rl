@@ -61,6 +61,7 @@ from typing import Any, Literal
 import torch as th
 from stable_baselines3 import PPO
 
+from provably_safe_policy_optimisation._projection_logging import record_projection_window
 from provably_safe_policy_optimisation.policy_introspection import (
     resolve_feature_actor_names_for_policy,
     resolve_policy,
@@ -155,3 +156,12 @@ class ProjectedPPO(PPO):
             self.policy.optimizer.set_bounds(
                 self._param_bounds_l, self._param_bounds_u, params=target_params
             )
+
+    def projection_diagnostics(self) -> dict[str, Any]:
+        """Cumulative projection diagnostics (see ``ProjectedAdam``)."""
+        return self.policy.optimizer.projection_diagnostics()
+
+    def train(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().train(*args, **kwargs)
+        record_projection_window(self)
+        return result

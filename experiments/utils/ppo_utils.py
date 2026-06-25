@@ -643,7 +643,7 @@ def ppo_train(
                 bounds_l_sets,
                 bounds_u_sets,
                 distance_norm=projection_distance_norm,
-            )
+            ).n_projected
         if init_projections > 0:
             print(f"Initial PGD projection count: {init_projections}")
 
@@ -879,7 +879,7 @@ def ppo_train(
                             bounds_l_sets, # type: ignore[arg-type]
                             bounds_u_sets, # type: ignore[arg-type]
                             distance_norm=projection_distance_norm, # type: ignore[arg-type]
-                        )
+                        ).n_projected
         ppo_update_count += 1
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:
@@ -1066,7 +1066,7 @@ def ppo_train_maskable(
                 bounds_l_sets,
                 bounds_u_sets,
                 distance_norm=projection_distance_norm,
-            )
+            ).n_projected
         if init_projections > 0:
             print(f"Initial PGD projection count: {init_projections}")
 
@@ -1265,7 +1265,7 @@ def ppo_train_maskable(
                             bounds_l_sets, # type: ignore[arg-type]
                             bounds_u_sets, # type: ignore[arg-type]
                             distance_norm=projection_distance_norm, # type: ignore[arg-type]
-                        )
+                        ).n_projected
         ppo_update_count += 1
 
         if global_step % (10 * cfg.rollout_steps) < cfg.rollout_steps:

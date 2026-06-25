@@ -17,11 +17,42 @@ All are normalised to *set-major* form ``bounds[set_idx][param_idx] -> Tensor``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 # A single box (list[Tensor], one per parameter) or a union of boxes
 # (list[list[Tensor]], interval-major or parameter-major).
 ActorParamBounds = list[torch.Tensor] | list[list[torch.Tensor]]
+
+
+@dataclass(frozen=True)
+class ProjectionResult:
+    """Diagnostics for a single :func:`project_to_interval_union` call.
+
+    Attributes
+    ----------
+    n_projected:
+        Number of constrained scalar entries that were strictly outside the
+        selected box and therefore clamped this step.
+    n_boundary:
+        Number of constrained scalar entries lying exactly on a box face after
+        projection (active constraints / "pinned" weights).
+    selected_set_index:
+        Index of the box (Rashomon set) the parameters were projected onto.
+    displacement_l2:
+        Euclidean norm of the projection step over all constrained parameters
+        (how far the parameters were pushed back into bounds). ``0.0`` when no
+        clamping was needed.
+    displacement_linf:
+        Largest absolute single-coordinate move of the projection step.
+    """
+
+    n_projected: int
+    n_boundary: int
+    selected_set_index: int
+    displacement_l2: float
+    displacement_linf: float
 
 
 def validate_and_prepare_param_interval_bounds(
@@ -164,11 +195,13 @@ def project_to_interval_union(
     bounds_l_sets: list[list[torch.Tensor]],
     bounds_u_sets: list[list[torch.Tensor]],
     distance_norm: str = "l2",
-) -> int:
+) -> ProjectionResult:
     """
     Project actor parameters onto the nearest convex Rashomon set (box) in full parameter space.
 
     IMPORTANT: This preserves set coupling across parameters.
+
+    Returns a :class:`ProjectionResult` with per-step projection diagnostics.
     """
     norm = str(distance_norm).strip().lower()
     if norm in {"l_inf", "inf", "infty", "infinity"}:
@@ -241,6 +274,27 @@ def project_to_interval_union(
     if best_set_idx is None or best_projected is None:
         raise RuntimeError("Failed to select a nearest Rashomon set during PGD projection.")
 
+    # Diagnostics for the selected box (computed before overwriting params).
+    sel_l = bounds_l_sets[best_set_idx]
+    sel_u = bounds_u_sets[best_set_idx]
+    squared_displacement = 0.0
+    displacement_linf = 0.0
+    n_boundary = 0
+    for param, projected, lb, ub in zip(actor_params, best_projected, sel_l, sel_u):
+        delta = projected - param.data
+        squared_displacement += float(torch.sum(delta * delta).item())
+        if delta.numel():
+            displacement_linf = max(displacement_linf, float(torch.max(torch.abs(delta)).item()))
+        on_face = (projected == lb) | (projected == ub)
+        n_boundary += int(on_face.sum().item())
+
     for param, projected in zip(actor_params, best_projected):
         param.data.copy_(projected)
-    return int(best_n_projected)
+
+    return ProjectionResult(
+        n_projected=int(best_n_projected),
+        n_boundary=int(n_boundary),
+        selected_set_index=int(best_set_idx),
+        displacement_l2=float(squared_displacement ** 0.5),
+        displacement_linf=float(displacement_linf),
+    )

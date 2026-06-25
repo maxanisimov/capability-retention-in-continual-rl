@@ -22,6 +22,7 @@ from __future__ import annotations
 # Pure-torch primitives (no Stable-Baselines3 dependency).
 from provably_safe_policy_optimisation.projection import (
     ActorParamBounds,
+    ProjectionResult,
     project_to_interval_union,
     validate_and_prepare_param_interval_bounds,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "ProjectedAdam",
     "ProjectedDQN",
     "ProjectedPPO",
+    "ProjectionResult",
     "extract_feature_actor_parameters_and_network",
     "project_to_interval_union",
     "projection_target_parameter_names",

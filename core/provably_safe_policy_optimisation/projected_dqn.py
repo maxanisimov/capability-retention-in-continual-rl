@@ -49,6 +49,7 @@ from typing import Any
 
 from stable_baselines3 import DQN
 
+from provably_safe_policy_optimisation._projection_logging import record_projection_window
 from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
 from provably_safe_policy_optimisation.projection import ActorParamBounds
 
@@ -98,3 +99,12 @@ class ProjectedDQN(DQN):
             # set_bounds validates count/shape/order against q_net.parameters()
             # and raises a clear error on misalignment.
             self.policy.optimizer.set_bounds(self._param_bounds_l, self._param_bounds_u)
+
+    def projection_diagnostics(self) -> dict[str, Any]:
+        """Cumulative projection diagnostics (see ``ProjectedAdam``)."""
+        return self.policy.optimizer.projection_diagnostics()
+
+    def train(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().train(*args, **kwargs)
+        record_projection_window(self)
+        return result
