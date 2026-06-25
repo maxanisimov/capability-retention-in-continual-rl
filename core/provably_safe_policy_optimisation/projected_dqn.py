@@ -3,8 +3,9 @@
 :class:`ProjectedDQN` is a thin subclass of SB3's :class:`~stable_baselines3.DQN`
 that, after every gradient update, projects the online Q-network parameters onto
 a union of per-parameter boxes (a "Rashomon set"). The projection reuses the
-exact geometry of the PPO Rashomon path (see ``experiments.utils.ppo_utils``) and
-is implemented as a custom optimizer, :class:`ProjectedAdam`.
+geometry of :mod:`provably_safe_policy_optimisation.projection` and is
+implemented as a custom optimizer,
+:class:`~provably_safe_policy_optimisation.projected_optimizers.ProjectedAdam`.
 
 The bounds are **caller-supplied** and must be aligned, in count, shape, and
 order, with ``model.policy.q_net.parameters()``. Both forms are accepted:
@@ -14,7 +15,7 @@ order, with ``model.policy.q_net.parameters()``. Both forms are accepted:
 
 Usage
 -----
->>> from experiments.utils.sb3_projected_dqn import ProjectedDQN
+>>> from provably_safe_policy_optimisation import ProjectedDQN
 >>> model = ProjectedDQN(
 ...     "MlpPolicy", env,
 ...     param_bounds_l=lower, param_bounds_u=upper,  # aligned to q_net.parameters()
@@ -48,8 +49,8 @@ from typing import Any
 
 from stable_baselines3 import DQN
 
-from experiments.utils.ppo_utils import ActorParamBounds
-from experiments.utils.projected_optimizers import ProjectedAdam
+from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
+from provably_safe_policy_optimisation.projection import ActorParamBounds
 
 
 class ProjectedDQN(DQN):

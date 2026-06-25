@@ -1,5 +1,7 @@
 try:
-    from .sb3_policy_introspection import (
+    # Relocated to the core ``provably_safe_policy_optimisation`` package;
+    # re-exported here for backward compatibility.
+    from provably_safe_policy_optimisation.policy_introspection import (
         extract_feature_actor_parameters_and_network,
     )
 except ModuleNotFoundError:

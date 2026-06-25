@@ -12,8 +12,8 @@ import gymnasium as gym
 import torch as th
 from torch import nn
 
-from experiments.utils.projected_optimizers import ProjectedAdam
-from experiments.utils.sb3_projected_dqn import ProjectedDQN
+from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
+from provably_safe_policy_optimisation.projected_dqn import ProjectedDQN
 
 
 def _tiny_module(*shapes: tuple[int, ...]) -> nn.ParameterList:

@@ -8,7 +8,7 @@ import gymnasium as gym
 import torch as th
 from stable_baselines3 import PPO
 
-from experiments.utils.sb3_policy_introspection import (
+from provably_safe_policy_optimisation.policy_introspection import (
     extract_feature_actor_parameters_and_network,
     resolve_feature_actor_names_for_policy,
     resolve_policy,

@@ -1,11 +1,12 @@
 """Stable-Baselines3 PPO with projected gradient descent onto parameter bounds.
 
 :class:`ProjectedPPO` is the PPO analogue of
-:class:`experiments.utils.sb3_projected_dqn.ProjectedDQN`. After every gradient
-step it projects a chosen subset of the policy parameters onto a union of
-per-parameter boxes (a "Rashomon set"), reusing the exact projection geometry of
-the PPO Rashomon path (``experiments.utils.ppo_utils``) via the shared
-:class:`~experiments.utils.projected_optimizers.ProjectedAdam` optimizer.
+:class:`provably_safe_policy_optimisation.projected_dqn.ProjectedDQN`. After
+every gradient step it projects a chosen subset of the policy parameters onto a
+union of per-parameter boxes (a "Rashomon set"), reusing the projection geometry
+of :mod:`provably_safe_policy_optimisation.projection` via the shared
+:class:`~provably_safe_policy_optimisation.projected_optimizers.ProjectedAdam`
+optimizer.
 
 Why a subset?
 -------------
@@ -27,7 +28,7 @@ of boxes (``list[list[Tensor]]``).
 
 Usage
 -----
->>> from experiments.utils.sb3_projected_ppo import (
+>>> from provably_safe_policy_optimisation import (
 ...     ProjectedPPO, projection_target_parameter_names,
 ... )
 >>> probe = ProjectedPPO("MlpPolicy", env)            # discover actor param order
@@ -60,12 +61,12 @@ from typing import Any, Literal
 import torch as th
 from stable_baselines3 import PPO
 
-from experiments.utils.ppo_utils import ActorParamBounds
-from experiments.utils.projected_optimizers import ProjectedAdam
-from experiments.utils.sb3_policy_introspection import (
+from provably_safe_policy_optimisation.policy_introspection import (
     resolve_feature_actor_names_for_policy,
     resolve_policy,
 )
+from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
+from provably_safe_policy_optimisation.projection import ActorParamBounds
 
 ProjectionTarget = Literal["feature_actor", "all"]
 

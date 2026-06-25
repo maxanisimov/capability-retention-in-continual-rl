@@ -3,7 +3,7 @@
 These utilities identify the actor ("feature_actor") branch of an SB3 policy
 and extract it as a standalone network. They are independent of any particular
 training class and are reused by, e.g.,
-:class:`experiments.utils.sb3_projected_ppo.ProjectedPPO`.
+:class:`provably_safe_policy_optimisation.projected_ppo.ProjectedPPO`.
 """
 
 from __future__ import annotations

@@ -12,8 +12,8 @@ import gymnasium as gym
 import torch as th
 from torch import nn
 
-from experiments.utils.projected_optimizers import ProjectedAdam
-from experiments.utils.sb3_projected_ppo import (
+from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
+from provably_safe_policy_optimisation.projected_ppo import (
     ProjectedPPO,
     projection_target_parameter_names,
 )

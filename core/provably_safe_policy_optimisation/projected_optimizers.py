@@ -1,11 +1,11 @@
 """Projected-gradient-descent optimizers for SB3-style training.
 
 This module provides :class:`ProjectedAdam`, a drop-in replacement for
-``torch.optim.Adam`` that, after every optimizer step, projects the optimized
-parameters onto a union of per-parameter boxes (a "Rashomon set"). This is the
-same projection used by the custom PPO trainer in
-:mod:`experiments.utils.ppo_utils`; here it is exposed as an optimizer so it can
-be plugged into Stable-Baselines3 algorithms (e.g. DQN) via ``optimizer_class``.
+``torch.optim.Adam`` that, after every optimizer step, projects (a subset of)
+the optimized parameters onto a union of per-parameter boxes (a "Rashomon set").
+This is the same projection used by the custom PPO trainer in
+``experiments.utils.ppo_utils``; here it is exposed as an optimizer so it can be
+plugged into Stable-Baselines3 algorithms (e.g. DQN, PPO) via ``optimizer_class``.
 
 Design notes
 ------------
@@ -17,7 +17,7 @@ Design notes
 * Until bounds are set the optimizer behaves exactly like ``torch.optim.Adam``
   (projection is a no-op), so it is always safe to pass as ``optimizer_class``.
 * The heavy lifting (bound validation/normalization and nearest-box projection)
-  is delegated to the existing, battle-tested helpers in ``ppo_utils`` so the
+  is delegated to :mod:`provably_safe_policy_optimisation.projection` so the
   geometry stays identical to the PPO Rashomon path.
 """
 
@@ -27,10 +27,10 @@ from typing import Any
 
 import torch
 
-from experiments.utils.ppo_utils import (
+from provably_safe_policy_optimisation.projection import (
     ActorParamBounds,
-    _project_actor_to_interval_union,
-    _validate_and_prepare_param_interval_bounds,
+    project_to_interval_union,
+    validate_and_prepare_param_interval_bounds,
 )
 
 
@@ -41,8 +41,8 @@ class ProjectedAdam(torch.optim.Adam):
     ----------
     params:
         Iterable of parameters (or a single param group of plain tensors), as
-        passed by SB3. Param-group dicts are not supported (SB3 DQN passes
-        ``q_net.parameters()``).
+        passed by SB3. Param-group dicts are not supported (SB3 passes
+        ``net.parameters()``).
     distance_norm:
         Norm used to pick the nearest box when more than one box is supplied.
         One of ``"l2"``, ``"l1"``, ``"linf"``.
@@ -74,7 +74,7 @@ class ProjectedAdam(torch.optim.Adam):
         self._projection_params: list[torch.nn.Parameter] = self._projected_params
         self._bounds_l_sets: list[list[torch.Tensor]] | None = None
         self._bounds_u_sets: list[list[torch.Tensor]] | None = None
-        # Lightweight telemetry, mirroring ClampedPPO's counters.
+        # Lightweight telemetry.
         self._step_calls = 0
         self._projected_elements = 0
 
@@ -117,7 +117,7 @@ class ProjectedAdam(torch.optim.Adam):
             )
 
         device = target[0].device
-        l_sets, u_sets = _validate_and_prepare_param_interval_bounds(
+        l_sets, u_sets = validate_and_prepare_param_interval_bounds(
             actor_params=target,
             actor_param_bounds_l=bounds_l,
             actor_param_bounds_u=bounds_u,
@@ -137,7 +137,7 @@ class ProjectedAdam(torch.optim.Adam):
     def step(self, closure: Any = None) -> Any:  # type: ignore[override]
         loss = super().step(closure)
         if self._bounds_l_sets is not None and self._bounds_u_sets is not None:
-            n_projected = _project_actor_to_interval_union(
+            n_projected = project_to_interval_union(
                 self._projection_params,
                 self._bounds_l_sets,
                 self._bounds_u_sets,
