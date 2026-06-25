@@ -53,7 +53,7 @@ class ProjectedAdamDiagnosticsTests(unittest.TestCase):
     def test_active_fraction_and_means(self) -> None:
         x = nn.Parameter(th.tensor([5.0]))   # starts outside the box
         opt = ProjectedAdam([x], lr=1e-3)
-        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])])
+        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])], project_on_set=False)
 
         x.grad = th.zeros_like(x)            # Adam no-op; isolate projection
         opt.step()                          # step 1: clamps 5 -> 1 (active)
@@ -74,7 +74,7 @@ class ProjectedAdamDiagnosticsTests(unittest.TestCase):
     def test_reset(self) -> None:
         x = nn.Parameter(th.tensor([5.0]))
         opt = ProjectedAdam([x], lr=1e-3)
-        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])])
+        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])], project_on_set=False)
         x.grad = th.zeros_like(x)
         opt.step()
         opt.reset_projection_diagnostics()
@@ -103,7 +103,7 @@ class ProjectionLoggingTests(unittest.TestCase):
     def test_record_projection_window_logs_deltas(self) -> None:
         x = nn.Parameter(th.tensor([5.0]))
         opt = ProjectedAdam([x], lr=1e-3)
-        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])])
+        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])], project_on_set=False)
         logger = _FakeLogger()
         model = types.SimpleNamespace(
             policy=types.SimpleNamespace(optimizer=opt), logger=logger

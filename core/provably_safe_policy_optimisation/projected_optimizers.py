@@ -85,6 +85,9 @@ class ProjectedAdam(torch.optim.Adam):
         self._max_displacement_l2 = 0.0       # running max per-step L2 magnitude
         self._max_displacement_linf = 0.0     # running max per-step L-inf magnitude
         self._selected_box_counts: dict[int, int] = {}  # histogram of selected box index
+        # Outcome of the initial feasibility projection done by set_bounds (if any);
+        # kept separate from the per-step diagnostics (it is not a gradient update).
+        self._init_projection: ProjectionResult | None = None
 
     @property
     def has_bounds(self) -> bool:
@@ -96,13 +99,14 @@ class ProjectedAdam(torch.optim.Adam):
         bounds_l: ActorParamBounds,
         bounds_u: ActorParamBounds,
         params: list[torch.nn.Parameter] | None = None,
+        project_on_set: bool = True,
     ) -> None:
         """Attach projection bounds, aligned to a parameter order.
 
         Accepts either the single-box form (``list[Tensor]`` with one lower/upper
         tensor per parameter) or the union-of-boxes form (``list[list[Tensor]]``,
         interval-major or parameter-major). Bounds are validated against the
-        parameter shapes/order and moved onto the parameters' device.
+        parameter shapes/order and moved onto the parameters' device and dtype.
 
         Parameters
         ----------
@@ -113,6 +117,11 @@ class ProjectedAdam(torch.optim.Adam):
             constrained sub-network (e.g. SB3 PPO's single actor+critic
             optimizer, where only the actor should be projected). Every entry
             must be one of the optimizer's own parameters.
+        project_on_set:
+            If ``True`` (default), immediately project the current parameters into
+            the bounds so the **starting point is feasible** (recorded in
+            ``self._init_projection``; not counted as an optimizer step). Set
+            ``False`` to leave parameters untouched until the first ``step``.
         """
         target = self._projected_params if params is None else list(params)
         if not target:
@@ -134,12 +143,58 @@ class ProjectedAdam(torch.optim.Adam):
         self._projection_params = target
         self._bounds_l_sets = l_sets
         self._bounds_u_sets = u_sets
+        if project_on_set:
+            self._init_projection = self.project_now()
 
     def clear_bounds(self) -> None:
         """Disable projection (revert to plain Adam behaviour)."""
         self._projection_params = self._projected_params
         self._bounds_l_sets = None
         self._bounds_u_sets = None
+
+    @torch.no_grad()
+    def project_now(self) -> ProjectionResult:
+        """Project the current parameters into the bounds, on demand.
+
+        Use after manually changing weights (e.g. warm-starting after the model
+        was built, or re-attaching bounds following ``load``) to re-establish
+        feasibility. Does not affect the per-step diagnostics counters.
+        """
+        if self._bounds_l_sets is None or self._bounds_u_sets is None:
+            raise RuntimeError("project_now() called before set_bounds().")
+        return project_to_interval_union(
+            self._projection_params,
+            self._bounds_l_sets,
+            self._bounds_u_sets,
+            distance_norm=self._distance_norm,
+        )
+
+    @torch.no_grad()
+    def max_violation(self) -> float:
+        """Largest bound violation of the current parameters (0.0 == feasible).
+
+        Union-aware: returns the *minimum* over boxes of that box's worst
+        single-coordinate violation, since the parameters need only lie inside
+        one box of the union. ``0.0`` when no bounds are attached.
+        """
+        if self._bounds_l_sets is None or self._bounds_u_sets is None:
+            return 0.0
+        best = float("inf")
+        for set_l, set_u in zip(self._bounds_l_sets, self._bounds_u_sets):
+            worst = 0.0
+            for param, lb, ub in zip(self._projection_params, set_l, set_u):
+                p = param.data
+                over = torch.clamp(p - ub, min=0.0)
+                under = torch.clamp(lb - p, min=0.0)
+                if over.numel():
+                    worst = max(worst, float(torch.max(over).item()))
+                    worst = max(worst, float(torch.max(under).item()))
+            best = min(best, worst)
+        return float(best)
+
+    def is_within_bounds(self, atol: float = 0.0) -> bool:
+        """Whether the current parameters satisfy the bounds (within ``atol``)."""
+        return self.max_violation() <= atol
 
     @torch.no_grad()
     def step(self, closure: Any = None) -> Any:  # type: ignore[override]

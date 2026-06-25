@@ -56,6 +56,7 @@ Projection bounds are *not* persisted. After ``ProjectedPPO.load(...)`` (or
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Literal
 
 import torch as th
@@ -67,7 +68,7 @@ from provably_safe_policy_optimisation.policy_introspection import (
     resolve_policy,
 )
 from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
-from provably_safe_policy_optimisation.projection import ActorParamBounds
+from provably_safe_policy_optimisation.projection import ActorParamBounds, ProjectionResult
 
 ProjectionTarget = Literal["feature_actor", "all"]
 
@@ -157,6 +158,38 @@ class ProjectedPPO(PPO):
                 self._param_bounds_l, self._param_bounds_u, params=target_params
             )
 
+    def set_projection_bounds(
+        self,
+        param_bounds_l: ActorParamBounds,
+        param_bounds_u: ActorParamBounds,
+        *,
+        project_on_set: bool = True,
+    ) -> None:
+        """Attach (or re-attach) projection bounds on the actor subset.
+
+        Resolves the projection target (the actor branch by default, per the
+        model's ``projection_target``/``projection_param_names``) and attaches the
+        bounds. Use after ``load`` to restore the constraint, or to change bounds
+        during training. By default the current parameters are immediately
+        projected into the bounds so they are feasible.
+        """
+        target_params = self._resolve_projection_params()
+        self.policy.optimizer.set_bounds(
+            param_bounds_l, param_bounds_u, params=target_params, project_on_set=project_on_set
+        )
+
+    def project_now(self) -> ProjectionResult:
+        """Project the current actor parameters into the bounds (see ``ProjectedAdam``)."""
+        return self.policy.optimizer.project_now()
+
+    def is_within_bounds(self, atol: float = 0.0) -> bool:
+        """Whether the actor currently satisfies the bounds (within ``atol``)."""
+        return self.policy.optimizer.is_within_bounds(atol)
+
+    def max_violation(self) -> float:
+        """Largest current bound violation of the actor (0.0 == feasible)."""
+        return self.policy.optimizer.max_violation()
+
     def projection_diagnostics(self) -> dict[str, Any]:
         """Cumulative projection diagnostics (see ``ProjectedAdam``)."""
         return self.policy.optimizer.projection_diagnostics()
@@ -165,3 +198,16 @@ class ProjectedPPO(PPO):
         result = super().train(*args, **kwargs)
         record_projection_window(self)
         return result
+
+    @classmethod
+    def load(cls, *args: Any, **kwargs: Any) -> "ProjectedPPO":
+        model = super().load(*args, **kwargs)
+        optimizer = getattr(model.policy, "optimizer", None)
+        if optimizer is None or not getattr(optimizer, "has_bounds", False):
+            warnings.warn(
+                "ProjectedPPO loaded without projection bounds (they are not stored in "
+                "the checkpoint): projection is INACTIVE and training will NOT respect any "
+                "parameter bounds until you call set_projection_bounds(...).",
+                stacklevel=2,
+            )
+        return model

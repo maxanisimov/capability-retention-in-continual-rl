@@ -91,6 +91,26 @@ def validate_and_prepare_param_interval_bounds(
         )
 
     actor_shapes = [tuple(p.shape) for p in actor_params]
+    actor_dtypes = [p.dtype for p in actor_params]
+
+    def _prep(tensor: torch.Tensor, p_idx: int) -> torch.Tensor:
+        """Move a bound onto the parameter's device and dtype."""
+        return tensor.to(device=device, dtype=actor_dtypes[p_idx])
+
+    def _finalize(
+        l_sets: list[list[torch.Tensor]],
+        u_sets: list[list[torch.Tensor]],
+    ) -> tuple[list[list[torch.Tensor]], list[list[torch.Tensor]]]:
+        """Reject empty boxes (lb > ub on any coordinate) before returning."""
+        for set_idx, (sl, su) in enumerate(zip(l_sets, u_sets)):
+            for p_idx, (lb, ub) in enumerate(zip(sl, su)):
+                if not bool(torch.all(lb <= ub)):
+                    raise ValueError(
+                        f"Empty PGD box at set {set_idx}, param {p_idx}: the lower bound "
+                        "exceeds the upper bound in at least one coordinate, so projection "
+                        "would land outside the box.",
+                    )
+        return l_sets, u_sets
 
     # Single-interval format: list[Tensor], list[Tensor]
     if _is_tensor_list(actor_param_bounds_l) and _is_tensor_list(actor_param_bounds_u):
@@ -110,9 +130,9 @@ def validate_and_prepare_param_interval_bounds(
                     f"PGD bound shape mismatch at param index {p_idx}: "
                     f"expected={expected_shape}, lower={tuple(lb.shape)}, upper={tuple(ub.shape)}",
                 )
-            set_l.append(lb.to(device))
-            set_u.append(ub.to(device))
-        return [set_l], [set_u]
+            set_l.append(_prep(lb, p_idx))
+            set_u.append(_prep(ub, p_idx))
+        return _finalize([set_l], [set_u])
 
     # Multi-interval formats: nested lists.
     if not (_is_nested_tensor_list(actor_param_bounds_l) and _is_nested_tensor_list(actor_param_bounds_u)):
@@ -168,20 +188,20 @@ def validate_and_prepare_param_interval_bounds(
         bounds_l_sets: list[list[torch.Tensor]] = []
         bounds_u_sets: list[list[torch.Tensor]] = []
         for int_l, int_u in zip(actor_param_bounds_l, actor_param_bounds_u):
-            bounds_l_sets.append([t.to(device) for t in int_l])
-            bounds_u_sets.append([t.to(device) for t in int_u])
-        return bounds_l_sets, bounds_u_sets
+            bounds_l_sets.append([_prep(t, p_idx) for p_idx, t in enumerate(int_l)])
+            bounds_u_sets.append([_prep(t, p_idx) for p_idx, t in enumerate(int_u)])
+        return _finalize(bounds_l_sets, bounds_u_sets)
 
     if parameter_major_ok:
         n_intervals = len(actor_param_bounds_l[0])
         bounds_l_sets = []
         bounds_u_sets = []
         for int_idx in range(n_intervals):
-            set_l = [actor_param_bounds_l[p_idx][int_idx].to(device) for p_idx in range(n_params)]
-            set_u = [actor_param_bounds_u[p_idx][int_idx].to(device) for p_idx in range(n_params)]
+            set_l = [_prep(actor_param_bounds_l[p_idx][int_idx], p_idx) for p_idx in range(n_params)]
+            set_u = [_prep(actor_param_bounds_u[p_idx][int_idx], p_idx) for p_idx in range(n_params)]
             bounds_l_sets.append(set_l)
             bounds_u_sets.append(set_u)
-        return bounds_l_sets, bounds_u_sets
+        return _finalize(bounds_l_sets, bounds_u_sets)
 
     raise ValueError(
         "Nested PGD bounds do not match either supported layout:\n"
