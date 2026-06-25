@@ -69,6 +69,9 @@ class ProjectedAdam(torch.optim.Adam):
         super().__init__(self._projected_params, **adam_kwargs)
 
         self._distance_norm = str(distance_norm)
+        # Ordered subset of parameters that projection targets (defaults to all
+        # of this optimizer's parameters; PPO uses a subset, see set_bounds).
+        self._projection_params: list[torch.nn.Parameter] = self._projected_params
         self._bounds_l_sets: list[list[torch.Tensor]] | None = None
         self._bounds_u_sets: list[list[torch.Tensor]] | None = None
         # Lightweight telemetry, mirroring ClampedPPO's counters.
@@ -84,26 +87,49 @@ class ProjectedAdam(torch.optim.Adam):
         self,
         bounds_l: ActorParamBounds,
         bounds_u: ActorParamBounds,
+        params: list[torch.nn.Parameter] | None = None,
     ) -> None:
-        """Attach projection bounds, aligned to this optimizer's parameter order.
+        """Attach projection bounds, aligned to a parameter order.
 
         Accepts either the single-box form (``list[Tensor]`` with one lower/upper
         tensor per parameter) or the union-of-boxes form (``list[list[Tensor]]``,
         interval-major or parameter-major). Bounds are validated against the
         parameter shapes/order and moved onto the parameters' device.
+
+        Parameters
+        ----------
+        params:
+            Ordered subset of this optimizer's parameters to project, and the
+            order the bounds are aligned to. Defaults to *all* of the optimizer's
+            parameters. Useful when one optimizer covers more than the
+            constrained sub-network (e.g. SB3 PPO's single actor+critic
+            optimizer, where only the actor should be projected). Every entry
+            must be one of the optimizer's own parameters.
         """
-        device = self._projected_params[0].device
+        target = self._projected_params if params is None else list(params)
+        if not target:
+            raise ValueError("set_bounds requires at least one parameter to project.")
+        owned = {id(p) for p in self._projected_params}
+        if any(id(p) not in owned for p in target):
+            raise ValueError(
+                "Every parameter passed to set_bounds(params=...) must belong to "
+                "this optimizer (so its updates are actually projected).",
+            )
+
+        device = target[0].device
         l_sets, u_sets = _validate_and_prepare_param_interval_bounds(
-            actor_params=self._projected_params,
+            actor_params=target,
             actor_param_bounds_l=bounds_l,
             actor_param_bounds_u=bounds_u,
             device=device,
         )
+        self._projection_params = target
         self._bounds_l_sets = l_sets
         self._bounds_u_sets = u_sets
 
     def clear_bounds(self) -> None:
         """Disable projection (revert to plain Adam behaviour)."""
+        self._projection_params = self._projected_params
         self._bounds_l_sets = None
         self._bounds_u_sets = None
 
@@ -112,7 +138,7 @@ class ProjectedAdam(torch.optim.Adam):
         loss = super().step(closure)
         if self._bounds_l_sets is not None and self._bounds_u_sets is not None:
             n_projected = _project_actor_to_interval_union(
-                self._projected_params,
+                self._projection_params,
                 self._bounds_l_sets,
                 self._bounds_u_sets,
                 distance_norm=self._distance_norm,
