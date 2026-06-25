@@ -1,12 +1,10 @@
 try:
-    from .sb3_clamped_ppo import (
-        ClampRule,
-        ClampedPPO,
+    # Relocated to the core ``provably_safe_policy_optimisation`` package;
+    # re-exported here for backward compatibility.
+    from provably_safe_policy_optimisation.policy_introspection import (
         extract_feature_actor_parameters_and_network,
     )
 except ModuleNotFoundError:
-    ClampRule = None
-    ClampedPPO = None
     extract_feature_actor_parameters_and_network = None
 
 try:
@@ -19,8 +17,6 @@ except ModuleNotFoundError:
     DiscreteSACPolicy = None
 
 __all__ = [
-    "ClampRule",
-    "ClampedPPO",
     "DiscreteSAC",
     "DiscreteSACPolicy",
     "extract_feature_actor_parameters_and_network",
