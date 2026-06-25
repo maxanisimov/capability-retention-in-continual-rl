@@ -39,3 +39,28 @@ def record_projection_window(model: Any) -> None:
     logger.record("projection/mean_displacement_l2", delta_l2 / delta_steps)
     logger.record("projection/max_displacement_l2", current["max_displacement_l2"])
     logger.record("projection/bounded_steps_total", current["bounded_steps"])
+
+
+def record_shield_window(model: Any) -> None:
+    """Record per-window shield intervention metrics to ``model.logger``.
+
+    Diffs the shield's cumulative counters against the previous call to report the
+    intervention rate over the latest training window.
+    """
+    shield = getattr(model, "_shield", None)
+    logger = getattr(model, "logger", None)
+    if shield is None or logger is None:
+        return
+
+    current = {"checked": shield._n_checked, "overridden": shield._n_overridden}
+    previous = getattr(model, "_shield_log_prev", None)
+    model._shield_log_prev = current
+    if previous is None:
+        return
+
+    delta_checked = current["checked"] - previous["checked"]
+    delta_overridden = current["overridden"] - previous["overridden"]
+    if delta_checked <= 0:
+        return
+    logger.record("shield/intervention_rate", delta_overridden / delta_checked)
+    logger.record("shield/overrides_total", current["overridden"])
