@@ -23,7 +23,7 @@ Supports discrete and box observation/action spaces; a single Gymnasium environm
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import Callable, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -132,7 +132,10 @@ class PPOLagrangian:
         # Observation/action dimensions.
         self._obs_dim = self._space_flat_dim(self.observation_space)
         self._discrete_actions = isinstance(self.action_space, spaces.Discrete)
-        act_out = int(self.action_space.n) if self._discrete_actions else int(np.prod(self.action_space.shape))
+        act_out = self._space_flat_dim(self.action_space)
+        self._act_shape: tuple[int, ...] = (
+            (1,) if self._discrete_actions else tuple(self.action_space.shape or ())
+        )
 
         # Networks: actor + reward critic + cost critic (separate trunks).
         self.actor = _mlp(self._obs_dim, act_out, net_arch, activation).to(self.device)
@@ -156,6 +159,7 @@ class PPOLagrangian:
     def _space_flat_dim(space: spaces.Space) -> int:
         if isinstance(space, spaces.Discrete):
             return int(space.n)
+        assert space.shape is not None, "Expected a space with a defined shape."
         return int(np.prod(space.shape))
 
     def _preprocess(self, obs: np.ndarray) -> th.Tensor:
@@ -180,17 +184,23 @@ class PPOLagrangian:
             return dist.log_prob(actions)
         return dist.log_prob(actions).sum(-1)
 
+    def _is_single_obs(self, obs: np.ndarray) -> bool:
+        """Whether ``obs`` is a single observation (vs a batch)."""
+        arr = np.asarray(obs)
+        if isinstance(self.observation_space, spaces.Discrete):
+            return arr.ndim == 0
+        return arr.shape == tuple(self.observation_space.shape or ())
+
     @th.no_grad()
     def predict(self, obs: np.ndarray, deterministic: bool = False) -> tuple[np.ndarray, None]:
         obs_t = self._preprocess(obs)
-        dist = self._distribution(obs_t)
-        if deterministic:
-            action = dist.probs.argmax(-1) if self._discrete_actions else dist.mean
+        out = self.actor(obs_t)
+        if self._discrete_actions:
+            action = out.argmax(-1) if deterministic else th.distributions.Categorical(logits=out).sample()
         else:
-            action = dist.sample()
+            action = out if deterministic else th.distributions.Normal(out, self.log_std.exp()).sample()
         action_np = action.cpu().numpy()
-        if np.asarray(obs).ndim == (1 if isinstance(self.observation_space, spaces.Discrete) else
-                                    len(self.observation_space.shape)):
+        if self._is_single_obs(obs):
             action_np = action_np[0]
         return action_np, None
 
@@ -204,7 +214,7 @@ class PPOLagrangian:
         """Collect ``n_steps`` transitions; fill buffers. Returns completed-episode costs."""
         n = self.n_steps
         self._obs_buf = np.zeros((n,) + self._obs_shape(), dtype=np.float32)
-        self._act_buf = np.zeros((n,) + ((1,) if self._discrete_actions else self.action_space.shape), dtype=np.float32)
+        self._act_buf = np.zeros((n,) + self._act_shape, dtype=np.float32)
         self._logp_buf = np.zeros(n, dtype=np.float32)
         self._rew_buf = np.zeros(n, dtype=np.float32)
         self._cost_buf = np.zeros(n, dtype=np.float32)
