@@ -189,6 +189,7 @@ figures/
 
 # Experiment/runtime artifacts
 artifacts/
+**/artifacts/
 outputs/
 results/
 plots/
