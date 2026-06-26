@@ -171,7 +171,7 @@ class AGTConfig(pydantic.BaseModel, extra="forbid", arbitrary_types_allowed=True
             raise ValueError(f"Unknown optimizer {self.optimizer}")
 
     def hash(self, drop_fields: list[str] = EXCLUDE_FIELDS) -> str:
-        """Return a hash of the configuration, used for tracking experiments. Should not be used for dynamic storage of
+        """Return a hash of the configuration, used for tracking projects.safe_crl. Should not be used for dynamic storage of
         configurations, as this object is mutable."""
         self_dict = self.asdict(drop_fields)
         return hashlib.md5(str(self_dict).encode()).hexdigest()

@@ -4,7 +4,7 @@ This module provides :class:`ProjectedAdam`, a drop-in replacement for
 ``torch.optim.Adam`` that, after every optimizer step, projects (a subset of)
 the optimized parameters onto a union of per-parameter boxes (a "Rashomon set").
 This is the same projection used by the custom PPO trainer in
-``experiments.utils.ppo_utils``; here it is exposed as an optimizer so it can be
+``projects.safe_crl.utils.ppo_utils``; here it is exposed as an optimizer so it can be
 plugged into Stable-Baselines3 algorithms (e.g. DQN, PPO) via ``optimizer_class``.
 
 Design notes

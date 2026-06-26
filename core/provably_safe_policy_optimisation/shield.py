@@ -8,7 +8,7 @@ binary mask ``(n_index, n_actions)`` where ``mask[i, a] == 1`` means action ``a`
 Two flavours, sharing the same override engine and diagnostics:
 
 * :class:`Shield` -- discrete states: index = state id (the representation produced by
-  ``experiments.utils.shield_utils.synthesise_shield`` and stored in ``shield_q.pt``).
+  ``projects.safe_crl.utils.shield_utils.synthesise_shield`` and stored in ``shield_q.pt``).
 * :class:`RegionShield` -- continuous states: index = region id, where the continuous
   observation space is split into disjoint regions, each with a fixed safe-action set
   (e.g. MountainCar: "position < 1.0 -> only push right is safe").

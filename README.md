@@ -2,22 +2,14 @@
 
 Codebase for capability-retention experiments in continual reinforcement learning, including certified/Rashomon-set tooling and experiment pipelines.
 
-This repository contains:
-- colleague/core reusable work under `core/`,
-- the canonical Python package API (`core/certified_continual_learning/`),
-- the core certification/training code (`core/src/`, `core/abstract_gradient_training/`),
-- reusable RL utilities (`experiments/utils/`),
-- paper-facing experiment pipelines in `experiments/pipelines/`.
+This repository is organised into three top-level areas:
+- `core/` for reusable certified continual-learning functionality and utilities,
+- `tutorials/` for tutorial notebooks,
+- `projects/` for project-specific experiment pipelines, utilities, and artifacts.
 
-## What This Repo Is For
-The main public entry points are the two safe continual RL environment pipelines:
-- `FrozenLake`
-- `PoisonedApple`
-
-Each pipeline supports:
-- single-seed runs,
-- multi-seed runs,
-- postprocessing/aggregation scripts.
+## Projects
+- `projects/safe_crl/` contains the current safe continual RL experiment tree.
+- `projects/safe_policy_optimisation/` is scaffolded for future safe policy optimisation experiments.
 
 ## Repository Structure
 ```text
@@ -29,18 +21,18 @@ Each pipeline supports:
 │   ├── configs/                       # Trainer/config presets
 │   ├── scripts/                       # Colleague/tutorial scripts
 │   └── notebooks/                     # Colleague/tutorial notebooks
-├── experiments/
-│   ├── utils/                         # PPO/EWC/env plotting helper utilities
-│   ├── pipelines/
-│   │   ├── frozen_lake/              # FrozenLake experiment pipeline
-│   │   ├── poisoned_apple/           # PoisonedApple experiment pipeline
-│   │   ├── frozenlake_scaled/        # Scaled FrozenLake experiments
-│   │   ├── lunarlander/              # LunarLander experiments
-│   │   ├── highway/                  # Highway parking experiments
-│   │   ├── visualisations/           # Figure/frame generation helpers
-│   │   └── README.md                 # Experiment quick-start guide
-│   ├── notebooks/                     # Research notebooks
-│   └── scripts/                       # Older exploratory scripts
+├── tutorials/                         # Tutorial notebooks
+├── projects/
+│   ├── safe_crl/
+│   │   ├── utils/                     # Project-specific RL utilities
+│   │   ├── pipelines/                 # Experiment pipelines
+│   │   ├── artifacts/                 # Pipeline artifacts
+│   │   ├── notebooks/                 # Research notebooks
+│   │   └── scripts/                   # Older exploratory scripts
+│   └── safe_policy_optimisation/
+│       ├── utils/
+│       ├── pipelines/
+│       └── artifacts/
 ├── pyproject.toml
 ├── requirements.txt
 └── LICENSE
@@ -66,6 +58,7 @@ New canonical imports should use:
 
 ```python
 from certified_continual_learning.trainer import IntervalTrainer
+from projects.safe_crl.utils.ppo_utils import PPOConfig
 ```
 
 Legacy imports remain supported during migration:
@@ -74,62 +67,9 @@ Legacy imports remain supported during migration:
 from src.trainer import IntervalTrainer
 ```
 
-## Running Main Experiments
-See also: `experiments/pipelines/README.md`.
-
-### FrozenLake
-Single seed:
-```bash
-python experiments/pipelines/frozen_lake/run_train_and_adapt.py \
-  --cfg standard_4x4 --seed 0
-```
-
-Multi-seed (`0..9` default):
-```bash
-python experiments/pipelines/frozen_lake/run_train_and_adapt_multi_seed.py \
-  --cfg standard_4x4
-```
-
-Postprocessing examples:
-```bash
-python experiments/pipelines/frozen_lake/postprocessing/aggregate_downstream_results.py \
-  --base-dir experiments/pipelines/frozen_lake/outputs/standard_4x4
-```
-
-### PoisonedApple
-Single seed:
-```bash
-python experiments/pipelines/poisoned_apple/run_train_and_adapt.py \
-  --cfg simple_6x6 --seed 0
-```
-
-Multi-seed (`0..9` default):
-```bash
-python experiments/pipelines/poisoned_apple/run_train_and_adapt_multi_seed.py \
-  --cfg simple_6x6
-```
-
-Postprocessing example:
-```bash
-python experiments/pipelines/poisoned_apple/postprocessing/aggregate_metrics_across_seeds.py \
-  --cfg simple_6x6
-```
-
-## Outputs / Results Locations
-Per-run artifacts are stored under:
-
-- FrozenLake: `experiments/pipelines/frozen_lake/outputs/<cfg>/<seed>/`
-- PoisonedApple: `experiments/pipelines/poisoned_apple/outputs/<cfg>/<seed>/`
-
-Typical contents:
-- `source/` (source policy artifacts)
-- `downstream/` (adaptation artifacts)
-- `plots/` (generated figures)
-- `results_table.csv` (run-level summary table)
-
-Logs are stored under:
-- `experiments/pipelines/<env>/logs/...`
+## Running Experiments
+See `projects/safe_crl/pipelines/README.md` and pipeline-local READMEs for entry points. Run commands from the repository root so imports resolve through the canonical `projects.safe_crl` package path.
 
 ## Notes
 - `archive/` directories contain older exploratory material and are not part of the main release pipeline.
-- `experiments/scripts/` includes older prototypes; prefer the experiment entry points above for reproducibility.
+- `projects/safe_crl/scripts/` includes older prototypes; prefer the experiment entry points above for reproducibility.

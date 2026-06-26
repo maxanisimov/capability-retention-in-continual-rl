@@ -4,7 +4,7 @@ These helpers project a network's parameters onto a *union of axis-aligned
 boxes* (a "Rashomon set"): each box is a per-parameter interval ``[lower, upper]``
 and projection snaps the parameters into the nearest box. They are the shared
 core of projected gradient descent used by both the custom PPO trainer
-(``experiments.utils.ppo_utils``) and the Stable-Baselines3 wrappers
+(``projects.safe_crl.utils.ppo_utils``) and the Stable-Baselines3 wrappers
 (:class:`~provably_safe_policy_optimisation.projected_optimizers.ProjectedAdam`).
 
 Bounds layouts accepted by :func:`validate_and_prepare_param_interval_bounds`:
