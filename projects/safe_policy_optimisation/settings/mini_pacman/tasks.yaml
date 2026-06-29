@@ -1,0 +1,8 @@
+tasks:
+  minipacman_default:
+    description: Deterministic MiniPacman task used by safe policy optimisation experiments.
+    env_id: CustomMiniPacman-v0
+    shield_task: minipacman_default
+    max_episode_steps: 100
+    env_kwargs:
+      ghost_rand_prob: 0.0

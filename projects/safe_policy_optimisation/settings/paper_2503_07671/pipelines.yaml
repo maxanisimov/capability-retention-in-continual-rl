@@ -1,0 +1,456 @@
+pipelines:
+  paper_2503_07671_media_streaming:
+    description: Main-paper Media Streaming experiment from arXiv:2503.07671.
+    module: projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+    default_task: paper_2503_07671_media_streaming
+
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/media_streaming
+      run_id: paper_2503_07671_media_streaming
+
+    runtime:
+      seed: 0
+      device: cpu
+
+    shield_synthesis:
+      constraint: PCTL
+      constraint_kwargs:
+        alpha: 0.001
+      init_safety_bound: 0.001
+      theta: 1.0e-12
+      max_vi_steps: 2000
+      granularity: 10
+      unsafe_cost_threshold: 0.5
+
+    safety:
+      cost_limit: 0.001
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomMediaStreaming/custommediastreamingv2_paper_2503_07671/shield_q.pt
+
+    safe_rl_baselines:
+      algorithms:
+        - ppo_lagrangian
+        - ppo_pid_lagrangian
+        - cpo
+
+    training:
+      total_timesteps: 25000
+      learning_rate: 0.0003
+      n_steps: 2048
+      batch_size: 64
+      n_epochs: 10
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_range: 0.2
+      max_grad_norm: 0.5
+      ent_coef: 0.0
+      vf_coef: 0.5
+      cost_gamma: 0.99
+      cost_gae_lambda: 0.95
+      lagrangian_multiplier_init: 10.0
+
+    rashomon_set:
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/media_streaming
+      rashomon_n_iters: 2000
+      rashomon_checkpoint: 100
+      rashomon_batch_size: 500
+      certificate_samples: 1000
+
+    early_stopping:
+      early_stop_eval_freq: 2048
+      early_stop_eval_episodes: 100
+      early_stop_success_rate: 1.0
+      success_reward_threshold: -0.5
+
+    evaluation:
+      eval_episodes: 100
+      shielded_evaluation_policy: shielded
+      rashomon_evaluation_policy: shielded
+
+    monitoring:
+      curve_eval_freq: 2048
+      curve_eval_episodes: 20
+
+    stages:
+      skip_baselines: false
+      skip_shielded_policy: false
+      skip_rashomon_policy: false
+
+  paper_2503_07671_colour_bomb:
+    description: Main-paper Colour Bomb v1 experiment from arXiv:2503.07671.
+    module: projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+    default_task: paper_2503_07671_colour_bomb
+
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/colour_bomb
+      run_id: paper_2503_07671_colour_bomb
+
+    runtime:
+      seed: 0
+      device: cpu
+
+    shield_synthesis:
+      constraint: PCTL
+      constraint_kwargs:
+        alpha: 0.05
+      init_safety_bound: 0.05
+      theta: 1.0e-12
+      max_vi_steps: 2000
+      granularity: 10
+      unsafe_cost_threshold: 0.5
+
+    safety:
+      cost_limit: 0.05
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomColourBombGridWorld/customcolourgridworld_paper_2503_07671/shield_q.pt
+
+    safe_rl_baselines:
+      algorithms:
+        - ppo_lagrangian
+        - ppo_pid_lagrangian
+        - cpo
+
+    training:
+      total_timesteps: 25000
+      learning_rate: 0.0003
+      n_steps: 2048
+      batch_size: 64
+      n_epochs: 10
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_range: 0.2
+      max_grad_norm: 0.5
+      ent_coef: 0.0
+      vf_coef: 0.5
+      cost_gamma: 0.99
+      cost_gae_lambda: 0.95
+      lagrangian_multiplier_init: 10.0
+
+    rashomon_set:
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/colour_bomb
+      rashomon_n_iters: 2000
+      rashomon_checkpoint: 100
+      rashomon_batch_size: 500
+      certificate_samples: 1000
+
+    early_stopping:
+      early_stop_eval_freq: 2048
+      early_stop_eval_episodes: 100
+      early_stop_success_rate: 1.0
+      success_reward_threshold: 0.0
+
+    evaluation:
+      eval_episodes: 100
+      shielded_evaluation_policy: shielded
+      rashomon_evaluation_policy: shielded
+
+    monitoring:
+      curve_eval_freq: 2048
+      curve_eval_episodes: 20
+
+    stages:
+      skip_baselines: false
+      skip_shielded_policy: false
+      skip_rashomon_policy: false
+
+  paper_2503_07671_colour_bomb_v2:
+    description: Main-paper Colour Bomb v2 experiment from arXiv:2503.07671.
+    module: projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+    default_task: paper_2503_07671_colour_bomb_v2
+
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/colour_bomb_v2
+      run_id: paper_2503_07671_colour_bomb_v2
+
+    runtime:
+      seed: 0
+      device: cpu
+
+    shield_synthesis:
+      constraint: PCTL
+      constraint_kwargs:
+        alpha: 0.05
+      init_safety_bound: 0.05
+      theta: 1.0e-12
+      max_vi_steps: 2000
+      granularity: 10
+      unsafe_cost_threshold: 0.5
+
+    safety:
+      cost_limit: 0.05
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomColourBombGridWorld/customcolourgridworldv3_paper_2503_07671/shield_q.pt
+
+    safe_rl_baselines:
+      algorithms:
+        - ppo_lagrangian
+        - ppo_pid_lagrangian
+        - cpo
+
+    training:
+      total_timesteps: 100000
+      learning_rate: 0.0003
+      n_steps: 2048
+      batch_size: 64
+      n_epochs: 10
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_range: 0.2
+      max_grad_norm: 0.5
+      ent_coef: 0.0
+      vf_coef: 0.5
+      cost_gamma: 0.99
+      cost_gae_lambda: 0.95
+      lagrangian_multiplier_init: 10.0
+
+    rashomon_set:
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/colour_bomb_v2
+      rashomon_n_iters: 2000
+      rashomon_checkpoint: 100
+      rashomon_batch_size: 500
+      certificate_samples: 1000
+
+    early_stopping:
+      early_stop_eval_freq: 2048
+      early_stop_eval_episodes: 100
+      early_stop_success_rate: 1.0
+      success_reward_threshold: 0.0
+
+    evaluation:
+      eval_episodes: 100
+      shielded_evaluation_policy: shielded
+      rashomon_evaluation_policy: shielded
+
+    monitoring:
+      curve_eval_freq: 2048
+      curve_eval_episodes: 20
+
+    stages:
+      skip_baselines: false
+      skip_shielded_policy: false
+      skip_rashomon_policy: false
+
+  paper_2503_07671_bridge_crossing:
+    description: Main-paper Bridge Crossing v1 experiment from arXiv:2503.07671.
+    module: projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+    default_task: paper_2503_07671_bridge_crossing
+
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/bridge_crossing
+      run_id: paper_2503_07671_bridge_crossing
+
+    runtime:
+      seed: 0
+      device: cpu
+
+    shield_synthesis:
+      constraint: PCTL
+      constraint_kwargs:
+        alpha: 0.01
+      init_safety_bound: 0.01
+      theta: 1.0e-12
+      max_vi_steps: 2000
+      granularity: 10
+      unsafe_cost_threshold: 0.5
+
+    safety:
+      cost_limit: 0.01
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomBridgeCrossing/custombridgecrossing_paper_2503_07671/shield_q.pt
+
+    safe_rl_baselines:
+      algorithms:
+        - ppo_lagrangian
+        - ppo_pid_lagrangian
+        - cpo
+
+    training:
+      total_timesteps: 200000
+      learning_rate: 0.0003
+      n_steps: 2048
+      batch_size: 64
+      n_epochs: 10
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_range: 0.2
+      max_grad_norm: 0.5
+      ent_coef: 0.0
+      vf_coef: 0.5
+      cost_gamma: 0.99
+      cost_gae_lambda: 0.95
+      lagrangian_multiplier_init: 10.0
+
+    rashomon_set:
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/bridge_crossing
+      rashomon_n_iters: 2000
+      rashomon_checkpoint: 100
+      rashomon_batch_size: 500
+      certificate_samples: 1000
+
+    early_stopping:
+      early_stop_eval_freq: 2048
+      early_stop_eval_episodes: 100
+      early_stop_success_rate: 1.0
+      success_reward_threshold: 0.0
+
+    evaluation:
+      eval_episodes: 100
+      shielded_evaluation_policy: shielded
+      rashomon_evaluation_policy: shielded
+
+    monitoring:
+      curve_eval_freq: 2048
+      curve_eval_episodes: 20
+
+    stages:
+      skip_baselines: false
+      skip_shielded_policy: false
+      skip_rashomon_policy: false
+
+  paper_2503_07671_bridge_crossing_v2:
+    description: Main-paper Bridge Crossing v2 experiment from arXiv:2503.07671.
+    module: projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+    default_task: paper_2503_07671_bridge_crossing_v2
+
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/bridge_crossing_v2
+      run_id: paper_2503_07671_bridge_crossing_v2
+
+    runtime:
+      seed: 0
+      device: cpu
+
+    shield_synthesis:
+      constraint: PCTL
+      constraint_kwargs:
+        alpha: 0.01
+      init_safety_bound: 0.01
+      theta: 1.0e-12
+      max_vi_steps: 2000
+      granularity: 10
+      unsafe_cost_threshold: 0.5
+
+    safety:
+      cost_limit: 0.01
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomBridgeCrossing/custombridgecrossingv2_paper_2503_07671/shield_q.pt
+
+    safe_rl_baselines:
+      algorithms:
+        - ppo_lagrangian
+        - ppo_pid_lagrangian
+        - cpo
+
+    training:
+      total_timesteps: 200000
+      learning_rate: 0.0003
+      n_steps: 2048
+      batch_size: 64
+      n_epochs: 10
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_range: 0.2
+      max_grad_norm: 0.5
+      ent_coef: 0.0
+      vf_coef: 0.5
+      cost_gamma: 0.99
+      cost_gae_lambda: 0.95
+      lagrangian_multiplier_init: 10.0
+
+    rashomon_set:
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/bridge_crossing_v2
+      rashomon_n_iters: 2000
+      rashomon_checkpoint: 100
+      rashomon_batch_size: 500
+      certificate_samples: 1000
+
+    early_stopping:
+      early_stop_eval_freq: 2048
+      early_stop_eval_episodes: 100
+      early_stop_success_rate: 1.0
+      success_reward_threshold: 0.0
+
+    evaluation:
+      eval_episodes: 100
+      shielded_evaluation_policy: shielded
+      rashomon_evaluation_policy: shielded
+
+    monitoring:
+      curve_eval_freq: 2048
+      curve_eval_episodes: 20
+
+    stages:
+      skip_baselines: false
+      skip_shielded_policy: false
+      skip_rashomon_policy: false
+
+  paper_2503_07671_pacman:
+    description: Main-paper Pacman experiment from arXiv:2503.07671.
+    module: projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+    default_task: paper_2503_07671_pacman
+
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/pacman
+      run_id: paper_2503_07671_pacman
+
+    runtime:
+      seed: 0
+      device: cpu
+
+    shield_synthesis:
+      constraint: PCTL
+      constraint_kwargs:
+        alpha: 0.01
+      init_safety_bound: 0.01
+      theta: 1.0e-12
+      max_vi_steps: 2000
+      granularity: 10
+      unsafe_cost_threshold: 0.5
+
+    safety:
+      cost_limit: 0.01
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomPacman/custompacman_paper_2503_07671/shield_q.pt
+
+    safe_rl_baselines:
+      algorithms:
+        - ppo_lagrangian
+        - ppo_pid_lagrangian
+        - cpo
+
+    training:
+      total_timesteps: 500000
+      learning_rate: 0.0003
+      n_steps: 2048
+      batch_size: 64
+      n_epochs: 10
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_range: 0.2
+      max_grad_norm: 0.5
+      ent_coef: 0.0
+      vf_coef: 0.5
+      cost_gamma: 0.99
+      cost_gae_lambda: 0.95
+      lagrangian_multiplier_init: 10.0
+
+    rashomon_set:
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/pacman
+      rashomon_n_iters: 2000
+      rashomon_checkpoint: 100
+      rashomon_batch_size: 500
+      certificate_samples: 1000
+
+    early_stopping:
+      early_stop_eval_freq: 2048
+      early_stop_eval_episodes: 100
+      early_stop_success_rate: 1.0
+      success_reward_threshold: 0.0
+
+    evaluation:
+      eval_episodes: 100
+      shielded_evaluation_policy: shielded
+      rashomon_evaluation_policy: shielded
+
+    monitoring:
+      curve_eval_freq: 2048
+      curve_eval_episodes: 20
+
+    stages:
+      skip_baselines: false
+      skip_shielded_policy: false
+      skip_rashomon_policy: false

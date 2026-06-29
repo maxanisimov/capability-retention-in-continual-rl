@@ -1,0 +1,8 @@
+tasks:
+  bridge_crossing_deterministic:
+    description: Deterministic CustomBridgeCrossing task with no transition slip.
+    env_id: CustomBridgeCrossing-v0
+    shield_task: custombridgecrossing_default
+    max_episode_steps: null
+    env_kwargs:
+      slip_prob: 0.0
