@@ -200,13 +200,27 @@ experiments/**/archive/outputs_OLD/
 experiments/**/notebooks/artifacts/
 
 # OS/editor
-.DS_Store
+.DS_Store/
+.codex/
 .codex
-.claude
+.claude/
 .vscode/
+.gitkeep/
 
 # Local legacy/research material not included in public release by default
 .github/
 experiments/**/archive/
 experiments/notebooks/
 experiments/notes/
+tensorboard/
+
+# Images
+*.png
+
+# Data
+*.csv
+*.pt
+*.zip
+
+# LaTeX
+*.tex
