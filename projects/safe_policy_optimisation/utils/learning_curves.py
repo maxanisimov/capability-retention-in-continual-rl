@@ -12,7 +12,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import state_cost
+from projects.safe_policy_optimisation.utils.safe_rl import state_cost
 
 EXPLORATION_FIELDS = [
     "timestep",
