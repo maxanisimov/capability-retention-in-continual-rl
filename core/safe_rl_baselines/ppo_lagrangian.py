@@ -32,6 +32,7 @@ import torch.nn as nn
 from gymnasium import spaces
 
 CostFn = Callable[..., float]
+ExplorationActionCallback = Callable[..., None]
 
 
 def _mlp(in_dim: int, out_dim: int, net_arch: Sequence[int], activation: type[nn.Module]) -> nn.Sequential:
@@ -153,6 +154,15 @@ class PPOLagrangian:
 
         self.num_timesteps = 0
         self.last_stats: dict[str, float] = {}
+        self.training_episodes: list[dict[str, float | int | bool]] = []
+        self._last_rollout_training_episodes: list[dict[str, float | int | bool]] = []
+        self._training_episode_index = 0
+        self._exploration_action_callback: ExplorationActionCallback | None = None
+
+    def set_exploration_action_callback(self, callback: ExplorationActionCallback | None) -> None:
+        """Attach a hook called with each raw action sampled during exploration."""
+
+        self._exploration_action_callback = callback
 
     # --- spaces / preprocessing ------------------------------------------
     @staticmethod
@@ -223,9 +233,16 @@ class PPOLagrangian:
         self._done_buf = np.zeros(n, dtype=np.float32)
 
         ep_costs: list[float] = []
+        self._last_rollout_training_episodes = []
         if not hasattr(self, "_last_obs") or self._last_obs is None:
             self._last_obs, _ = self.env.reset()
             self._ep_cost = 0.0
+            self._ep_reward = 0.0
+            self._ep_length = 0
+        if not hasattr(self, "_ep_reward"):
+            self._ep_reward = 0.0
+        if not hasattr(self, "_ep_length"):
+            self._ep_length = 0
 
         for t in range(n):
             obs_t = self._preprocess(self._last_obs)
@@ -250,7 +267,15 @@ class PPOLagrangian:
             done = bool(terminated or truncated)
             self._done_buf[t] = float(done)
             self._ep_cost += cost
+            self._ep_reward += float(reward)
+            self._ep_length += 1
             self.num_timesteps += 1
+            if self._exploration_action_callback is not None:
+                self._exploration_action_callback(
+                    timestep=int(self.num_timesteps),
+                    obs=self._last_obs,
+                    action=action_env,
+                )
 
             if truncated and not terminated:
                 # Bootstrap past truncation for both critics.
@@ -261,7 +286,20 @@ class PPOLagrangian:
 
             if done:
                 ep_costs.append(self._ep_cost)
+                record = {
+                    "episode": self._training_episode_index,
+                    "end_timestep": self.num_timesteps,
+                    "reward": float(self._ep_reward),
+                    "cost": float(self._ep_cost),
+                    "length": int(self._ep_length),
+                    "violated": bool(self._ep_cost > self.cost_limit),
+                }
+                self.training_episodes.append(record)
+                self._last_rollout_training_episodes.append(record)
+                self._training_episode_index += 1
                 self._ep_cost = 0.0
+                self._ep_reward = 0.0
+                self._ep_length = 0
                 next_obs, _ = self.env.reset()
             self._last_obs = next_obs
 
@@ -273,6 +311,15 @@ class PPOLagrangian:
 
     def _obs_shape(self) -> tuple[int, ...]:
         return (self._obs_dim,)
+
+    def _training_violation_stats(self) -> dict[str, float]:
+        total = len(self.training_episodes)
+        violation_count = sum(int(record["violated"]) for record in self.training_episodes)
+        return {
+            "training_episode_count": float(total),
+            "training_violation_count": float(violation_count),
+            "training_violation_percentage": 100.0 * violation_count / total if total else 0.0,
+        }
 
     # --- training --------------------------------------------------------
     def _update_lagrange_multiplier(self, mean_ep_cost: float) -> None:
@@ -342,7 +389,11 @@ class PPOLagrangian:
             "mean_cost_return": float(cret.mean()),
         }
 
-    def learn(self, total_timesteps: int) -> "PPOLagrangian":
+    def learn(
+        self,
+        total_timesteps: int,
+        callback: Callable[["PPOLagrangian"], bool] | None = None,
+    ) -> "PPOLagrangian":
         while self.num_timesteps < total_timesteps:
             ep_costs = self.collect_rollout()
             mean_ep_cost = float(np.mean(ep_costs)) if ep_costs else None
@@ -350,6 +401,9 @@ class PPOLagrangian:
                 # Update the dual variable before optimisation (train() uses current lambda).
                 self._update_lagrange_multiplier(mean_ep_cost)
             self.train()
+            self.last_stats.update(self._training_violation_stats())
             if mean_ep_cost is not None:
                 self.last_stats["mean_episode_cost"] = mean_ep_cost
+            if callback is not None and not callback(self):
+                break
         return self

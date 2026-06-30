@@ -283,9 +283,12 @@ class CPO(PPOLagrangian):
             "mean_episode_cost": float(self._mean_ep_cost),
         }
 
-    def learn(self, total_timesteps: int) -> "CPO":
+    def learn(self, total_timesteps: int, callback: Callable[["CPO"], bool] | None = None) -> "CPO":
         while self.num_timesteps < total_timesteps:
             ep_costs = self.collect_rollout()
             self._mean_ep_cost = float(np.mean(ep_costs)) if ep_costs else 0.0
             self.train()
+            self.last_stats.update(self._training_violation_stats())
+            if callback is not None and not callback(self):
+                break
         return self

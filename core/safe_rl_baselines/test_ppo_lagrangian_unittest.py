@@ -59,7 +59,8 @@ class PPOLagrangianTests(unittest.TestCase):
             done = False
             while not done:
                 a = int(np.asarray(model.predict(obs, deterministic=True)[0]))
-                left += int(a == 0); total += 1
+                left += int(a == 0)
+                total += 1
                 obs, _, term, trunc, _ = env.step(a)
                 done = term or trunc
         return left / total
@@ -96,6 +97,45 @@ class CostFromInfoTests(unittest.TestCase):
         )
         model.learn(total_timesteps=1536)            # no cost_fn -> cost comes from info["cost"]
         self.assertGreater(model.lagrangian_multiplier, 0.0)
+
+
+class TrainingExplorationViolationTests(unittest.TestCase):
+    def test_collect_rollout_records_training_episode_violations(self) -> None:
+        model = PPOLagrangian(
+            gym.make("CartPole-v1", max_episode_steps=2),
+            cost_fn=lambda *args: 1.0,
+            cost_limit=0.0,
+            n_steps=4,
+            batch_size=4,
+            n_epochs=1,
+            seed=0,
+            device="cpu",
+        )
+
+        model.collect_rollout()
+
+        self.assertGreaterEqual(len(model.training_episodes), 1)
+        self.assertTrue(all(record["violated"] for record in model.training_episodes))
+        self.assertIn("end_timestep", model.training_episodes[0])
+
+    def test_collect_rollout_calls_exploration_action_callback_each_step(self) -> None:
+        model = PPOLagrangian(
+            gym.make("CartPole-v1", max_episode_steps=2),
+            cost_limit=0.0,
+            n_steps=4,
+            batch_size=4,
+            n_epochs=1,
+            seed=0,
+            device="cpu",
+        )
+        events = []
+        model.set_exploration_action_callback(lambda **row: events.append(row))
+
+        model.collect_rollout()
+
+        self.assertEqual(len(events), 4)
+        self.assertEqual([event["timestep"] for event in events], [1, 2, 3, 4])
+        self.assertTrue(all("obs" in event and "action" in event for event in events))
 
 
 class BoxActionTests(unittest.TestCase):

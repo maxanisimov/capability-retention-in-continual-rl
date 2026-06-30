@@ -42,12 +42,16 @@ include-package-data = true
 
 [tool.setuptools.package-dir]
 "" = "core"
+"projects" = "projects"
 
 [tool.setuptools.packages.find]
-where = ["core"]
+where = ["core", "."]
 include = [
     "abstract_gradient_training*",
     "certified_continual_learning*",
     "configs*",
+    "provably_safe_policy_optimisation*",
+    "safe_rl_baselines*",
     "src*",
+    "projects*",
 ]

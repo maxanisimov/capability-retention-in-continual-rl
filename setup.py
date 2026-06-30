@@ -6,15 +6,21 @@ setup(
     version="0.1.0",
     description="Capability retention in continual RL with Rashomon-set tooling.",
     python_requires=">=3.10",
-    package_dir={"": "core"},
+    package_dir={"": "core", "projects": "projects"},
     packages=find_packages(
         where="core",
         include=[
             "abstract_gradient_training*",
             "certified_continual_learning*",
             "configs*",
+            "provably_safe_policy_optimisation*",
+            "safe_rl_baselines*",
             "src*",
         ],
+    )
+    + find_packages(
+        where=".",
+        include=["projects*"],
     ),
     include_package_data=True,
     install_requires=[

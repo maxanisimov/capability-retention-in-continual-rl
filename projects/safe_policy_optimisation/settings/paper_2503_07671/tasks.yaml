@@ -1,0 +1,54 @@
+tasks:
+  paper_2503_07671_media_streaming:
+    description: Paper 2503.07671 Media Streaming task with fast-action budget state.
+    env_id: CustomMediaStreamingV2-v0
+    shield_task: custommediastreamingv2_paper_2503_07671
+    max_episode_steps: 40
+    env_kwargs:
+      fast_rate: 0.9
+      slow_rate: 0.1
+      out_rate: 0.7
+      buffer_size: 21
+      episode_length: 40
+      c_threshold: 20
+
+  paper_2503_07671_colour_bomb:
+    description: Paper 2503.07671 Colour Bomb v1 task using the local five-action gridworld.
+    env_id: CustomColourBombGridWorld-v0
+    shield_task: customcolourgridworld_paper_2503_07671
+    max_episode_steps: 100
+    env_kwargs:
+      slip_prob: 0.1
+
+  paper_2503_07671_colour_bomb_v2:
+    description: Paper 2503.07671 Colour Bomb v2 task with 900 local states and five grid actions.
+    env_id: CustomColourBombGridWorldV3-v0
+    shield_task: customcolourgridworldv3_paper_2503_07671
+    max_episode_steps: 250
+    env_kwargs:
+      slip_prob: 0.1
+      n_coloured_zones: 4
+
+  paper_2503_07671_bridge_crossing:
+    description: Paper 2503.07671 Bridge Crossing v1 task using the local five-action gridworld.
+    env_id: CustomBridgeCrossing-v0
+    shield_task: custombridgecrossing_paper_2503_07671
+    max_episode_steps: 600
+    env_kwargs:
+      slip_prob: 0.04
+
+  paper_2503_07671_bridge_crossing_v2:
+    description: Paper 2503.07671 Bridge Crossing v2 task using the local five-action gridworld.
+    env_id: CustomBridgeCrossingV2-v0
+    shield_task: custombridgecrossingv2_paper_2503_07671
+    max_episode_steps: 600
+    env_kwargs:
+      slip_prob: 0.04
+
+  paper_2503_07671_pacman:
+    description: Paper 2503.07671 full Pacman task.
+    env_id: CustomPacman-v0
+    shield_task: custompacman_paper_2503_07671
+    max_episode_steps: 1000
+    env_kwargs:
+      ghost_rand_prob: 0.6

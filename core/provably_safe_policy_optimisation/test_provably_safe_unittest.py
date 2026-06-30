@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
-import warnings
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -101,15 +102,62 @@ class ProvablySafePPOTests(unittest.TestCase):
         self.addCleanup(model.get_env().close)
         return model
 
-    def test_wrapped_forward_returns_safe_consistent_actions(self) -> None:
+    def _force_policy_to_propose(self, model: ProvablySafePPO, action: int) -> None:
+        def forward(obs, deterministic: bool = False):  # type: ignore[no-untyped-def]
+            del deterministic
+            actions = th.full((obs.shape[0],), action, dtype=th.long, device=obs.device)
+            values = model.policy.predict_values(obs)
+            log_prob = model.policy.get_distribution(obs).log_prob(actions)
+            return actions, values, log_prob
+
+        model.policy.forward = forward  # type: ignore[method-assign]
+
+    def test_policy_forward_is_not_shielded(self) -> None:
         mask = _only_action_safe(1)
         model = self._make(mask)
+        self._force_policy_to_propose(model, action=0)
         obs_tensor, _ = model.policy.obs_to_tensor(np.array([0, 5, 10]))
         with th.no_grad():
             actions, _values, log_prob = model.policy(obs_tensor)
-            self.assertTrue(th.all(actions == 1))                      # all shielded to safe action
+            self.assertTrue(th.all(actions == 0))
             expected = model.policy.get_distribution(obs_tensor).log_prob(actions)
-        self.assertTrue(th.allclose(log_prob, expected))               # consistent log-prob
+        self.assertTrue(th.allclose(log_prob, expected))
+
+    def test_default_stores_proposed_actions_but_executes_safe_actions(self) -> None:
+        mask = _only_action_safe(1)
+        recorder = _RecordActions(gym.make("FrozenLake-v1"))
+        model = self._make(mask, recorder=recorder)
+        self._force_policy_to_propose(model, action=0)
+        model.learn(total_timesteps=32)
+        self.assertTrue(recorder.records)
+        self.assertTrue(all(mask[s, a] == 1 for s, a in recorder.records))
+        self.assertTrue(np.all(model.rollout_buffer.actions == 0))
+
+    def test_executed_storage_mode_stores_overridden_actions(self) -> None:
+        mask = _only_action_safe(1)
+        recorder = _RecordActions(gym.make("FrozenLake-v1"))
+        model = self._make(mask, recorder=recorder, shield_action_storage="executed")
+        self._force_policy_to_propose(model, action=0)
+        model.learn(total_timesteps=32)
+        self.assertTrue(recorder.records)
+        self.assertTrue(all(mask[s, a] == 1 for s, a in recorder.records))
+        self.assertTrue(np.all(model.rollout_buffer.actions == 1))
+
+    def test_unsafe_action_callback_counts_raw_policy_proposals(self) -> None:
+        mask = _only_action_safe(1)
+        model = self._make(mask)
+        self._force_policy_to_propose(model, action=0)
+        events = []
+        model.set_exploration_unsafe_action_callback(lambda **row: events.append(row))
+
+        model.learn(total_timesteps=32)
+
+        self.assertTrue(events)
+        self.assertEqual(events[-1]["timestep"], 32)
+        self.assertTrue(all(event["checked_this_step"] == 1 for event in events))
+        self.assertTrue(all(event["unsafe_this_step"] == 1 for event in events))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model.save(Path(tmpdir) / "model.zip")
 
     def test_every_executed_action_is_safe_during_training(self) -> None:
         mask = _only_action_safe(1)

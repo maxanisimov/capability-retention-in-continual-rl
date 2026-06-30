@@ -1,0 +1,183 @@
+# Deterministic safe-policy-optimisation pipelines.
+#
+# The shared body lives once in the `_defaults` anchors below and is pulled into
+# each pipeline with the YAML merge key (`<<: *anchor`) or a direct alias
+# (`*anchor`). To change one field for a single pipeline, merge the section
+# anchor and set only what differs (see `training`/`safety` overrides below).
+_defaults:
+  module: &module projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
+  runtime: &runtime
+    seed: 0
+    device: cpu
+  shield_synthesis: &shield_synthesis
+    constraint: PCTL
+    constraint_kwargs:
+      alpha: 0.01
+    init_safety_bound: 1.0e-12
+    theta: 1.0e-12
+    max_vi_steps: 2000
+    granularity: 10
+    unsafe_cost_threshold: 0.5
+  safety: &safety
+    cost_limit: 0.0
+  safe_rl_baselines: &safe_rl_baselines
+    algorithms:
+      - ppo_lagrangian
+      - ppo_pid_lagrangian
+      - cpo
+  training: &training
+    total_timesteps: 2000
+    learning_rate: 0.0003
+    n_steps: 512
+    batch_size: 128
+    n_epochs: 4
+    gamma: 0.99
+  rashomon_set: &rashomon_set
+    rashomon_n_iters: 2000
+    rashomon_checkpoint: 100
+    rashomon_batch_size: 500
+    certificate_samples: 1000
+  early_stopping: &early_stopping
+    early_stop_eval_freq: 100
+    early_stop_eval_episodes: 1
+    early_stop_success_rate: 1.0
+    success_reward_threshold: 0.0
+  evaluation: &evaluation
+    eval_episodes: 1
+    shielded_evaluation_policy: unshielded
+    rashomon_evaluation_policy: unshielded
+  stages: &stages
+    skip_baselines: false
+    skip_shielded_policy: false
+    skip_rashomon_policy: false
+
+pipelines:
+  deterministic_bridge_crossing:
+    description: Deterministic CustomBridgeCrossing pipeline using the default safe-policy-optimisation template.
+    module: *module
+    default_task: bridge_crossing_deterministic
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/deterministic_bridge_crossing
+      run_id: bridge_crossing_deterministic
+    runtime: *runtime
+    shield_synthesis: *shield_synthesis
+    safety:
+      <<: *safety
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomBridgeCrossing/bridge_crossing_deterministic/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training:
+      <<: *training
+      total_timesteps: 200000
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/bridge_crossing_deterministic
+    early_stopping: *early_stopping
+    evaluation: *evaluation
+    stages: *stages
+
+  deterministic_bridge_crossing_v2:
+    description: Deterministic CustomBridgeCrossingV2 pipeline using the default safe-policy-optimisation template.
+    module: *module
+    default_task: bridge_crossing_v2_deterministic
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/deterministic_bridge_crossing_v2
+      run_id: bridge_crossing_v2_deterministic
+    runtime: *runtime
+    shield_synthesis: *shield_synthesis
+    safety:
+      <<: *safety
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomBridgeCrossing/bridge_crossing_v2_deterministic/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training: *training
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/bridge_crossing_v2_deterministic
+    early_stopping: *early_stopping
+    evaluation: *evaluation
+    stages: *stages
+
+  deterministic_colour_bomb:
+    description: Deterministic CustomColourBombGridWorld pipeline using the default safe-policy-optimisation template.
+    module: *module
+    default_task: colour_bomb_deterministic
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/deterministic_colour_bomb
+      run_id: colour_bomb_deterministic
+    runtime: *runtime
+    shield_synthesis: *shield_synthesis
+    safety:
+      <<: *safety
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomColourBombGridWorld/colour_bomb_deterministic/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training: *training
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/colour_bomb_deterministic
+    early_stopping: *early_stopping
+    evaluation: *evaluation
+    stages: *stages
+
+  deterministic_colour_bomb_v2:
+    description: Deterministic CustomColourBombGridWorldV2 pipeline using the default safe-policy-optimisation template.
+    module: *module
+    default_task: colour_bomb_v2_deterministic
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/deterministic_colour_bomb_v2
+      run_id: colour_bomb_v2_deterministic
+    runtime: *runtime
+    shield_synthesis: *shield_synthesis
+    safety:
+      <<: *safety
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomColourBombGridWorld/colour_bomb_v2_deterministic/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training: *training
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/colour_bomb_v2_deterministic
+    early_stopping: *early_stopping
+    evaluation: *evaluation
+    stages: *stages
+
+  deterministic_minipacman:
+    description: Safe-RL baselines, shielded PPO, and Rashomon PPO on deterministic MiniPacman.
+    module: *module
+    default_task: minipacman_default
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/deterministic_minipacman
+      run_id: minipacman_default
+    runtime: *runtime
+    shield_synthesis: *shield_synthesis
+    safety:
+      <<: *safety
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomMiniPacman/minipacman_default/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training: *training
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/minipacman_default
+    early_stopping: *early_stopping
+    evaluation: *evaluation
+    stages: *stages
+
+  media_streaming_deterministic:
+    description: Deterministic CustomMediaStreaming pipeline using the default safe-policy-optimisation template.
+    module: *module
+    default_task: media_streaming_deterministic
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/deterministic_media_streaming
+      run_id: media_streaming_deterministic
+    runtime: *runtime
+    shield_synthesis: *shield_synthesis
+    safety:
+      <<: *safety
+      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomMediaStreaming/media_streaming_deterministic/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training: *training
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/media_streaming_deterministic
+    early_stopping:
+      <<: *early_stopping
+      success_reward_threshold: -0.5
+    evaluation: *evaluation
+    stages: *stages
