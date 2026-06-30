@@ -8,21 +8,15 @@ import contextlib
 import json
 import multiprocessing as mp
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import numpy as np
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
     CallableUnshieldedRewardCurveCallback,
@@ -37,7 +31,16 @@ from projects.safe_policy_optimisation.utils.cpu_allocation import (  # noqa: E4
     resolve_worker_count,
     worker_thread_count,
 )
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.cli import add_ppo_hyperparameter_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.envs import env_kwargs_from_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import (  # noqa: E402
+    episode_rows,
+    training_episode_rows,
+    write_episode_csv,
+    write_json,
+    write_training_episode_csv,
+)
+from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     ALGORITHM_NAMES,
     PPO_LAGRANGIAN_ALGORITHM_NAMES,
     DEFAULT_TOTAL_TIMESTEPS,
@@ -45,15 +48,13 @@ from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa
     aggregate_training_violations,
     aggregate_violations,
     build_safe_rl_baseline,
-    episode_rows,
     evaluate_policy,
     make_safe_rl_env,
     save_checkpoint,
-    training_episode_rows,
-    write_episode_csv,
-    write_json,
-    write_training_episode_csv,
 )
+from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
+from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT
@@ -62,40 +63,6 @@ DEFAULT_OUTPUT_DIR = (
     / "artifacts"
     / "ppo_lagrangian"
 )
-
-
-def _load_torch_payload(path: Path) -> Any:
-    return torch.load(path, map_location="cpu", weights_only=False)
-
-
-def load_shield_mask(
-    shield_path: Path,
-    *,
-    shield_key: str = "shield",
-    source: str = "shield",
-    risk_threshold: float | None = None,
-) -> np.ndarray:
-    """Load a binary shield mask from a stored shield artifact."""
-
-    payload = _load_torch_payload(shield_path)
-    if source == "shield":
-        if shield_key not in payload:
-            raise KeyError(f"Shield artifact has no key {shield_key!r}; keys={sorted(payload.keys())}")
-        mask = payload[shield_key]
-    elif source == "action_risk":
-        if "action_risk" not in payload:
-            raise KeyError("Shield artifact has no 'action_risk' key.")
-        threshold = payload.get("risk_threshold", 0.0) if risk_threshold is None else risk_threshold
-        mask = np.asarray(payload["action_risk"]) <= float(threshold)
-    else:
-        raise ValueError(f"Unknown shield source {source!r}.")
-
-    if hasattr(mask, "detach"):
-        mask = mask.detach().cpu().numpy()
-    mask = np.asarray(mask)
-    if mask.ndim != 2:
-        raise ValueError(f"Shield mask must be 2-D, got shape {mask.shape}.")
-    return (mask != 0).astype(np.int64)
 
 
 def build_parser(
@@ -141,16 +108,7 @@ def build_parser(
         help="Backward-compatible MiniPacman shortcut used only when --env-kwargs is omitted.",
     )
     parser.add_argument("--device", default="cpu", help="Torch device passed to the baselines.")
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--n-steps", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--n-epochs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--clip-range", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.0)
-    parser.add_argument("--vf-coef", type=float, default=0.5)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    add_ppo_hyperparameter_args(parser)
     parser.add_argument("--cost-gamma", type=float, default=0.99)
     parser.add_argument("--cost-gae-lambda", type=float, default=0.95)
     parser.add_argument("--lagrangian-multiplier-init", type=float, default=0.0)
@@ -229,11 +187,7 @@ def _baseline_hyperparameters_from_args(args: argparse.Namespace) -> dict[str, A
 
 
 def _env_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    if args.env_kwargs is not None:
-        return dict(args.env_kwargs)
-    if args.env_id == "CustomMiniPacman-v0":
-        return {"ghost_rand_prob": float(args.ghost_rand_prob)}
-    return {}
+    return env_kwargs_from_args(args)
 
 
 def _algorithm_timesteps(algorithm: str, override: int | None) -> int:
@@ -480,7 +434,7 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
             seed=seed + 20_000 + offset * 1_000,
             reward_threshold=float(job["success_reward_threshold"]),
         )
-        print(f"[{algorithm}] training for {timesteps} timesteps")
+        log_info(f"[{algorithm}] training for {timesteps} timesteps")
         model.learn(total_timesteps=timesteps, callback=CallbackList([reward_curve, early_stop]))
         final_curve_evaluation = reward_curve.record_final_evaluation(model)
 
@@ -552,7 +506,7 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
                 "cpu_ids": applied_cpu_ids,
             },
         )
-        print(
+        log_info(
             "[{algorithm}] eval violations: {count:.0f}/{episodes:.0f} ({pct:.2f}%)".format(
                 algorithm=algorithm,
                 count=metrics["violation_count"],
@@ -560,7 +514,7 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
                 pct=metrics["violation_percentage"],
             )
         )
-        print(
+        log_info(
             "[{algorithm}] training exploration violations: "
             "{count:.0f}/{episodes:.0f} ({pct:.2f}%)".format(
                 algorithm=algorithm,
@@ -754,10 +708,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         all_rows.extend(result["episode_rows"])
         all_training_rows.extend(result["training_rows"])
 
+    metrics = {
+        algorithm: summarise_evaluation(
+            result_by_algorithm[algorithm]["episode_rows"],
+            success_reward_threshold=float(getattr(args, "success_reward_threshold", 0.0)),
+            cost_limit=float(args.cost_limit),
+            algorithm=algorithm,
+        )
+        for algorithm in args.algorithms
+    }
     write_json(output_dir / "summary.json", summary)
+    write_json(output_dir / "metrics.json", metrics)
     write_episode_csv(output_dir / "episodes.csv", all_rows)
     write_training_episode_csv(output_dir / "training_episodes.csv", all_training_rows)
-    print(f"Artifacts written to {output_dir}")
+    log_info(f"Artifacts written to {output_dir}")
     return summary
 
 

@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from projects.safe_policy_optimisation.stages import train_ppo_lagrangian  # noqa: E402
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import CPO_ALGORITHM_NAMES  # noqa: E402
+from projects.safe_policy_optimisation.utils.safe_rl import CPO_ALGORITHM_NAMES  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT / "projects" / "safe_policy_optimisation" / "artifacts" / "cpo"

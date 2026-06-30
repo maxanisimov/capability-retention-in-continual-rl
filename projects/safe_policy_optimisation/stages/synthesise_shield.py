@@ -12,18 +12,12 @@ import argparse
 import json
 import os
 from pathlib import Path
-import sys
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from projects.safe_crl.pipelines.safety_retention.synthesise_shield import (  # noqa: E402
     FROZEN_LAKE_ENV,
@@ -34,6 +28,7 @@ from projects.safe_crl.pipelines.safety_retention.task_library import (  # noqa:
     environment_subdir,
     load_masa_task,
 )
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 
 PROJECT_ROOT = REPO_ROOT / "projects" / "safe_policy_optimisation"
@@ -187,9 +182,9 @@ def run(args: argparse.Namespace) -> Path:
             f"--env {args.env} --task {args.task} --shield-path {output_path}"
         )
 
-    print(f"Saved shield Q-function to {output_path}")
-    print(f"Start-state eventual-safety value: {start_safety:.3f}")
-    print(f"Plot it with: {plot_hint}")
+    log_info(f"Saved shield Q-function to {output_path}")
+    log_info(f"Start-state eventual-safety value: {start_safety:.3f}")
+    log_info(f"Plot it with: {plot_hint}")
     return output_path
 
 

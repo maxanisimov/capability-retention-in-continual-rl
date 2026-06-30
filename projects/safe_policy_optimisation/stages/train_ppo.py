@@ -4,41 +4,38 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (  # noqa: E402
     EarlyStopOnUnshieldedSuccessCallback,
-    _parse_env_kwargs,
     _records_to_metrics,
     _resolve_curve_eval_freq,
-    load_shield_mask,
     make_unshielded_env,
 )
+from projects.safe_policy_optimisation.utils import io  # noqa: E402
+from projects.safe_policy_optimisation.utils.cli import add_ppo_hyperparameter_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
     LearningCurveLogger,
     UnshieldedRewardCurveCallback,
 )
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     aggregate_training_violations,
     aggregate_violations,
-    write_json,
 )
+from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 
 ALGORITHM_NAME = "plain_ppo"
@@ -47,45 +44,15 @@ DEFAULT_OUTPUT_DIR = (
 )
 
 
-def _write_episode_csv(path: Path, rows: list[dict[str, Any]], *, include_end_timestep: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "algorithm",
-        "episode",
-        "reward",
-        "cost",
-        "length",
-        "violated",
-        "unsafe_state_visit_count",
-        "safe_trajectory",
-    ]
-    if include_end_timestep:
-        fieldnames.insert(2, "end_timestep")
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+_write_episode_csv = io.write_record_csv
 
 
 def _episode_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    for record in records:
-        row = dict(record)
-        row["algorithm"] = ALGORITHM_NAME
-        rows.append(row)
-    return rows
+    return io.record_rows(records, algorithm=ALGORITHM_NAME)
 
 
 def _training_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    end_timestep = 0
-    for record in records:
-        row = dict(record)
-        end_timestep += int(row["length"])
-        row["end_timestep"] = end_timestep
-        row["algorithm"] = ALGORITHM_NAME
-        rows.append(row)
-    return rows
+    return io.record_training_rows(records, algorithm=ALGORITHM_NAME)
 
 
 def _write_early_stop_evaluations(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -149,16 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--total-timesteps", type=int, default=10_000)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--n-steps", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--n-epochs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--clip-range", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.0)
-    parser.add_argument("--vf-coef", type=float, default=0.5)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    add_ppo_hyperparameter_args(parser)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--shield-path",
@@ -195,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
-    env_kwargs = _parse_env_kwargs(args.env_kwargs)
+    env_kwargs = parse_env_kwargs(args.env_kwargs)
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.output_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -264,7 +222,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed + 20_000,
             reward_threshold=args.success_reward_threshold,
         )
-        print(f"[{ALGORITHM_NAME}] training for {args.total_timesteps} timesteps")
+        log_info(f"[{ALGORITHM_NAME}] training for {args.total_timesteps} timesteps")
         callbacks: list[BaseCallback] = [reward_curve, early_stop]
         if shield_mask is not None:
             callbacks.append(ShieldUnsafeActionProposalCallback(shield_mask, curve_logger))
@@ -367,7 +325,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
     }
     write_json(run_dir / "summary.json", summary)
-    print(f"Artifacts written to {run_dir}")
+    write_json(
+        run_dir / "metrics.json",
+        summarise_evaluation(
+            eval_records,
+            success_reward_threshold=float(args.success_reward_threshold),
+            cost_limit=float(args.cost_limit),
+            algorithm=ALGORITHM_NAME,
+        ),
+    )
+    log_info(f"Artifacts written to {run_dir}")
     return summary
 
 

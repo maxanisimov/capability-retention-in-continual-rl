@@ -13,10 +13,6 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parents[1]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from projects.safe_policy_optimisation.utils.config import (  # noqa: E402
     PIPELINES_FILE,
@@ -29,6 +25,7 @@ from projects.safe_policy_optimisation.utils.config import (  # noqa: E402
     registry_source_file,
 )
 from projects.safe_policy_optimisation.stages import synthesise_shield  # noqa: E402
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -121,7 +118,7 @@ def _synthesise_shield_if_needed(
     if not shield_path.is_absolute():
         shield_path = REPO_ROOT / shield_path
     if shield_path.exists() and not force:
-        print(f"Using existing shield: {shield_path}")
+        log_info(f"Using existing shield: {shield_path}")
         return shield_path
 
     env_kwargs = task_settings.get("env_kwargs")
@@ -164,7 +161,7 @@ def _synthesise_shield_if_needed(
     if settings.get("max_episode_steps") is not None:
         argv.extend(["--max-episode-steps", str(settings["max_episode_steps"])])
 
-    print(f"Synthesising shield before training: {shield_path}")
+    log_info(f"Synthesising shield before training: {shield_path}")
     result_path = synthesise_shield.run(synthesise_shield.build_parser().parse_args(argv))
     if Path(result_path) != shield_path:
         raise RuntimeError(f"Shield synthesis wrote {result_path}, expected {shield_path}")

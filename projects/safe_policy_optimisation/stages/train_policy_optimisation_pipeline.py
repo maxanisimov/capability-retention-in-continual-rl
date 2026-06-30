@@ -15,10 +15,6 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from projects.safe_policy_optimisation.stages import (  # noqa: E402
     compute_shield_rashomon_set,
@@ -48,11 +44,12 @@ from projects.safe_policy_optimisation.utils.cpu_allocation import (  # noqa: E4
     resolve_worker_count,
     worker_thread_count,
 )
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     ALGORITHM_NAMES,
     PPO_LAGRANGIAN_ALGORITHM_NAMES,
-    write_json,
 )
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT
@@ -447,11 +444,11 @@ def _run_stage_worker(job: dict[str, Any]) -> dict[str, Any]:
     started_at = time.time()
     with log_path.open("w", encoding="utf-8") as log_handle:
         with contextlib.redirect_stdout(log_handle), contextlib.redirect_stderr(log_handle):
-            print(f"Starting stage {job['stage']} on CPU ids {applied_cpu_ids}")
+            log_info(f"Starting stage {job['stage']} on CPU ids {applied_cpu_ids}")
             module = _stage_module(str(job["stage"]))
             stage_args = _parse_stage_args(module.build_parser(), list(job["argv"]))
             summary = module.run(stage_args)
-            print(f"Finished stage {job['stage']}")
+            log_info(f"Finished stage {job['stage']}")
     finished_at = time.time()
     return {
         "stage": str(job["stage"]),
@@ -509,9 +506,9 @@ def _stage_job(
 def _ppo_argv(args: argparse.Namespace, run_dir: Path, shield_path: Path, env_kwargs: str) -> list[str]:
     ppo_argv = [
         "--output-dir",
-        str(run_dir / "ppo_policy"),
+        str(run_dir),
         "--run-id",
-        "run",
+        "ppo_policy",
         "--seed",
         str(args.seed),
         "--device",
@@ -576,9 +573,9 @@ def _ppo_lagrangian_argv(
     selected_algorithms = list(_ppo_lagrangian_algorithms(args) if algorithms is None else algorithms)
     baseline_argv = [
         "--output-dir",
-        str(run_dir / stage_name),
+        str(run_dir),
         "--run-id",
-        "run",
+        stage_name,
         "--seed",
         str(args.seed),
         "--device",
@@ -660,9 +657,9 @@ def _cpo_argv(args: argparse.Namespace, run_dir: Path, env_kwargs: str) -> list[
 def _shielded_argv(args: argparse.Namespace, run_dir: Path, shield_path: Path, env_kwargs: str) -> list[str]:
     shielded_argv = [
         "--output-dir",
-        str(run_dir / "shielded_policy"),
+        str(run_dir),
         "--run-id",
-        "run",
+        "shielded_policy",
         "--shield-path",
         str(shield_path),
         "--env-id",
@@ -721,8 +718,8 @@ def _rashomon_set_argv(
     shield_path: Path,
     rashomon_dir: Path | None,
 ) -> tuple[list[str], Path, str]:
-    rashomon_output_dir = run_dir / "shield_rashomon"
-    rashomon_run_id = "run"
+    rashomon_output_dir = run_dir
+    rashomon_run_id = "shield_rashomon"
     if rashomon_dir is not None:
         rashomon_output_dir = Path(rashomon_dir).parent
         rashomon_run_id = Path(rashomon_dir).name
@@ -761,9 +758,9 @@ def _rashomon_policy_argv(
 ) -> list[str]:
     rashomon_policy_argv = [
         "--output-dir",
-        str(run_dir / "rashomon_policy"),
+        str(run_dir),
         "--run-id",
-        "run",
+        "rashomon_policy",
         "--rashomon-dir",
         str(rashomon_dir),
         "--shield-path",
@@ -1088,19 +1085,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         if stage == "ppo_policy":
                             record_stage(
                                 stage_result,
-                                run_path=run_dir / "ppo_policy" / "run",
+                                run_path=run_dir / "ppo_policy",
                             )
                         elif stage == "ppo_lagrangian":
                             record_stage(
                                 stage_result,
-                                run_path=run_dir / "ppo_lagrangian" / "run",
+                                run_path=run_dir / "ppo_lagrangian",
                             )
                         elif stage == "cpo":
-                            record_stage(stage_result, run_path=run_dir / "cpo" / "run")
+                            record_stage(stage_result, run_path=run_dir / "cpo")
                         elif stage == "shielded_policy":
                             record_stage(
                                 stage_result,
-                                run_path=run_dir / "shielded_policy" / "run",
+                                run_path=run_dir / "shielded_policy",
                             )
                         elif stage == "rashomon_set":
                             rashomon_dir = Path(stage_result["summary"]["run_dir"])
@@ -1117,7 +1114,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         elif stage == "rashomon_policy":
                             record_stage(
                                 stage_result,
-                                run_path=run_dir / "rashomon_policy" / "run",
+                                run_path=run_dir / "rashomon_policy",
                                 extra={
                                     "early_stop_eval_policy": "unshielded",
                                     "evaluation_policy": args.rashomon_evaluation_policy,
@@ -1133,7 +1130,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 torch_num_threads=args.torch_num_threads,
                 cpu_ids=list(cpu_ids[:1]),
             )
-            record_stage(ppo_result, run_path=run_dir / "ppo_policy" / "run")
+            record_stage(ppo_result, run_path=run_dir / "ppo_policy")
 
         if _ppo_lagrangian_algorithms(args):
             baseline_result = _run_stage_inline(
@@ -1150,7 +1147,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             record_stage(
                 baseline_result,
-                run_path=run_dir / "ppo_lagrangian" / "run",
+                run_path=run_dir / "ppo_lagrangian",
             )
 
         if _cpo_enabled(args):
@@ -1160,7 +1157,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 torch_num_threads=args.torch_num_threads,
                 cpu_ids=list(cpu_ids[:1]),
             )
-            record_stage(cpo_result, run_path=run_dir / "cpo" / "run")
+            record_stage(cpo_result, run_path=run_dir / "cpo")
 
         if not args.skip_shielded_policy:
             shielded_result = _run_stage_inline(
@@ -1171,7 +1168,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             record_stage(
                 shielded_result,
-                run_path=run_dir / "shielded_policy" / "run",
+                run_path=run_dir / "shielded_policy",
             )
 
         if not rashomon_bounds_exist and not args.skip_rashomon_policy:
@@ -1207,7 +1204,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             record_stage(
                 rashomon_policy_result,
-                run_path=run_dir / "rashomon_policy" / "run",
+                run_path=run_dir / "rashomon_policy",
                 extra={
                     "early_stop_eval_policy": "unshielded",
                     "evaluation_policy": args.rashomon_evaluation_policy,
@@ -1218,7 +1215,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     summary["finished_at"] = time.time()
     summary["elapsed_seconds"] = float(summary["finished_at"] - pipeline_started_at)
     write_json(run_dir / "summary.json", summary)
-    print(f"Deterministic safe-policy pipeline artifacts written to {run_dir}")
+    log_info(f"Deterministic safe-policy pipeline artifacts written to {run_dir}")
     return summary
 
 

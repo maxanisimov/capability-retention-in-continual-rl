@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import gymnasium as gym
 import numpy as np
@@ -19,10 +16,6 @@ import torch.nn as nn
 from stable_baselines3.common.callbacks import BaseCallback
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from provably_safe_policy_optimisation import (  # noqa: E402
     ProvablySafePPO,
@@ -32,7 +25,6 @@ from provably_safe_policy_optimisation import (  # noqa: E402
 
 from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (  # noqa: E402
     _episode_rows,
-    _parse_env_kwargs,
     _records_to_metrics,
     _training_rows,
     evaluate_shielded_policy,
@@ -41,15 +33,18 @@ from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy imp
     make_unshielded_env,
     validate_shield_for_env,
 )
+from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
     LearningCurveLogger,
     UnshieldedRewardCurveCallback,
 )
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     aggregate_training_violations,
     aggregate_violations,
-    write_json,
 )
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 ALGORITHM_NAME = "rashomon_shielded_ppo"
 DEFAULT_OUTPUT_DIR = (
@@ -494,7 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.env_id is None:
         raise ValueError("--env-id is required for Rashomon-shielded policy training.")
-    env_kwargs = _parse_env_kwargs(args.env_kwargs)
+    env_kwargs = parse_env_kwargs(args.env_kwargs)
     mask = load_shield_mask(
         args.shield_path,
         shield_key=args.shield_key,
@@ -580,7 +575,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             reward_threshold=args.success_reward_threshold,
             eval_policy=args.early_stop_eval_policy,
         )
-        print(f"[{ALGORITHM_NAME}] training for up to {args.total_timesteps} timesteps")
+        log_info(f"[{ALGORITHM_NAME}] training for up to {args.total_timesteps} timesteps")
         model.learn(total_timesteps=args.total_timesteps, callback=[reward_curve, early_stop])
         final_curve_evaluation = reward_curve.record_final_evaluation()
         training_records = list(train_env.episodes)
@@ -754,7 +749,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
     }
     write_json(run_dir / "summary.json", summary)
-    print(
+    write_json(
+        run_dir / "metrics.json",
+        summarise_evaluation(
+            eval_records,
+            success_reward_threshold=float(args.success_reward_threshold),
+            cost_limit=float(args.cost_limit),
+            algorithm=ALGORITHM_NAME,
+        ),
+    )
+    log_info(
         "[{algorithm}] executed unsafe actions: {unsafe}/{checked} ({pct:.2f}%)".format(
             algorithm=ALGORITHM_NAME,
             unsafe=executed_action_diagnostics["executed_unsafe_action_count"],
@@ -762,7 +766,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             pct=executed_action_diagnostics["executed_unsafe_action_percentage"],
         )
     )
-    print(f"Artifacts written to {run_dir}")
+    log_info(f"Artifacts written to {run_dir}")
     return summary
 
 

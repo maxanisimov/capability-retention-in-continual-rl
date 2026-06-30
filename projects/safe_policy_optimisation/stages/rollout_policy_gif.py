@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,24 +12,23 @@ import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import (  # noqa: E402
+    episode_rows,
+    write_episode_csv,
+    write_json,
+)
+from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     ALGORITHM_NAMES,
     EpisodeMetrics,
     aggregate_violations,
-    episode_rows,
     load_checkpoint_model,
     make_safe_rl_env,
     minipacman_state_cost,
     rollout_policy_frames,
     save_gif,
-    write_episode_csv,
-    write_json,
 )
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (  # noqa: E402
     ALGORITHM_NAME as SHIELDED_ALGORITHM_NAME,
     load_shield_mask,
@@ -286,7 +284,7 @@ def _run_shielded_policy(args: argparse.Namespace) -> dict[str, Any]:
         save_gif(gif_path, frames, fps=args.fps)
         episode_metrics.append(metrics)
         csv_rows.extend(episode_rows(algorithm, [metrics]))
-        print(
+        log_info(
             "[{algorithm}] episode {episode}: reward={reward:.2f} cost={cost:.2f} "
             "violated={violated} gif={gif}".format(
                 algorithm=algorithm,
@@ -416,7 +414,7 @@ def _run_masa_shielded_policy(args: argparse.Namespace) -> dict[str, Any]:
         save_gif(gif_path, frames, fps=args.fps)
         episode_metrics.append(metrics)
         csv_rows.extend(episode_rows(MASA_SHIELDED_ALGORITHM_NAME, [metrics]))
-        print(
+        log_info(
             "[{algorithm}] episode {episode}: reward={reward:.2f} cost={cost:.2f} "
             "violated={violated} gif={gif}".format(
                 algorithm=MASA_SHIELDED_ALGORITHM_NAME,
@@ -506,7 +504,7 @@ def _run_baseline_checkpoint(
         save_gif(gif_path, frames, fps=args.fps)
         episode_metrics.append(metrics)
         csv_rows.extend(episode_rows(algorithm, [metrics]))
-        print(
+        log_info(
             "[{algorithm}] episode {episode}: reward={reward:.2f} cost={cost:.2f} "
             "violated={violated} gif={gif}".format(
                 algorithm=algorithm,

@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import gymnasium as gym
 import numpy as np
@@ -21,18 +17,20 @@ from stable_baselines3 import PPO
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
-from projects.safe_crl.utils.masa_tabular_envs.factory import make_custom_masa_env  # noqa: E402
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import (  # noqa: E402
+from projects.safe_policy_optimisation.utils import io  # noqa: E402
+from projects.safe_policy_optimisation.utils.envs import env_kwargs_from_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
+from projects.safe_policy_optimisation.utils.safe_crl_bridge import (  # noqa: E402
+    make_custom_masa_env,
+)
+from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     EpisodeMetrics,
     aggregate_training_violations,
     aggregate_violations,
-    write_json,
 )
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 
 ALGORITHM_NAME = "masa_shielded_ppo"
@@ -146,15 +144,11 @@ def make_masa_shielded_env(
 
 
 def _episode_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    for record in records:
-        row = dict(record)
-        row["algorithm"] = ALGORITHM_NAME
-        rows.append(row)
-    return rows
+    return io.record_rows(records, algorithm=ALGORITHM_NAME)
 
 
 def _write_episode_csv(path: Path, rows: list[dict[str, Any]], *, include_end_timestep: bool = False) -> None:
+    # MASA-shielded runs record a reduced column set (no unsafe-state counters).
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["algorithm", "episode", "reward", "cost", "length", "violated"]
     if include_end_timestep:
@@ -166,15 +160,7 @@ def _write_episode_csv(path: Path, rows: list[dict[str, Any]], *, include_end_ti
 
 
 def _training_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    end_timestep = 0
-    for record in records:
-        row = dict(record)
-        end_timestep += int(row["length"])
-        row["end_timestep"] = end_timestep
-        row["algorithm"] = ALGORITHM_NAME
-        rows.append(row)
-    return rows
+    return io.record_training_rows(records, algorithm=ALGORITHM_NAME)
 
 
 def _evaluate(model: PPO, args: argparse.Namespace, env_kwargs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -244,21 +230,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _parse_env_kwargs(raw: str | None) -> dict[str, Any]:
-    if raw is None:
-        return {}
-    payload = json.loads(raw)
-    if not isinstance(payload, dict):
-        raise ValueError("--env-kwargs must decode to a JSON object.")
-    return payload
-
-
 def _env_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    if args.env_kwargs is not None:
-        return _parse_env_kwargs(args.env_kwargs)
-    if args.env_id == "CustomMiniPacman-v0":
-        return {"ghost_rand_prob": float(args.ghost_rand_prob)}
-    return {}
+    return env_kwargs_from_args(args)
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -310,7 +283,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             device=args.device,
             verbose=1,
         )
-        print(f"[{ALGORITHM_NAME}] training for {args.total_timesteps} timesteps")
+        log_info(f"[{ALGORITHM_NAME}] training for {args.total_timesteps} timesteps")
         model.learn(total_timesteps=args.total_timesteps)
         model.save(run_dir / "model.zip")
         training_records = list(train_env.episodes)
@@ -341,7 +314,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ),
     }
     write_json(run_dir / "summary.json", summary)
-    print(
+    write_json(
+        run_dir / "metrics.json",
+        summarise_evaluation(
+            eval_records,
+            success_reward_threshold=float(getattr(args, "success_reward_threshold", 0.0)),
+            cost_limit=float(args.cost_limit),
+            algorithm=ALGORITHM_NAME,
+        ),
+    )
+    log_info(
         "[{algorithm}] training exploration violations: {count}/{episodes} ({pct:.2f}%)".format(
             algorithm=ALGORITHM_NAME,
             count=summary["training"]["training_violation_count"],
@@ -349,7 +331,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             pct=summary["training"]["training_violation_percentage"],
         )
     )
-    print(
+    log_info(
         "[{algorithm}] eval violations: {count}/{episodes} ({pct:.2f}%)".format(
             algorithm=ALGORITHM_NAME,
             count=summary["evaluation"]["violation_count"],
@@ -357,7 +339,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             pct=summary["evaluation"]["violation_percentage"],
         )
     )
-    print(f"Artifacts written to {run_dir}")
+    log_info(f"Artifacts written to {run_dir}")
     return summary
 
 

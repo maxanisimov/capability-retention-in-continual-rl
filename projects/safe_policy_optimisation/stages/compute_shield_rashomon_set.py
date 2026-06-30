@@ -9,13 +9,10 @@ demonstration dataset, and computes an IBP Rashomon set around that base policy.
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import numpy as np
 import torch
@@ -24,12 +21,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for import_path in (REPO_ROOT, REPO_ROOT / "core"):
-    path_str = str(import_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
-from projects.safe_policy_optimisation.utils.minipacman_safe_rl import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.shield import (  # noqa: E402
+    load_shield_mask as _load_shield_mask,
+)
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 
 DEFAULT_OUTPUT_DIR = (
@@ -37,32 +34,16 @@ DEFAULT_OUTPUT_DIR = (
 )
 
 
-def _torch_load(path: Path) -> Any:
-    return torch.load(path, map_location="cpu", weights_only=False)
-
-
-def _as_numpy(value: Any) -> np.ndarray:
-    if hasattr(value, "detach"):
-        value = value.detach().cpu().numpy()
-    return np.asarray(value)
-
-
 def load_shield_mask(shield_path: Path, *, risk_threshold: float | None = None) -> np.ndarray:
-    """Load a binary shield mask from ``shield_q.pt``."""
+    """Load a float32 ``(state, action)`` shield mask, auto-detecting the source.
 
-    payload = _torch_load(shield_path)
-    if "shield" in payload:
-        mask = _as_numpy(payload["shield"]) != 0
-    elif "action_risk" in payload:
-        threshold = payload.get("risk_threshold", 0.0) if risk_threshold is None else risk_threshold
-        mask = _as_numpy(payload["action_risk"]) <= float(threshold)
-    else:
-        raise KeyError(
-            f"Shield artifact must contain 'shield' or 'action_risk'; keys={sorted(payload.keys())}.",
-        )
-    if mask.ndim != 2:
-        raise ValueError(f"Expected a 2-D shield mask, got shape {mask.shape}.")
-    return mask.astype(np.float32)
+    Rashomon-set construction needs the mask as float32 one-hot features, so this
+    delegates to :func:`...utils.shield.load_shield_mask` with ``source="auto"``.
+    """
+
+    return _load_shield_mask(
+        shield_path, source="auto", risk_threshold=risk_threshold, dtype=np.float32
+    )
 
 
 def make_safe_behaviour_payload(mask: np.ndarray) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
@@ -438,7 +419,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
     }
     write_json(run_dir / "summary.json", summary)
-    print(f"Artifacts written to {run_dir}")
+    log_info(f"Artifacts written to {run_dir}")
     return summary
 
 
