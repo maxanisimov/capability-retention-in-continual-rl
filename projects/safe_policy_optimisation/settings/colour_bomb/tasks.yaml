@@ -1,8 +1,0 @@
-tasks:
-  colour_bomb_deterministic:
-    description: Deterministic CustomColourBombGridWorld task with no transition slip.
-    env_id: CustomColourBombGridWorld-v0
-    shield_task: customcolourgridworld_default
-    max_episode_steps: null
-    env_kwargs:
-      slip_prob: 0.0

@@ -8,6 +8,11 @@ from typing import Any
 
 import yaml
 
+from projects.safe_policy_optimisation.utils.config_schema import (
+    validate_pipeline_mapping,
+    validate_task_mapping,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SETTINGS_ROOT = PROJECT_ROOT / "settings"
@@ -140,6 +145,9 @@ def compose_pipeline_settings(
     if not isinstance(pipeline, dict):
         raise ValueError(f"{pipelines_file}: pipeline {pipeline_name!r} must be a mapping.")
 
+    # Fail fast on unknown sections/keys, missing required fields, or typos.
+    validate_pipeline_mapping(pipeline_name, pipeline)
+
     selected_task = task_name or pipeline.get("default_task")
     if not selected_task:
         raise ValueError(f"{pipelines_file}: pipeline {pipeline_name!r} must define default_task or receive a task.")
@@ -150,6 +158,7 @@ def compose_pipeline_settings(
     task = tasks[selected_task]
     if not isinstance(task, dict):
         raise ValueError(f"{tasks_file}: task {selected_task!r} must be a mapping.")
+    validate_task_mapping(selected_task, task)
 
     env_kwargs = task.get("env_kwargs") or {}
     if not isinstance(env_kwargs, dict):

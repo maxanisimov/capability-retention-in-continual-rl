@@ -1,0 +1,50 @@
+tasks:
+  bridge_crossing_deterministic:
+    description: Deterministic CustomBridgeCrossing task with no transition slip.
+    env_id: CustomBridgeCrossing-v0
+    shield_task: custombridgecrossing_default
+    max_episode_steps: null
+    env_kwargs:
+      slip_prob: 0.0
+
+  bridge_crossing_v2_deterministic:
+    description: Deterministic CustomBridgeCrossingV2 task with no transition slip.
+    env_id: CustomBridgeCrossingV2-v0
+    shield_task: custombridgecrossingv2_default
+    max_episode_steps: null
+    env_kwargs:
+      slip_prob: 0.0
+
+  colour_bomb_deterministic:
+    description: Deterministic CustomColourBombGridWorld task with no transition slip.
+    env_id: CustomColourBombGridWorld-v0
+    shield_task: customcolourgridworld_default
+    max_episode_steps: null
+    env_kwargs:
+      slip_prob: 0.0
+
+  colour_bomb_v2_deterministic:
+    description: Deterministic CustomColourBombGridWorldV2 task with no transition slip.
+    env_id: CustomColourBombGridWorldV2-v0
+    shield_task: customcolourgridworldv2_default
+    max_episode_steps: null
+    env_kwargs:
+      slip_prob: 0.0
+
+  media_streaming_deterministic:
+    description: Deterministic CustomMediaStreaming task with fixed buffer dynamics.
+    env_id: CustomMediaStreaming-v0
+    shield_task: custommediastreaming_default
+    max_episode_steps: null
+    env_kwargs:
+      fast_rate: 0.0
+      slow_rate: 0.0
+      out_rate: 0.0
+
+  minipacman_default:
+    description: Deterministic MiniPacman task used by safe policy optimisation experiments.
+    env_id: CustomMiniPacman-v0
+    shield_task: minipacman_default
+    max_episode_steps: 100
+    env_kwargs:
+      ghost_rand_prob: 0.0
