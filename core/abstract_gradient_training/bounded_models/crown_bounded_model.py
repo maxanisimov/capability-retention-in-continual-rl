@@ -319,22 +319,31 @@ class CROWNBoundedModel(IntervalBoundedModel):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Optimize any optimizable activation relaxation parameters using Alpha-CROWN.
+
+        Runs under ``torch.enable_grad()`` regardless of the caller's ambient
+        autograd state: certification/evaluation call sites (e.g. Rashomon-set
+        construction) wrap bound computation in ``torch.no_grad()`` since IBP and
+        plain CROWN need no gradients there, but Alpha-CROWN's own inner Adam loop
+        over its relaxation parameters does - without this, ``loss.backward()``
+        fails with "does not require grad and does not have a grad_fn" the moment
+        it's called from inside a ``no_grad()`` context.
         """
         if not node.optimizable_parameters():
             return node.concretize().as_tuple()
-        optimizer = torch.optim.Adam(
-            node.optimizable_parameters(), lr=self.alpha_crown_lr
-        )  # type: ignore
-        lower, upper = node.concretize()
-        for i in range(self.alpha_crown_iters):
-            optimizer.zero_grad()
-            node.clear_cached()
+        with torch.enable_grad():
+            optimizer = torch.optim.Adam(
+                node.optimizable_parameters(), lr=self.alpha_crown_lr
+            )  # type: ignore
             lower, upper = node.concretize()
-            assert (lower <= upper).all()
-            loss = (upper - lower).sum()
-            LOGGER.debug("Alpha-CROWN iteration %d, loss=%s", i, loss)
-            loss.backward(retain_graph=True)
-            optimizer.step()
+            for i in range(self.alpha_crown_iters):
+                optimizer.zero_grad()
+                node.clear_cached()
+                lower, upper = node.concretize()
+                assert (lower <= upper).all()
+                loss = (upper - lower).sum()
+                LOGGER.debug("Alpha-CROWN iteration %d, loss=%s", i, loss)
+                loss.backward(retain_graph=True)
+                optimizer.step()
         return lower, upper
 
     def __repr__(self) -> str:
