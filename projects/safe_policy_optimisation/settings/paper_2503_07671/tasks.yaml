@@ -45,6 +45,14 @@ tasks:
     env_kwargs:
       slip_prob: 0.04
 
+  paper_2503_07671_mini_pacman:
+    description: Paper 2503.07671 MiniPacman task.
+    env_id: CustomMiniPacman-v0
+    shield_task: customminipacman_paper_2503_07671
+    max_episode_steps: 1000
+    env_kwargs:
+      ghost_rand_prob: 0.6
+
   paper_2503_07671_pacman:
     description: Paper 2503.07671 full Pacman task.
     env_id: CustomPacman-v0

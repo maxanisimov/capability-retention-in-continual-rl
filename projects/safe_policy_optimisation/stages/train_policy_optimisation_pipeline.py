@@ -21,8 +21,9 @@ from projects.safe_policy_optimisation.stages import (  # noqa: E402
     train_cpo,
     train_ppo,
     train_ppo_lagrangian,
-    train_rashomon_shielded_policy,
-    train_discrete_shielded_policy,
+    train_pspo_adaptive,
+    train_pspo_precomputed,
+    train_ppo_shield,
 )
 from projects.safe_policy_optimisation.utils.config import (  # noqa: E402
     PIPELINES_FILE,
@@ -68,10 +69,21 @@ def _parse_stage_args(parser: argparse.ArgumentParser, argv: list[str]) -> argpa
 
 def _env_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
     if args.env_kwargs is not None:
-        return dict(args.env_kwargs)
-    if args.env_id == "CustomMiniPacman-v0":
-        return {"ghost_rand_prob": float(args.ghost_rand_prob)}
-    return {}
+        env_kwargs = dict(args.env_kwargs)
+    elif args.env_id == "CustomMiniPacman-v0":
+        env_kwargs = {"ghost_rand_prob": float(args.ghost_rand_prob)}
+    else:
+        env_kwargs = {}
+    # Every method (baselines and PSPO alike) trains against the same env, so a
+    # single --state-representation drives the actual observation space here too
+    # (translated to the env's own "index"/"features" naming) - not just PSPO's
+    # BC fitting representation. An explicit observation_mode in --env-kwargs
+    # always wins (setdefault), so callers can still override per-env.
+    state_representation = getattr(args, "state_representation", "one_hot")
+    env_kwargs.setdefault(
+        "observation_mode", "index" if state_representation == "one_hot" else "features"
+    )
+    return env_kwargs
 
 
 def _optional_int(value: Any) -> int | None:
@@ -97,6 +109,10 @@ def _append_monitoring_args(argv: list[str], args: argparse.Namespace, run_dir: 
 
 def _rashomon_bounds_path(rashomon_dir: Path) -> Path:
     return Path(rashomon_dir) / "rashomon_param_bounds.pt"
+
+
+def _base_policy_path(rashomon_dir: Path) -> Path:
+    return Path(rashomon_dir) / "base_policy.pt"
 
 
 def _parse_json_dict(value: str | None) -> dict[str, Any]:
@@ -215,8 +231,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional comma-separated CPU ids to allocate across policy optimisation workers.",
     )
-    parser.add_argument("--constraint", default="PCTL")
-    parser.add_argument("--constraint-kwargs", type=_parse_json_dict, default={})
     parser.add_argument("--init-safety-bound", type=float, default=1e-12)
     parser.add_argument("--theta", type=float, default=1e-12)
     parser.add_argument("--max-vi-steps", type=int, default=2000)
@@ -276,9 +290,75 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-gae-lambda", type=float, default=0.95)
     parser.add_argument("--lagrangian-multiplier-init", type=float, default=0.0)
     parser.add_argument("--rashomon-n-iters", type=int, default=2000)
+    parser.add_argument(
+        "--adaptive-rashomon-n-iters",
+        type=int,
+        default=100,
+        help="Optimization budget of each on-demand Rashomon-set computation in PSPO "
+        "(adaptive), forwarded to train_pspo_adaptive.py's --rashomon-n-iters. "
+        "Independent of --rashomon-n-iters, which only sizes the one-off box built "
+        "for PSPO (precomputed).",
+    )
     parser.add_argument("--rashomon-checkpoint", type=int, default=100)
     parser.add_argument("--rashomon-batch-size", type=int, default=500)
     parser.add_argument("--certificate-samples", type=int, default=1000)
+    parser.add_argument(
+        "--bc-target-margin",
+        type=float,
+        default=10.0,
+        help=(
+            "Minimum required gap between the best safe and best unsafe logit "
+            "in every state of the BC-fitted base policy (see "
+            "compute_shield_rashomon_set.py). Also sets --linear-init-margin, "
+            "so the closed-form linear initialiser and the gradient path (used "
+            "whenever the base policy has hidden layers) target the same "
+            "separation. Smaller margins leave more room for PSPO to optimise "
+            "but can make the Rashomon set uncertifiable for deeper "
+            "architectures - see --n-hidden."
+        ),
+    )
+    # Base-policy architecture, which also determines the PSPO actor/critic.
+    parser.add_argument("--n-hidden", type=int, default=2)
+    parser.add_argument("--hidden-dim", type=int, default=64)
+    parser.add_argument(
+        "--state-representation",
+        choices=("features", "one_hot"),
+        default="one_hot",
+        help=(
+            "Observation representation for every method: one-hot/index "
+            "(default) or decoded features. Drives both the actual env "
+            "observation (via env_kwargs['observation_mode'], unless "
+            "explicitly overridden in --env-kwargs) and PSPO's BC-fitting "
+            "representation, so all methods stay consistent with each other."
+        ),
+    )
+    parser.add_argument(
+        "--growth-method",
+        choices=("IBP", "CROWN", "alpha-CROWN"),
+        default="IBP",
+        help=(
+            "Verification backend that actually drives Rashomon-set growth: it "
+            "computes both the differentiable soft surrogate and the hard "
+            "per-iteration accuracy check the optimizer is constrained against, "
+            "so this is what determines how big the certified box can get. "
+            "Defaults to IBP (cheap, but conservative fast with depth). A "
+            "tighter method (e.g. CROWN) lets the optimizer keep growing into "
+            "regions IBP would have prematurely rejected, at the cost of a "
+            "slower bound per iteration. Distinct from --certification-method, "
+            "which only re-verifies checkpoints after the fact and cannot "
+            "recover a bigger box than this method's trajectory explored."
+        ),
+    )
+    parser.add_argument(
+        "--certification-method",
+        choices=("IBP", "CROWN", "alpha-CROWN"),
+        default="IBP",
+        help=(
+            "Verification backend used only for the reported Rashomon "
+            "checkpoint certificates, independent of --growth-method. Does not "
+            "affect the box the optimizer actually grows."
+        ),
+    )
     parser.add_argument("--early-stop-eval-freq", type=int, default=5_000)
     parser.add_argument("--early-stop-eval-episodes", type=int, default=20)
     parser.add_argument("--early-stop-success-rate", type=float, default=1.0)
@@ -306,7 +386,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--shielded-evaluation-policy",
         choices=("unshielded", "shielded"),
         default="unshielded",
-        help="Final evaluation policy for the shielded PPO stage.",
+        help=(
+            "Deprecated, ignored: PPO-Shield now always evaluates both the "
+            "shielded and nominal/unshielded policy and stores both (see "
+            "ppo_shield/metrics.json['shielded']/['nominal']). Kept only so "
+            "existing callers passing this flag do not break."
+        ),
     )
     parser.add_argument(
         "--rashomon-evaluation-policy",
@@ -320,10 +405,52 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-baselines",
         action="store_true",
-        help="Compatibility alias that skips PPO-Lagrangian/PPO-PID-Lagrangian and CPO.",
+        help=(
+            "Skip every non-PSPO method: vanilla/unshielded PPO, "
+            "PPO-Lagrangian/PPO-PID-Lagrangian, CPO, and PPO-Shield. Makes "
+            "--skip-ppo-policy and --skip-shielded-policy redundant (but "
+            "harmless) alongside it; PSPO (precomputed and adaptive) are "
+            "unaffected - use --skip-rashomon-policy / "
+            "--skip-rashomon-adaptive-policy for those."
+        ),
     )
     parser.add_argument("--skip-shielded-policy", action="store_true")
     parser.add_argument("--skip-rashomon-policy", action="store_true")
+    parser.add_argument(
+        "--skip-rashomon-adaptive-policy",
+        action="store_true",
+        help=(
+            "Skip PSPO (adaptive): shares the same base policy/Rashomon-set "
+            "dependency as --skip-rashomon-policy (PSPO precomputed), but "
+            "computes Rashomon sets on-demand per policy update instead of "
+            "training against one fixed precomputed box."
+        ),
+    )
+    parser.add_argument(
+        "--skip-methods",
+        nargs="+",
+        choices=(
+            "ppo",
+            "ppo_lagrangian",
+            "ppo_pid_lagrangian",
+            "cpo",
+            "shielded",
+            "rashomon",
+            "rashomon_adaptive",
+        ),
+        default=[],
+        help=(
+            "Skip an arbitrary subset of methods by name, e.g. "
+            "--skip-methods ppo ppo_lagrangian to skip only vanilla PPO and "
+            "PPO-Lagrangian while leaving PPO-PID-Lagrangian, CPO, PPO-Shield "
+            "and both PSPO variants running. A more convenient alternative to "
+            "combining the individual --skip-* flags; 'ppo_lagrangian' and "
+            "'ppo_pid_lagrangian' are filtered out of --algorithms rather than "
+            "skipping the whole ppo_lagrangian stage, so the other one still "
+            "runs. Composes with (does not replace) the individual --skip-* "
+            "flags and --skip-baselines."
+        ),
+    )
     return parser
 
 
@@ -331,28 +458,49 @@ def _worker_thread_count(jobs: int, explicit: int | None) -> int | None:
     return worker_thread_count(jobs, explicit)
 
 
+def _ppo_policy_skipped(args: argparse.Namespace) -> bool:
+    """--skip-baselines is a blanket "every non-PSPO method" switch, so vanilla
+    PPO is skipped by either its own flag or --skip-baselines."""
+    return bool(args.skip_ppo_policy or args.skip_baselines)
+
+
+def _shielded_policy_skipped(args: argparse.Namespace) -> bool:
+    """Same broadening as _ppo_policy_skipped, for PPO-Shield."""
+    return bool(args.skip_shielded_policy or args.skip_baselines)
+
+
+# PPO-Shield now always evaluates both shielded and nominal/unshielded in one
+# run (see train_ppo_shield.py), so the stage/output directory is a single
+# fixed name - the two eval modes are distinguished inside its own
+# metrics.json (["shielded"]/["nominal"]), not by which stage ran.
+_SHIELDED_STAGE_NAME = "ppo_shield"
+
+
 def _policy_optimisation_method_count(args: argparse.Namespace) -> int:
     count = 0
-    if not args.skip_ppo_policy:
+    if not _ppo_policy_skipped(args):
         count += 1
     if _ppo_lagrangian_algorithms(args):
         count += len(_ppo_lagrangian_algorithms(args))
     if _cpo_enabled(args):
         count += 1
-    if not args.skip_shielded_policy:
+    if not _shielded_policy_skipped(args):
         count += 1
     if not args.skip_rashomon_policy:
+        count += 1
+    if not args.skip_rashomon_adaptive_policy:
         count += 1
     return count
 
 
 def _independent_stage_slot_count(args: argparse.Namespace) -> int:
     return (
-        int(not args.skip_ppo_policy)
+        int(not _ppo_policy_skipped(args))
         + int(bool(_ppo_lagrangian_algorithms(args)))
         + int(_cpo_enabled(args))
-        + int(not args.skip_shielded_policy)
+        + int(not _shielded_policy_skipped(args))
         + int(not args.skip_rashomon_policy)
+        + int(not args.skip_rashomon_adaptive_policy)
     )
 
 
@@ -429,9 +577,10 @@ def _stage_module(stage: str) -> Any:
         "ppo_policy": train_ppo,
         "ppo_lagrangian": train_ppo_lagrangian,
         "cpo": train_cpo,
-        "shielded_policy": train_discrete_shielded_policy,
+        "ppo_shield": train_ppo_shield,
         "rashomon_set": compute_shield_rashomon_set,
-        "rashomon_policy": train_rashomon_shielded_policy,
+        "rashomon_policy": train_pspo_precomputed,
+        "rashomon_adaptive_policy": train_pspo_adaptive,
     }
     return modules[stage]
 
@@ -545,6 +694,10 @@ def _ppo_argv(args: argparse.Namespace, run_dir: Path, shield_path: Path, env_kw
         str(args.vf_coef),
         "--max-grad-norm",
         str(args.max_grad_norm),
+        "--n-hidden",
+        str(getattr(args, "n_hidden", 2)),
+        "--hidden-dim",
+        str(getattr(args, "hidden_dim", 64)),
         "--early-stop-eval-freq",
         str(args.early_stop_eval_freq),
         "--early-stop-eval-episodes",
@@ -620,6 +773,10 @@ def _ppo_lagrangian_argv(
         str(args.cost_gae_lambda),
         "--lagrangian-multiplier-init",
         str(args.lagrangian_multiplier_init),
+        "--n-hidden",
+        str(getattr(args, "n_hidden", 2)),
+        "--hidden-dim",
+        str(getattr(args, "hidden_dim", 64)),
         "--early-stop-eval-freq",
         str(args.early_stop_eval_freq),
         "--early-stop-eval-episodes",
@@ -655,11 +812,12 @@ def _cpo_argv(args: argparse.Namespace, run_dir: Path, env_kwargs: str) -> list[
 
 
 def _shielded_argv(args: argparse.Namespace, run_dir: Path, shield_path: Path, env_kwargs: str) -> list[str]:
+    stage_name = _SHIELDED_STAGE_NAME
     shielded_argv = [
         "--output-dir",
         str(run_dir),
         "--run-id",
-        "shielded_policy",
+        stage_name,
         "--shield-path",
         str(shield_path),
         "--env-id",
@@ -694,6 +852,10 @@ def _shielded_argv(args: argparse.Namespace, run_dir: Path, shield_path: Path, e
         str(args.vf_coef),
         "--max-grad-norm",
         str(args.max_grad_norm),
+        "--n-hidden",
+        str(getattr(args, "n_hidden", 2)),
+        "--hidden-dim",
+        str(getattr(args, "hidden_dim", 64)),
         "--device",
         args.device,
         "--early-stop-eval-freq",
@@ -707,7 +869,7 @@ def _shielded_argv(args: argparse.Namespace, run_dir: Path, shield_path: Path, e
         "--evaluation-policy",
         args.shielded_evaluation_policy,
     ]
-    _append_monitoring_args(shielded_argv, args, run_dir, "shielded_policy")
+    _append_monitoring_args(shielded_argv, args, run_dir, stage_name)
     _append_optional_arg(shielded_argv, "--max-episode-steps", args.max_episode_steps)
     return shielded_argv
 
@@ -743,6 +905,32 @@ def _rashomon_set_argv(
             str(args.rashomon_batch_size),
             "--certificate-samples",
             str(args.certificate_samples),
+            "--growth-method",
+            str(getattr(args, "growth_method", "IBP")),
+            "--certification-method",
+            str(getattr(args, "certification_method", "IBP")),
+            # Sets both the closed-form linear initialiser's target and the
+            # gradient path's target, so they stay matched (see --bc-target-margin
+            # help text).
+            "--bc-target-margin",
+            str(getattr(args, "bc_target_margin", 10.0)),
+            "--linear-init-margin",
+            str(getattr(args, "bc_target_margin", 10.0)),
+            # Also sets the PSPO actor/critic architecture: the trainers build
+            # their networks to match the base policy this stage produces.
+            "--n-hidden",
+            str(getattr(args, "n_hidden", 2)),
+            "--hidden-dim",
+            str(getattr(args, "hidden_dim", 64)),
+            # The base policy is fitted on the env's decoded feature
+            # representation (the default), so the certified box is over the same
+            # feature-input actor the deployed PSPO policy uses.
+            "--env-id",
+            str(args.env_id),
+            "--env-kwargs",
+            json.dumps(_env_kwargs_from_args(args)),
+            "--state-representation",
+            str(getattr(args, "state_representation", "one_hot")),
         ],
         rashomon_output_dir,
         str(rashomon_run_id),
@@ -817,7 +1005,115 @@ def _rashomon_policy_argv(
     return rashomon_policy_argv
 
 
+def _rashomon_adaptive_argv(
+    args: argparse.Namespace,
+    run_dir: Path,
+    shield_path: Path,
+    base_policy_path: Path,
+    env_kwargs: str,
+) -> list[str]:
+    """PSPO (adaptive): shares the base policy built by the Rashomon-set stage
+    with PSPO (precomputed), but verifies and, if needed, corrects each policy
+    update on-demand instead of training against one fixed precomputed box.
+    Adaptive-specific knobs (granularity, unsafe-update fallback) are left at
+    train_pspo_adaptive.py's own defaults - only the training hyperparameters
+    shared with every other method here, plus the on-demand Rashomon budget
+    (--adaptive-rashomon-n-iters), are forwarded.
+    """
+    rashomon_adaptive_argv = [
+        "--output-dir",
+        str(run_dir),
+        "--run-id",
+        "rashomon_adaptive_policy",
+        "--base-policy-path",
+        str(base_policy_path),
+        "--shield-path",
+        str(shield_path),
+        "--env-id",
+        args.env_id,
+        "--env-kwargs",
+        env_kwargs,
+        "--cost-limit",
+        str(args.cost_limit),
+        "--total-timesteps",
+        str(args.total_timesteps),
+        "--eval-episodes",
+        str(args.eval_episodes),
+        "--seed",
+        str(args.seed),
+        "--learning-rate",
+        str(args.learning_rate),
+        "--n-steps",
+        str(args.n_steps),
+        "--batch-size",
+        str(args.batch_size),
+        "--n-epochs",
+        str(args.n_epochs),
+        "--gamma",
+        str(args.gamma),
+        "--gae-lambda",
+        str(args.gae_lambda),
+        "--clip-range",
+        str(args.clip_range),
+        "--ent-coef",
+        str(args.ent_coef),
+        "--vf-coef",
+        str(args.vf_coef),
+        "--max-grad-norm",
+        str(args.max_grad_norm),
+        "--device",
+        args.device,
+        "--early-stop-eval-policy",
+        "unshielded",
+        "--evaluation-policy",
+        args.rashomon_evaluation_policy,
+        "--early-stop-eval-freq",
+        str(args.early_stop_eval_freq),
+        "--early-stop-eval-episodes",
+        str(args.early_stop_eval_episodes),
+        "--early-stop-success-rate",
+        str(args.early_stop_success_rate),
+        "--success-reward-threshold",
+        str(args.success_reward_threshold),
+        "--rashomon-n-iters",
+        str(args.adaptive_rashomon_n_iters),
+    ]
+    _append_monitoring_args(rashomon_adaptive_argv, args, run_dir, "rashomon_adaptive_policy")
+    _append_optional_arg(rashomon_adaptive_argv, "--max-episode-steps", args.max_episode_steps)
+    return rashomon_adaptive_argv
+
+
+_SKIP_METHOD_FLAGS: dict[str, str] = {
+    "ppo": "skip_ppo_policy",
+    "shielded": "skip_shielded_policy",
+    "rashomon": "skip_rashomon_policy",
+    "rashomon_adaptive": "skip_rashomon_adaptive_policy",
+}
+_SKIP_METHOD_ALGORITHMS: frozenset[str] = frozenset({"ppo_lagrangian", "ppo_pid_lagrangian", "cpo"})
+
+
+def _apply_skip_methods(args: argparse.Namespace) -> None:
+    """Translate --skip-methods entries onto the underlying --skip-* flags and
+    --algorithms, so every downstream check (which only ever looks at those)
+    sees a consistent picture. ppo_lagrangian/ppo_pid_lagrangian/cpo are
+    filtered out of --algorithms instead of setting a stage-level skip flag,
+    since --algorithms is what actually distinguishes them within the shared
+    ppo_lagrangian stage - flipping a whole-stage flag would take the other
+    requested algorithm(s) down with it.
+    """
+    requested = set(getattr(args, "skip_methods", None) or [])
+    if not requested:
+        return
+    for method, flag_name in _SKIP_METHOD_FLAGS.items():
+        if method in requested:
+            setattr(args, flag_name, True)
+    algorithm_skips = requested & _SKIP_METHOD_ALGORITHMS
+    if algorithm_skips:
+        args.algorithms = [a for a in args.algorithms if a not in algorithm_skips]
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    _apply_skip_methods(args)
     pipeline_started_at = time.time()
     missing = [
         flag
@@ -947,14 +1243,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     if jobs > 1:
         pending_specs: list[dict[str, Any]] = []
-        if not args.skip_ppo_policy:
+        if not _ppo_policy_skipped(args):
             pending_specs.append({"stage": "ppo_policy", "cpu_count": 1})
         if _ppo_lagrangian_algorithms(args):
             pending_specs.append({"stage": "ppo_lagrangian", "cpu_count": max(1, int(baseline_jobs))})
         if _cpo_enabled(args):
             pending_specs.append({"stage": "cpo", "cpu_count": 1})
-        if not args.skip_shielded_policy:
-            pending_specs.append({"stage": "shielded_policy", "cpu_count": 1})
+        if not _shielded_policy_skipped(args):
+            pending_specs.append({"stage": _SHIELDED_STAGE_NAME, "cpu_count": 1})
         if rashomon_bounds_exist:
             summary["stages"]["rashomon_set"] = {
                 "run_dir": str(Path(rashomon_dir).resolve()),
@@ -968,7 +1264,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "rashomon_dir": Path(rashomon_dir),
                     }
                 )
-        elif not args.skip_rashomon_policy:
+            if not args.skip_rashomon_adaptive_policy:
+                pending_specs.append(
+                    {
+                        "stage": "rashomon_adaptive_policy",
+                        "cpu_count": 1,
+                        "rashomon_dir": Path(rashomon_dir),
+                    }
+                )
+        elif not args.skip_rashomon_policy or not args.skip_rashomon_adaptive_policy:
             rashomon_argv, _rashomon_output_dir, _rashomon_run_id = _rashomon_set_argv(
                 args,
                 run_dir,
@@ -1016,7 +1320,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     torch_num_threads=args.torch_num_threads,
                     cpu_ids=assigned_cpu_ids,
                 )
-            if stage == "shielded_policy":
+            if stage == _SHIELDED_STAGE_NAME:
                 return _stage_job(
                     stage=stage,
                     argv=_shielded_argv(args, run_dir, shield_path, env_kwargs),
@@ -1040,6 +1344,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         run_dir,
                         shield_path,
                         Path(spec["rashomon_dir"]),
+                        env_kwargs,
+                    ),
+                    log_dir=log_dir,
+                    torch_num_threads=args.torch_num_threads,
+                    cpu_ids=assigned_cpu_ids,
+                )
+            if stage == "rashomon_adaptive_policy":
+                return _stage_job(
+                    stage=stage,
+                    argv=_rashomon_adaptive_argv(
+                        args,
+                        run_dir,
+                        shield_path,
+                        _base_policy_path(Path(spec["rashomon_dir"])),
                         env_kwargs,
                     ),
                     log_dir=log_dir,
@@ -1094,10 +1412,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                             )
                         elif stage == "cpo":
                             record_stage(stage_result, run_path=run_dir / "cpo")
-                        elif stage == "shielded_policy":
+                        elif stage == _SHIELDED_STAGE_NAME:
                             record_stage(
                                 stage_result,
-                                run_path=run_dir / "shielded_policy",
+                                run_path=run_dir / _SHIELDED_STAGE_NAME,
                             )
                         elif stage == "rashomon_set":
                             rashomon_dir = Path(stage_result["summary"]["run_dir"])
@@ -1111,6 +1429,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                         "rashomon_dir": Path(rashomon_dir),
                                     },
                                 )
+                            if not args.skip_rashomon_adaptive_policy:
+                                pending_specs.insert(
+                                    0,
+                                    {
+                                        "stage": "rashomon_adaptive_policy",
+                                        "cpu_count": 1,
+                                        "rashomon_dir": Path(rashomon_dir),
+                                    },
+                                )
                         elif stage == "rashomon_policy":
                             record_stage(
                                 stage_result,
@@ -1120,10 +1447,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                     "evaluation_policy": args.rashomon_evaluation_policy,
                                 },
                             )
+                        elif stage == "rashomon_adaptive_policy":
+                            record_stage(
+                                stage_result,
+                                run_path=run_dir / "rashomon_adaptive_policy",
+                                extra={
+                                    "early_stop_eval_policy": "unshielded",
+                                    "evaluation_policy": args.rashomon_evaluation_policy,
+                                },
+                            )
                         submit_ready(executor)
                         break
     else:
-        if not args.skip_ppo_policy:
+        if not _ppo_policy_skipped(args):
             ppo_result = _run_stage_inline(
                 "ppo_policy",
                 _ppo_argv(args, run_dir, shield_path, env_kwargs),
@@ -1159,19 +1495,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             record_stage(cpo_result, run_path=run_dir / "cpo")
 
-        if not args.skip_shielded_policy:
+        if not _shielded_policy_skipped(args):
             shielded_result = _run_stage_inline(
-                "shielded_policy",
+                _SHIELDED_STAGE_NAME,
                 _shielded_argv(args, run_dir, shield_path, env_kwargs),
                 torch_num_threads=args.torch_num_threads,
                 cpu_ids=list(cpu_ids[:1]),
             )
             record_stage(
                 shielded_result,
-                run_path=run_dir / "shielded_policy",
+                run_path=run_dir / _SHIELDED_STAGE_NAME,
             )
 
-        if not rashomon_bounds_exist and not args.skip_rashomon_policy:
+        if not rashomon_bounds_exist and (not args.skip_rashomon_policy or not args.skip_rashomon_adaptive_policy):
             rashomon_argv, _rashomon_output_dir, _rashomon_run_id = _rashomon_set_argv(
                 args,
                 run_dir,
@@ -1205,6 +1541,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             record_stage(
                 rashomon_policy_result,
                 run_path=run_dir / "rashomon_policy",
+                extra={
+                    "early_stop_eval_policy": "unshielded",
+                    "evaluation_policy": args.rashomon_evaluation_policy,
+                },
+            )
+
+        if not args.skip_rashomon_adaptive_policy:
+            if rashomon_dir is None:
+                raise RuntimeError("Rashomon directory was not created or provided.")
+            rashomon_adaptive_result = _run_stage_inline(
+                "rashomon_adaptive_policy",
+                _rashomon_adaptive_argv(
+                    args, run_dir, shield_path, _base_policy_path(Path(rashomon_dir)), env_kwargs,
+                ),
+                torch_num_threads=args.torch_num_threads,
+                cpu_ids=list(cpu_ids[:1]),
+            )
+            record_stage(
+                rashomon_adaptive_result,
+                run_path=run_dir / "rashomon_adaptive_policy",
                 extra={
                     "early_stop_eval_policy": "unshielded",
                     "evaluation_policy": args.rashomon_evaluation_policy,

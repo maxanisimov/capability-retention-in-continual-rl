@@ -21,7 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 from projects.safe_policy_optimisation.utils import io  # noqa: E402
 from projects.safe_policy_optimisation.utils.envs import env_kwargs_from_args  # noqa: E402
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
-from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
+    success_mode_for_env,
+    summarise_evaluation,
+)
 from projects.safe_policy_optimisation.utils.safe_crl_bridge import (  # noqa: E402
     make_custom_masa_env,
 )
@@ -321,6 +324,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             success_reward_threshold=float(getattr(args, "success_reward_threshold", 0.0)),
             cost_limit=float(args.cost_limit),
             algorithm=ALGORITHM_NAME,
+            success_mode=success_mode_for_env(getattr(args, "env_id", None)),
         ),
     )
     log_info(

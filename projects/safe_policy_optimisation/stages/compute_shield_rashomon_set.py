@@ -46,8 +46,19 @@ def load_shield_mask(shield_path: Path, *, risk_threshold: float | None = None) 
     )
 
 
-def make_safe_behaviour_payload(mask: np.ndarray) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-    """Create PPO-compatible one-hot state features and multi-hot safe actions."""
+def make_safe_behaviour_payload(
+    mask: np.ndarray,
+    state_to_features: Any = None,
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    """State features and multi-hot safe actions for the BC dataset.
+
+    ``state_to_features`` (the env's ``state_to_features``) selects the state
+    representation the base policy -- and hence the PSPO actor -- is fitted on:
+
+    * ``None``: one-hot over discrete state ids (the historical view).
+    * a callable: the env's normalised decoded features, so the base policy has
+      the same feature input the deployed PSPO actor receives.
+    """
 
     mask = np.asarray(mask, dtype=np.float32)
     if mask.ndim != 2:
@@ -58,17 +69,24 @@ def make_safe_behaviour_payload(mask: np.ndarray) -> tuple[dict[str, torch.Tenso
     if safe_state_ids.size == 0:
         raise ValueError("Shield contains no states with at least one safe action.")
 
-    states = torch.nn.functional.one_hot(
-        torch.as_tensor(safe_state_ids, dtype=torch.long),
-        num_classes=int(n_states),
-    ).to(torch.float32)
+    if state_to_features is None:
+        states = torch.nn.functional.one_hot(
+            torch.as_tensor(safe_state_ids, dtype=torch.long),
+            num_classes=int(n_states),
+        ).to(torch.float32)
+        representation = "one_hot_discrete_observation"
+    else:
+        feature_rows = np.stack([np.asarray(state_to_features(int(s))) for s in safe_state_ids])
+        states = torch.as_tensor(feature_rows, dtype=torch.float32)
+        representation = "decoded_features"
     actions = torch.as_tensor(mask[safe_state_ids], dtype=torch.float32)
     metadata = {
         "n_states": int(n_states),
         "n_actions": int(n_actions),
+        "feature_dim": int(states.shape[1]),
         "dataset_size": int(safe_state_ids.size),
         "excluded_no_safe_action_states": int(n_states - safe_state_ids.size),
-        "state_representation": "one_hot_discrete_observation",
+        "state_representation": representation,
         "safe_state_ids": [int(x) for x in safe_state_ids.tolist()],
     }
     return {"state": states, "actions": actions}, metadata
@@ -138,6 +156,51 @@ def safe_action_bc_loss(logits: torch.Tensor, safe_actions: torch.Tensor) -> tor
     return (torch.logsumexp(logits, dim=1) - torch.logsumexp(masked_logits, dim=1)).mean()
 
 
+def safe_action_margins(
+    logits: torch.Tensor, safe_actions: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-state ``best safe logit - best unsafe logit``.
+
+    Positive means the greedy action is shield-safe; the magnitude is how much
+    the parameters can move before it stops being so. Returns the margins plus a
+    mask of the rows that actually have an unsafe action to compete with (rows
+    where every action is safe are unconstrained and are excluded).
+    """
+
+    allowed = safe_actions.bool()
+    neg = torch.finfo(logits.dtype).min
+    best_safe = logits.masked_fill(~allowed, neg).max(dim=1).values
+    best_unsafe = logits.masked_fill(allowed, neg).max(dim=1).values
+    contested = (~allowed).any(dim=1)
+    return best_safe - best_unsafe, contested
+
+
+def safe_action_margin_loss(
+    logits: torch.Tensor, safe_actions: torch.Tensor, *, target_margin: float
+) -> torch.Tensor:
+    """Hinge pushing every contested state to at least ``target_margin``."""
+
+    margins, contested = safe_action_margins(logits, safe_actions)
+    if not bool(contested.any()):
+        return logits.new_zeros(())
+    return torch.relu(float(target_margin) - margins[contested]).mean()
+
+
+@torch.no_grad()
+def minimum_safe_action_margin(
+    model: nn.Module, dataset: dict[str, torch.Tensor], *, device: str | torch.device
+) -> float:
+    """Worst-case per-state safety margin over the whole dataset."""
+
+    device_t = torch.device(device)
+    model.eval()
+    logits = model(dataset["state"].to(device_t))
+    margins, contested = safe_action_margins(logits, dataset["actions"].to(device_t))
+    if not bool(contested.any()):
+        return float("inf")
+    return float(margins[contested].min().item())
+
+
 def fit_base_policy(
     model: nn.Sequential,
     dataset: dict[str, torch.Tensor],
@@ -149,8 +212,19 @@ def fit_base_policy(
     device: str | torch.device,
     direct_linear_init: bool = True,
     linear_init_margin: float = 10.0,
+    target_margin: float = 10.0,
+    margin_loss_weight: float = 1.0,
 ) -> dict[str, Any]:
-    """Fit the base policy until greedy allowed-action accuracy reaches 100%."""
+    """Fit the base policy until every state has a safety margin of ``target_margin``.
+
+    Stopping at bare 100% allowed-action accuracy is not enough. It yields a
+    knife-edge policy whose greedy action is safe by an arbitrarily small logit
+    gap, so the first gradient step of downstream training flips actions and
+    every candidate update fails verification. The closed-form linear
+    initialiser has never had this problem because it writes +/-``margin``
+    directly; this makes the gradient path (the only option once the base policy
+    has hidden layers) aim for the same separation.
+    """
 
     torch.manual_seed(int(seed))
     device_t = torch.device(device)
@@ -164,13 +238,17 @@ def fit_base_policy(
         )
 
     initial_accuracy = allowed_action_accuracy(model, dataset, device=device_t)
-    if initial_accuracy >= 1.0:
+    initial_margin = minimum_safe_action_margin(model, dataset, device=device_t)
+    if initial_accuracy >= 1.0 and initial_margin >= float(target_margin):
         return {
             "initial_accuracy": initial_accuracy,
             "final_accuracy": initial_accuracy,
             "epochs_run": 0,
             "reached_target": True,
             "used_direct_linear_init": used_direct_init,
+            "initial_min_margin": initial_margin,
+            "final_min_margin": initial_margin,
+            "target_margin": float(target_margin),
         }
 
     tensor_dataset = TensorDataset(dataset["state"], dataset["actions"])
@@ -188,21 +266,32 @@ def fit_base_policy(
         for states, safe_actions in loader:
             states = states.to(device_t)
             safe_actions = safe_actions.to(device_t)
-            loss = safe_action_bc_loss(model(states), safe_actions)
+            logits = model(states)
+            loss = safe_action_bc_loss(logits, safe_actions)
+            if float(margin_loss_weight) > 0.0:
+                loss = loss + float(margin_loss_weight) * safe_action_margin_loss(
+                    logits, safe_actions, target_margin=target_margin
+                )
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
         epochs_run = epoch
         final_accuracy = allowed_action_accuracy(model, dataset, device=device_t)
-        if final_accuracy >= 1.0:
+        final_margin = minimum_safe_action_margin(model, dataset, device=device_t)
+        if final_accuracy >= 1.0 and final_margin >= float(target_margin):
             break
 
     return {
         "initial_accuracy": initial_accuracy,
         "final_accuracy": final_accuracy,
         "epochs_run": int(epochs_run),
-        "reached_target": bool(final_accuracy >= 1.0),
+        # Accuracy alone is not the bar any more: a policy that is safe by a
+        # vanishing margin is unusable downstream.
+        "reached_target": bool(final_accuracy >= 1.0 and final_margin >= float(target_margin)),
         "used_direct_linear_init": used_direct_init,
+        "initial_min_margin": initial_margin,
+        "final_min_margin": final_margin,
+        "target_margin": float(target_margin),
     }
 
 
@@ -251,8 +340,29 @@ def compute_rashomon_bounds(
     batch_size: int,
     certificate_samples: int,
     inverse_temp: int,
+    growth_method: str = "IBP",
+    growth_method_kwargs: dict[str, Any] | None = None,
+    certification_method: str = "IBP",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], object, dict[str, Any]]:
-    """Run IntervalTrainer and select a 100%-certified Rashomon box."""
+    """Run IntervalTrainer and select a 100%-certified Rashomon box.
+
+    ``growth_method`` selects the verification backend that actually drives box
+    growth (both the differentiable soft surrogate and the hard per-iteration
+    accuracy check the Lagrangian penalises against). Defaults to ``"IBP"``,
+    matching the historical behaviour: cheap, but conservative fast with
+    depth, so the box can never grow past what IBP's own bound is willing to
+    certify along the way. A tighter method (e.g. ``"CROWN"``) lets the
+    optimizer keep growing into regions IBP would have prematurely penalised,
+    at the cost of a more expensive bound per iteration.
+
+    ``certification_method`` selects the verification backend used to compute
+    the *reported* checkpoint certificates (see ``src.verification.registry``
+    for the registered options, e.g. ``"IBP"``, ``"CROWN"``, ``"alpha-CROWN"``).
+    This is independent of ``growth_method`` and only changes which checkpoints
+    get confirmed as fully certified (``min_hard_acc >= 1.0``) when their
+    ``(param_l, param_u)`` are re-verified after the fact -- it cannot recover
+    a bigger box than whatever ``growth_method``'s trajectory actually explored.
+    """
 
     from src.trainer.IntervalTrainer import IntervalTrainer
 
@@ -270,6 +380,9 @@ def compute_rashomon_bounds(
     interval_trainer.compute_rashomon_set(
         dataset=tensor_dataset,
         temperatures={None: 1.0 / float(inverse_temp)},
+        growth_method=growth_method,
+        growth_method_kwargs=growth_method_kwargs,
+        certification_method=certification_method,
     )
     cert_values = [
         min((certificate.min_hard_acc for certificate in certificates), default=float("-inf"))
@@ -298,16 +411,60 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--shield-path", type=Path, required=True)
     parser.add_argument("--risk-threshold", type=float, default=None)
+    # When given, the BC base policy (and hence the PSPO actor) is fitted on the
+    # env's decoded feature representation instead of a one-hot state id, so it
+    # matches the observation the deployed PSPO actor receives.
+    parser.add_argument("--env-id", default=None)
+    parser.add_argument("--env-kwargs", default=None)
+    parser.add_argument(
+        "--state-representation",
+        choices=("features", "one_hot"),
+        default="features",
+        help="BC input representation. 'features' requires --env-id.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--hidden-dim", type=int, default=64)
-    parser.add_argument("--n-hidden", type=int, default=0)
-    parser.add_argument("--bc-lr", type=float, default=1e-3)
-    parser.add_argument("--bc-max-epochs", type=int, default=1000)
+    parser.add_argument(
+        "--n-hidden",
+        type=int,
+        default=2,
+        help=(
+            "Hidden layers in the BC base policy, and hence in the PSPO actor and "
+            "critic (SB3 applies a flat net_arch to both). Default 2 matches the "
+            "[64, 64] MLP every baseline uses, so PSPO is compared like-for-like. "
+            "0 gives the older linear/tabular actor."
+        ),
+    )
+    # Feature-based BC needs more optimisation than one-hot to reach the safety
+    # margin: nearby feature points can require different safe actions, so the
+    # decision boundary is finer. These defaults suit both representations
+    # (one-hot converges well within them and stops early).
+    parser.add_argument("--bc-lr", type=float, default=3e-3)
+    parser.add_argument("--bc-max-epochs", type=int, default=8000)
     parser.add_argument("--bc-batch-size", type=int, default=512)
     parser.add_argument("--linear-init-margin", type=float, default=10.0)
+    parser.add_argument(
+        "--bc-target-margin",
+        type=float,
+        default=10.0,
+        help=(
+            "Minimum required gap between the best safe and best unsafe logit in "
+            "every state. Matches --linear-init-margin so the gradient path (used "
+            "whenever the base policy has hidden layers) reaches the same "
+            "separation the closed-form linear initialiser writes directly. "
+            "Stopping at bare 100%% accuracy leaves a knife-edge policy whose "
+            "greedy actions flip on the first gradient step downstream."
+        ),
+    )
+    parser.add_argument(
+        "--bc-margin-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight of the margin hinge added to the BC loss. 0 disables it.",
+    )
     parser.add_argument("--no-direct-linear-init", action="store_true")
     parser.add_argument("--rashomon-n-iters", type=int, default=2000)
     parser.add_argument("--rashomon-checkpoint", type=int, default=100)
@@ -315,6 +472,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--certificate-samples", type=int, default=1000)
     parser.add_argument("--inverse-temp-start", type=int, default=1)
     parser.add_argument("--inverse-temp-max", type=int, default=1000)
+    parser.add_argument(
+        "--growth-method",
+        choices=("IBP", "CROWN", "alpha-CROWN"),
+        default="IBP",
+        help=(
+            "Verification backend that actually drives box growth (the "
+            "differentiable soft surrogate and the hard per-iteration "
+            "accuracy check the Lagrangian penalises against). Defaults to "
+            "IBP: cheap, but conservative fast with depth, so the box can "
+            "never grow past what IBP's own bound is willing to certify "
+            "along the way. A tighter method (e.g. CROWN) lets the "
+            "optimizer keep growing into regions IBP would have "
+            "prematurely penalised, at the cost of a slower bound per "
+            "iteration. Independent of --certification-method."
+        ),
+    )
+    parser.add_argument(
+        "--certification-method",
+        choices=("IBP", "CROWN", "alpha-CROWN"),
+        default="IBP",
+        help=(
+            "Verification backend used for the reported Rashomon checkpoint "
+            "certificates (see src.verification.registry), independent of "
+            "--growth-method. Only affects which checkpoints get confirmed "
+            "as fully certified; it cannot recover a bigger box than "
+            "--growth-method's trajectory actually explored."
+        ),
+    )
     return parser
 
 
@@ -324,12 +509,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     mask = load_shield_mask(args.shield_path, risk_threshold=args.risk_threshold)
-    dataset, dataset_metadata = make_safe_behaviour_payload(mask)
-    n_states = int(dataset["state"].shape[1])
+    state_to_features = None
+    if args.state_representation == "features":
+        if not args.env_id:
+            raise ValueError("--state-representation features requires --env-id.")
+        from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs
+        from projects.safe_policy_optimisation.utils.safe_crl_bridge import make_custom_masa_env
+
+        feature_env = make_custom_masa_env(
+            args.env_id,
+            max_episode_steps=None,
+            env_kwargs=parse_env_kwargs(args.env_kwargs),
+        ).unwrapped
+        state_to_features = feature_env.state_to_features
+    dataset, dataset_metadata = make_safe_behaviour_payload(mask, state_to_features)
+    input_dim = int(dataset["state"].shape[1])
     n_actions = int(dataset["actions"].shape[1])
 
     model = build_base_policy(
-        n_states,
+        input_dim,
         n_actions,
         hidden_dim=args.hidden_dim,
         n_hidden=args.n_hidden,
@@ -344,11 +542,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         device=args.device,
         direct_linear_init=not args.no_direct_linear_init,
         linear_init_margin=args.linear_init_margin,
+        target_margin=args.bc_target_margin,
+        margin_loss_weight=args.bc_margin_loss_weight,
     )
     if not bc_metrics["reached_target"]:
         raise RuntimeError(
-            "Base policy did not reach 100% allowed-action accuracy: "
-            f"final_accuracy={bc_metrics['final_accuracy']:.6f}.",
+            "Base policy did not reach 100% allowed-action accuracy at the required "
+            f"safety margin: final_accuracy={bc_metrics['final_accuracy']:.6f}, "
+            f"final_min_margin={bc_metrics['final_min_margin']:.4f} "
+            f"(target {bc_metrics['target_margin']:.4f}). Raise --bc-max-epochs or "
+            "--bc-lr, or lower --bc-target-margin.",
         )
 
     inverse_temp, min_valid_mass, surrogate_threshold = calibrate_inverse_temperature(
@@ -367,6 +570,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         batch_size=args.rashomon_batch_size,
         certificate_samples=args.certificate_samples,
         inverse_temp=inverse_temp,
+        growth_method=args.growth_method,
+        certification_method=args.certification_method,
     )
 
     safe_dataset_path = run_dir / "safe_behaviour_dataset.pt"
@@ -384,11 +589,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 for key, value in model.state_dict().items()
             },
             "architecture": {
-                "input_dim": n_states,
+                "input_dim": input_dim,
                 "n_actions": n_actions,
                 "hidden_dim": int(args.hidden_dim),
                 "n_hidden": int(args.n_hidden),
                 "activation": "Tanh",
+                "state_representation": dataset_metadata["state_representation"],
             },
             "bc_metrics": bc_metrics,
         },
@@ -415,6 +621,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "checkpoint": int(args.rashomon_checkpoint),
             "batch_size": int(args.rashomon_batch_size),
             "certificate_samples": int(args.certificate_samples),
+            "growth_method": args.growth_method,
+            "certification_method": args.certification_method,
             **rashomon_metadata,
         },
     }

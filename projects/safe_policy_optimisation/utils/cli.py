@@ -35,3 +35,36 @@ def add_ppo_hyperparameter_args(parser: argparse.ArgumentParser) -> argparse.Arg
     parser.add_argument("--vf-coef", type=float, default=PPO_HYPERPARAMETER_DEFAULTS["vf_coef"])
     parser.add_argument("--max-grad-norm", type=float, default=PPO_HYPERPARAMETER_DEFAULTS["max_grad_norm"])
     return parser
+
+
+# Default actor-critic architecture, shared by every stage that builds a policy
+# network (RL baselines and PSPO alike), so they compare like-for-like unless
+# told otherwise.
+ARCHITECTURE_DEFAULTS: dict[str, int] = {
+    "n_hidden": 2,
+    "hidden_dim": 64,
+}
+
+
+def add_architecture_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add the standard actor-critic architecture flags to ``parser``."""
+
+    parser.add_argument(
+        "--n-hidden",
+        type=int,
+        default=ARCHITECTURE_DEFAULTS["n_hidden"],
+        help="Hidden layers in the actor/critic MLP.",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=ARCHITECTURE_DEFAULTS["hidden_dim"],
+        help="Width of each hidden layer.",
+    )
+    return parser
+
+
+def net_arch_from_args(args: argparse.Namespace) -> list[int]:
+    """Build an SB3 ``net_arch`` list from ``--n-hidden``/``--hidden-dim``."""
+
+    return [int(args.hidden_dim)] * int(args.n_hidden)

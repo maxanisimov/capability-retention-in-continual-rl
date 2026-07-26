@@ -35,7 +35,6 @@ from projects.safe_policy_optimisation.stages.rollout_policy_gif import (
 )
 from projects.safe_policy_optimisation.stages.synthesise_shield import (
     _resolve_max_episode_steps,
-    _resolve_risk_threshold,
 )
 from projects.safe_policy_optimisation.stages.synthesise_shield import (
     build_parser as build_synthesise_shield_parser,
@@ -54,13 +53,13 @@ from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
 from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
     build_parser as build_deterministic_pipeline_parser,
 )
-from projects.safe_policy_optimisation.stages.train_masa_shielded_policy import (
-    build_parser as build_masa_shielded_parser,
-)
 from projects.safe_policy_optimisation.stages.train_ppo import (
     build_parser as build_ppo_parser,
 )
-from projects.safe_policy_optimisation.stages.train_rashomon_shielded_policy import (
+from projects.safe_policy_optimisation.stages.train_pspo_adaptive import (
+    build_parser as build_adaptive_safe_ppo_parser,
+)
+from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (
     build_parser as build_rashomon_shielded_ppo_parser,
 )
 from projects.safe_policy_optimisation.stages.train_cpo import (
@@ -69,7 +68,7 @@ from projects.safe_policy_optimisation.stages.train_cpo import (
 from projects.safe_policy_optimisation.stages.train_ppo_lagrangian import (
     build_parser as build_train_parser,
 )
-from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (
+from projects.safe_policy_optimisation.stages.train_ppo_shield import (
     build_parser as build_generic_shielded_parser,
 )
 from projects.safe_policy_optimisation.utils.config import (
@@ -325,26 +324,6 @@ class CliParsingTests(unittest.TestCase):
 
             self.assertTrue(_is_masa_shielded_run_dir(run_dir))
 
-    def test_masa_shielded_parser_defaults_to_zero_tolerance(self) -> None:
-        args = build_masa_shielded_parser().parse_args([])
-
-        self.assertIsNone(args.env_id)
-        self.assertEqual(args.safety_tolerance, 0.0)
-        self.assertEqual(args.cost_limit, 0.0)
-
-    def test_masa_shielded_parser_accepts_generic_env_settings(self) -> None:
-        args = build_masa_shielded_parser().parse_args(
-            [
-                "--env-id",
-                "CustomMediaStreaming-v0",
-                "--env-kwargs",
-                '{"fast_rate": 0.0, "slow_rate": 0.0, "out_rate": 0.0}',
-            ]
-        )
-
-        self.assertEqual(args.env_id, "CustomMediaStreaming-v0")
-        self.assertEqual(args.env_kwargs, '{"fast_rate": 0.0, "slow_rate": 0.0, "out_rate": 0.0}')
-
     def test_generic_shielded_parser_accepts_shield_and_env(self) -> None:
         args = build_generic_shielded_parser().parse_args(
             [
@@ -420,11 +399,6 @@ class CliParsingTests(unittest.TestCase):
         self.assertIsNone(args.env)
         self.assertIsNone(args.task)
         self.assertFalse(hasattr(args, "risk_threshold"))
-        self.assertEqual(args.constraint, "PCTL")
-
-    def test_synthesise_shield_uses_alpha_as_risk_threshold(self) -> None:
-        self.assertEqual(_resolve_risk_threshold({"alpha": 0.01}), 0.01)
-        self.assertEqual(_resolve_risk_threshold({}), 0.0)
 
     def test_synthesise_shield_uses_task_max_episode_steps(self) -> None:
         self.assertEqual(
@@ -484,7 +458,10 @@ class CliParsingTests(unittest.TestCase):
 
         self.assertEqual(args.shield_path, Path("shield_q.pt"))
         self.assertEqual(args.rashomon_n_iters, 0)
-        self.assertEqual(args.n_hidden, 0)
+        # Default base-policy depth, which also sets the PSPO actor/critic to the
+        # [64, 64] MLP the baselines use.
+        self.assertEqual(args.n_hidden, 2)
+        self.assertEqual(args.hidden_dim, 64)
 
     def test_rashomon_shielded_ppo_parser_accepts_required_paths(self) -> None:
         args = build_rashomon_shielded_ppo_parser().parse_args(
@@ -504,6 +481,50 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.shield_action_storage, "proposed")
         self.assertEqual(args.early_stop_eval_policy, "unshielded")
         self.assertEqual(args.evaluation_policy, "unshielded")
+
+    def test_adaptive_safe_ppo_parser_accepts_base_policy_and_adaptive_settings(self) -> None:
+        args = build_adaptive_safe_ppo_parser().parse_args(
+            [
+                "--base-policy-path",
+                "rashomon_run/base_policy.pt",
+                "--shield-path",
+                "shield_q.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+            ]
+        )
+
+        self.assertEqual(args.base_policy_path, Path("rashomon_run/base_policy.pt"))
+        self.assertEqual(args.shield_path, Path("shield_q.pt"))
+        self.assertEqual(args.adaptive_granularity, "gradient_step")
+        self.assertEqual(args.unsafe_update_strategy, "rashomon_project")
+        self.assertEqual(args.rashomon_n_iters, 100)
+        self.assertIsNone(args.rashomon_checkpoint)
+        self.assertIsNone(args.certificate_samples)
+        self.assertIsNone(args.rashomon_inverse_temp)
+        self.assertEqual(args.shield_action_storage, "proposed")
+        self.assertEqual(args.evaluation_policy, "unshielded")
+
+        overridden = build_adaptive_safe_ppo_parser().parse_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield_q.pt",
+                "--adaptive-granularity",
+                "train_phase",
+                "--unsafe-update-strategy",
+                "none",
+                "--rashomon-n-iters",
+                "50",
+                "--rashomon-checkpoint",
+                "5",
+            ]
+        )
+        self.assertEqual(overridden.adaptive_granularity, "train_phase")
+        self.assertEqual(overridden.unsafe_update_strategy, "none")
+        self.assertEqual(overridden.rashomon_n_iters, 50)
+        self.assertEqual(overridden.rashomon_checkpoint, 5)
 
     def test_training_parsers_accept_paper_hyperparameters(self) -> None:
         baseline_args = build_train_parser().parse_args(
@@ -685,8 +706,6 @@ class CliParsingTests(unittest.TestCase):
         args = build_deterministic_pipeline_parser().parse_args(["--pipeline", "deterministic_minipacman"])
         args = apply_training_settings(args)
 
-        self.assertEqual(args.constraint, "PCTL")
-        self.assertEqual(args.constraint_kwargs, {"alpha": 0.01})
         self.assertEqual(args.max_vi_steps, 2000)
         self.assertEqual(args.granularity, 10)
 
@@ -789,7 +808,7 @@ class CliParsingTests(unittest.TestCase):
                 env_kwargs=settings["env_kwargs"],
             )
             try:
-                self.assertEqual(env.unwrapped.observation_space.n, n_states)
+                self.assertEqual(env.unwrapped._n_states, n_states)
                 self.assertEqual(env.unwrapped.action_space.n, n_actions)
             finally:
                 env.close()
@@ -802,7 +821,7 @@ class CliParsingTests(unittest.TestCase):
             env_kwargs=settings["env_kwargs"],
         )
         try:
-            self.assertGreater(env.unwrapped.observation_space.n, 100_000)
+            self.assertGreater(env.unwrapped._n_states, 100_000)
             self.assertEqual(env.unwrapped.action_space.n, 5)
         finally:
             env.close()

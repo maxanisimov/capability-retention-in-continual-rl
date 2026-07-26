@@ -19,6 +19,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
+    episode_success,
     CallableUnshieldedRewardCurveCallback,
     LearningCurveLogger,
 )
@@ -31,7 +32,11 @@ from projects.safe_policy_optimisation.utils.cpu_allocation import (  # noqa: E4
     resolve_worker_count,
     worker_thread_count,
 )
-from projects.safe_policy_optimisation.utils.cli import add_ppo_hyperparameter_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
+    add_architecture_args,
+    add_ppo_hyperparameter_args,
+    net_arch_from_args,
+)
 from projects.safe_policy_optimisation.utils.envs import env_kwargs_from_args  # noqa: E402
 from projects.safe_policy_optimisation.utils.io import (  # noqa: E402
     episode_rows,
@@ -52,7 +57,10 @@ from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     make_safe_rl_env,
     save_checkpoint,
 )
-from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
+    success_mode_for_env,
+    summarise_evaluation,
+)
 from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
@@ -109,6 +117,7 @@ def build_parser(
     )
     parser.add_argument("--device", default="cpu", help="Torch device passed to the baselines.")
     add_ppo_hyperparameter_args(parser)
+    add_architecture_args(parser)
     parser.add_argument("--cost-gamma", type=float, default=0.99)
     parser.add_argument("--cost-gae-lambda", type=float, default=0.95)
     parser.add_argument("--lagrangian-multiplier-init", type=float, default=0.0)
@@ -202,12 +211,7 @@ def _resolve_curve_eval_freq(curve_eval_freq: int | None, *, early_stop_eval_fre
     return int(n_steps)
 
 
-def _episode_succeeded(total_reward: float, infos: list[dict[str, Any]], *, reward_threshold: float) -> bool:
-    for key in ("is_success", "success"):
-        for info in reversed(infos):
-            if key in info:
-                return bool(info[key])
-    return float(total_reward) > float(reward_threshold)
+_episode_succeeded = episode_success
 
 
 def evaluate_success_rate(
@@ -324,15 +328,25 @@ class CallbackList:
 
 
 class ShieldUnsafeActionProposalLogger:
-    def __init__(self, shield_mask: np.ndarray, curve_logger: LearningCurveLogger) -> None:
+    def __init__(
+        self,
+        shield_mask: np.ndarray,
+        curve_logger: LearningCurveLogger,
+        obs_to_state: Any = None,
+    ) -> None:
         mask = np.asarray(shield_mask) != 0
         if mask.ndim != 2:
             raise ValueError(f"shield_mask must be 2-D, got shape {mask.shape}.")
         self.shield_mask = mask
         self.curve_logger = curve_logger
+        # Features mode: decode Box obs to state ids. None == identity (index).
+        self._obs_to_state = obs_to_state
 
     def __call__(self, *, timestep: int, obs: Any, action: Any) -> None:
-        states = np.asarray(obs).astype(np.int64).reshape(-1)
+        if self._obs_to_state is not None:
+            states = np.asarray(self._obs_to_state(obs), dtype=np.int64).reshape(-1)
+        else:
+            states = np.asarray(obs).astype(np.int64).reshape(-1)
         actions = np.asarray(action).astype(np.int64).reshape(-1)
         if states.shape != actions.shape:
             if states.size == 1:
@@ -415,12 +429,16 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
             cost_limit=float(job["cost_limit"]),
             seed=train_seed,
             device=str(job["device"]),
+            net_arch=tuple(job.get("net_arch") or (64, 64)),
             **dict(job["baseline_hyperparameters"]),
         )
         shield_mask = job.get("shield_mask")
         if shield_mask is not None and hasattr(model, "set_exploration_action_callback"):
             model.set_exploration_action_callback(
-                ShieldUnsafeActionProposalLogger(np.asarray(shield_mask), curve_logger)
+                ShieldUnsafeActionProposalLogger(
+                    np.asarray(shield_mask), curve_logger,
+                    obs_to_state=train_env.unwrapped.make_obs_to_state(),
+                )
             )
         timesteps = _algorithm_timesteps(algorithm, job["total_timesteps"])
         early_stop = SuccessEarlyStopper(
@@ -662,6 +680,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "worker_cpu_ids": worker_cpu_ids,
         "cpu_affinity_supported": cpu_affinity_supported(),
         "baseline_hyperparameters": _baseline_hyperparameters_from_args(args),
+        "n_hidden": int(args.n_hidden),
+        "hidden_dim": int(args.hidden_dim),
     }
     write_json(output_dir / "config.json", config)
 
@@ -688,6 +708,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "curve_eval_episodes": args.curve_eval_episodes,
             "torch_num_threads": torch_num_threads,
             "baseline_hyperparameters": _baseline_hyperparameters_from_args(args),
+            "net_arch": net_arch_from_args(args),
             "log_path": None if args.log_dir is None else str(Path(args.log_dir) / f"{algorithm}.log"),
         }
         for offset, algorithm in enumerate(args.algorithms)
@@ -714,6 +735,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             success_reward_threshold=float(getattr(args, "success_reward_threshold", 0.0)),
             cost_limit=float(args.cost_limit),
             algorithm=algorithm,
+            success_mode=success_mode_for_env(getattr(args, "env_id", None)),
         )
         for algorithm in args.algorithms
     }

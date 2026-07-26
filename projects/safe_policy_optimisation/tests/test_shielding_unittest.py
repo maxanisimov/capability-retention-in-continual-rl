@@ -29,17 +29,20 @@ from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     make_safe_behaviour_payload,
 )
-from projects.safe_policy_optimisation.stages.train_masa_shielded_policy import (
+from projects.safe_policy_optimisation.utils.masa_env import (
     SafetyBoundArrayWrapper,
 )
-from projects.safe_policy_optimisation.stages.train_rashomon_shielded_policy import (
+from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (
     ExecutedActionSafetyCounterWrapper,
     align_rashomon_bounds_to_ppo_actor,
     episode_success,
     policy_kwargs_from_base_architecture,
     validate_rashomon_shapes,
 )
-from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (
+from projects.safe_policy_optimisation.utils.episode_recording import (
+    EpisodeRecorderWrapper,
+)
+from projects.safe_policy_optimisation.stages.train_ppo_shield import (
     load_shield_mask,
     validate_shield_for_env,
 )
@@ -97,6 +100,42 @@ class GenericShieldedPolicyTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_episode_recorder_counts_unsafe_visits_per_step(self) -> None:
+        # Regression: unsafe_state_visit_count must accumulate over every step, not
+        # only the initial reset state. costs=[0, 1, 0, 2] -> two unsafe steps.
+        class _CostSequenceEnv(gym.Env):
+            observation_space = gym.spaces.Discrete(1)
+            action_space = gym.spaces.Discrete(1)
+
+            def __init__(self, costs: list[float]) -> None:
+                super().__init__()
+                self._costs = list(costs)
+                self._i = 0
+
+            def reset(self, *, seed=None, options=None):
+                del seed, options
+                self._i = 0
+                return 0, {}
+
+            def step(self, action):
+                cost = self._costs[self._i]
+                self._i += 1
+                terminated = self._i >= len(self._costs)
+                return 0, 0.0, terminated, False, {"cost": cost}
+
+        env = EpisodeRecorderWrapper(_CostSequenceEnv([0.0, 1.0, 0.0, 2.0]), cost_limit=0.0)
+        env.reset()
+        done = False
+        while not done:
+            _obs, _reward, terminated, truncated, _info = env.step(0)
+            done = bool(terminated or truncated)
+
+        (episode,) = env.episodes
+        self.assertEqual(episode["unsafe_state_visit_count"], 2)
+        self.assertFalse(episode["safe_trajectory"])
+        self.assertEqual(episode["cost"], 3.0)
+        self.assertTrue(episode["violated"])
+
     def test_generic_safe_rl_env_factory_uses_requested_env(self) -> None:
         env = make_safe_rl_env(
             "CustomMediaStreaming-v0",
@@ -105,7 +144,7 @@ class GenericShieldedPolicyTests(unittest.TestCase):
         )
         try:
             self.assertEqual(env.unwrapped.spec.id, "CustomMediaStreaming-v0")
-            self.assertEqual(env.observation_space.n, 20)
+            self.assertEqual(env.unwrapped._n_states, 20)
         finally:
             env.close()
 
@@ -208,6 +247,22 @@ class RashomonShieldedPPOTests(unittest.TestCase):
         self.assertTrue(episode_success(1.0, [{}], reward_threshold=0.0))
         self.assertFalse(episode_success(0.0, [{}], reward_threshold=0.0))
 
+    def test_base_architecture_maps_to_baseline_mlp_for_two_hidden_layers(self) -> None:
+        # The default architecture: PSPO's actor and critic must come out as the
+        # same [64, 64] Tanh MLP every baseline uses, so the comparison isolates
+        # the safety mechanism rather than network capacity.
+        policy_kwargs = policy_kwargs_from_base_architecture(
+            {
+                "input_dim": 900,
+                "n_actions": 5,
+                "hidden_dim": 64,
+                "n_hidden": 2,
+                "activation": "Tanh",
+            }
+        )
+
+        self.assertEqual(policy_kwargs["net_arch"], [64, 64])
+
     def test_base_architecture_maps_to_empty_ppo_net_for_linear_policy(self) -> None:
         policy_kwargs = policy_kwargs_from_base_architecture(
             {
@@ -226,14 +281,14 @@ class RashomonShieldedPPOTests(unittest.TestCase):
 
         env = make_minipacman_env(max_episode_steps=5)
         try:
-            mask = np.ones((env.observation_space.n, env.action_space.n), dtype=int)
+            mask = np.ones((env.unwrapped._n_states, env.action_space.n), dtype=int)
             model = ProvablySafePPO(
                 "MlpPolicy",
                 env,
                 shield=mask,
                 policy_kwargs=policy_kwargs_from_base_architecture(
                     {
-                        "input_dim": env.observation_space.n,
+                        "input_dim": env.unwrapped._n_states,
                         "n_actions": env.action_space.n,
                         "hidden_dim": 64,
                         "n_hidden": 0,
@@ -249,7 +304,7 @@ class RashomonShieldedPPOTests(unittest.TestCase):
             upper = [torch.ones_like(param.detach()) for param in model.policy.action_net.parameters()]
             lower, upper = align_rashomon_bounds_to_ppo_actor(
                 {
-                    "input_dim": env.observation_space.n,
+                    "input_dim": env.unwrapped._n_states,
                     "n_actions": env.action_space.n,
                     "hidden_dim": 64,
                     "n_hidden": 0,

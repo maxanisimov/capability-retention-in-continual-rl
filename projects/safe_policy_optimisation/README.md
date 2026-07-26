@@ -227,13 +227,18 @@ summary artifacts:
 - `<algorithm>_rollout_summary.json`.
 - `<algorithm>_rollout_episodes.csv`.
 
-## Train with MASA probabilistic shielding
+## Train with MASA probabilistic shielding (archived)
+
+> This trainer is no longer part of the pipeline and has moved to
+> `archive/stages/train_masa_shielded_policy.py`. Its environment builder is
+> still live in `utils/masa_env.py`, which is what `stages/rollout_policy_gif.py`
+> uses to render MASA rollouts.
 
 Train an SB3 PPO policy on `CustomMiniPacman-v0` wrapped by MASA's
 `ProbShieldWrapperDisc`:
 
 ```bash
-python projects/safe_policy_optimisation/stages/train_masa_shielded_policy.py \
+python projects/safe_policy_optimisation/archive/stages/train_masa_shielded_policy.py \
   --env-id CustomMiniPacman-v0 \
   --env-kwargs '{"ghost_rand_prob": 0.0}'
 ```
@@ -245,7 +250,7 @@ policy is trained in the shielded action space.
 Useful options:
 
 ```bash
-python projects/safe_policy_optimisation/stages/train_masa_shielded_policy.py \
+python projects/safe_policy_optimisation/archive/stages/train_masa_shielded_policy.py \
   --env-id CustomMiniPacman-v0 \
   --env-kwargs '{"ghost_rand_prob": 0.0}' \
   --total-timesteps 10000 \
@@ -269,7 +274,7 @@ For a strict separation between shield synthesis and policy optimisation, train
 PPO with an already-saved shield artifact:
 
 ```bash
-python projects/safe_policy_optimisation/stages/train_discrete_shielded_policy.py \
+python projects/safe_policy_optimisation/stages/train_ppo_shield.py \
   --shield-path projects/safe_crl/pipelines/safety_retention/CustomMiniPacman/artifacts/shields/minipacman_default/shield_q.pt \
   --env-id CustomMiniPacman-v0 \
   --env-kwargs '{"ghost_rand_prob": 0.0}' \
@@ -304,8 +309,6 @@ python projects/safe_policy_optimisation/stages/synthesise_shield.py \
   --env CustomMiniPacman-v0 \
   --task minipacman_default \
   --max-episode-steps 100 \
-  --constraint PCTL \
-  --constraint-kwargs '{"alpha": 0.01}' \
   --init-safety-bound 1e-12 \
   --theta 1e-12 \
   --max-vi-steps 2000 \
@@ -320,6 +323,8 @@ projects/safe_policy_optimisation/artifacts/shields/<env>/<task>/shield_q.pt
 ```
 
 You can pass `--output-dir` to place the shield elsewhere. The generated
-`shield_q.pt` can be passed directly to `train_discrete_shielded_policy.py` via
-`--shield-path`. For PCTL constraints, `constraint_kwargs.alpha` is used as the
-shield action-risk threshold; when no alpha is provided the threshold is `0.0`.
+`shield_q.pt` can be passed directly to `train_ppo_shield.py` via
+`--shield-path`. The shield allows only the action(s) achieving the minimum
+eventual-unsafe risk in each state (within the value-iteration tolerance
+`--theta`) — i.e. the safest policy the environment admits, not an
+externally-chosen risk threshold.

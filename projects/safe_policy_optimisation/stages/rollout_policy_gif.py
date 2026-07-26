@@ -29,17 +29,17 @@ from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     save_gif,
 )
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
-from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (  # noqa: E402
+from projects.safe_policy_optimisation.stages.train_ppo_shield import (  # noqa: E402
     ALGORITHM_NAME as SHIELDED_ALGORITHM_NAME,
     load_shield_mask,
     make_unshielded_env,
     validate_shield_for_env,
 )
-from projects.safe_policy_optimisation.stages.train_masa_shielded_policy import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.masa_env import (  # noqa: E402
     ALGORITHM_NAME as MASA_SHIELDED_ALGORITHM_NAME,
     make_masa_shielded_env,
 )
-from projects.safe_policy_optimisation.stages.train_rashomon_shielded_policy import (  # noqa: E402
+from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (  # noqa: E402
     ALGORITHM_NAME as RASHOMON_SHIELDED_ALGORITHM_NAME,
 )
 from provably_safe_policy_optimisation import ProvablySafePPO, Shield  # noqa: E402

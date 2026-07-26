@@ -126,11 +126,6 @@ def _synthesise_shield_if_needed(
         env_kwargs = {}
     if not isinstance(env_kwargs, dict):
         raise ValueError("Task env_kwargs must be a mapping or null for shield synthesis.")
-    constraint_kwargs = settings.get("constraint_kwargs")
-    if constraint_kwargs is None:
-        constraint_kwargs = {}
-    if not isinstance(constraint_kwargs, dict):
-        raise ValueError("constraint_kwargs must be a mapping for shield synthesis.")
 
     argv = [
         "--env",
@@ -139,10 +134,6 @@ def _synthesise_shield_if_needed(
         str(task_settings.get("shield_task", settings["task"])),
         "--seed",
         str(settings.get("seed", 0)),
-        "--constraint",
-        str(settings.get("constraint", "PCTL")),
-        "--constraint-kwargs",
-        json.dumps(constraint_kwargs),
         "--theta",
         str(settings.get("theta", 1e-10)),
         "--max-vi-steps",
