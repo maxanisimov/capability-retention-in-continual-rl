@@ -312,8 +312,10 @@ def _project_bounded_model(
     bounded_model: IntervalBoundedModel,
     outer_bbox: IntervalBoundedModel | list[IntervalBoundedModel] | None = None,
     context_mask: torch.Tensor | None = None,
+    param_l_mask: list[torch.Tensor] | None = None,
+    param_u_mask: list[torch.Tensor] | None = None,
 ) -> IntervalBoundedModel:
-    """Project the bounded model to be valid with respect to its center and the outer bounding box."""
+    """Project bounds into their valid range and restore frozen entries to the center."""
     for pl, pn, pu in zip(
         bounded_model.param_l, bounded_model.param_n, bounded_model.param_u
     ):
@@ -337,6 +339,17 @@ def _project_bounded_model(
             pl.data.clamp_(min=ol.data, max=ou.data)
             pu.data.clamp_(min=ol.data, max=ou.data)
 
+    if param_l_mask is not None:
+        for pl, pn, mask in zip(
+            bounded_model.param_l, bounded_model.param_n, param_l_mask
+        ):
+            pl.copy_(torch.where(mask, pn, pl))
+    if param_u_mask is not None:
+        for pu, pn, mask in zip(
+            bounded_model.param_u, bounded_model.param_n, param_u_mask
+        ):
+            pu.copy_(torch.where(mask, pn, pu))
+
     return bounded_model
 
 
@@ -356,6 +369,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
         has_input_intervals: bool = False,
         temperatures: dict[int | None, float] | None = None,
+        param_l_mask: list[torch.Tensor] | None = None,
+        param_u_mask: list[torch.Tensor] | None = None,
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -366,6 +381,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.group_by = group_by
         self.has_input_intervals = has_input_intervals
         self.temperatures = temperatures
+        self.param_l_mask = param_l_mask
+        self.param_u_mask = param_u_mask
 
         full_batch = next(iter(torch.utils.data.DataLoader(
             dataloader.dataset, batch_size=len(dataloader.dataset), shuffle=False,
@@ -417,7 +434,12 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         y = y.to(self.bounded_model.device)
 
         # apply projection
-        _project_bounded_model(self.bounded_model, context_mask=self.context_mask)
+        _project_bounded_model(
+            self.bounded_model,
+            context_mask=self.context_mask,
+            param_l_mask=self.param_l_mask,
+            param_u_mask=self.param_u_mask,
+        )
         loss = -self.objective_fn(self.bounded_model, self.obj_alpha)
 
         misc_info = {}
@@ -549,12 +571,82 @@ def get_lr_schedulers(
 
 
 def _create_hook(mask: torch.Tensor):
-    final_mask = mask.float()
+    final_mask = mask
 
     def hook_fn(grad: torch.Tensor):
-        return grad * (1 - final_mask)
+        return grad.masked_fill(final_mask, 0)
 
     return hook_fn
+
+
+def _validate_param_mask(
+    mask: Iterable | None,
+    bounds: Iterable[torch.Tensor],
+    name: str,
+) -> list[torch.Tensor] | None:
+    """Validate and place a per-parameter freeze mask on the bounds' devices."""
+    if mask is None:
+        return None
+
+    masks = list(mask)
+    bound_tensors = list(bounds)
+    if len(masks) != len(bound_tensors):
+        raise ValueError(
+            f"`{name}` must contain one tensor per model parameter "
+            f"({len(bound_tensors)} tensors), got {len(masks)}."
+        )
+
+    validated = []
+    for index, (entry, bound) in enumerate(zip(masks, bound_tensors)):
+        if not isinstance(entry, torch.Tensor):
+            raise TypeError(
+                f"`{name}[{index}]` must be a torch.Tensor, got "
+                f"{type(entry).__name__}."
+            )
+        if entry.dtype != torch.bool:
+            raise TypeError(
+                f"`{name}[{index}]` must have dtype torch.bool, got {entry.dtype}."
+            )
+        if entry.shape != bound.shape:
+            raise ValueError(
+                f"`{name}[{index}]` must have shape {tuple(bound.shape)}, got "
+                f"{tuple(entry.shape)}."
+            )
+        validated.append(entry.to(device=bound.device))
+    return validated
+
+
+def _resolve_param_masks(
+    bounded_model: IntervalBoundedModel,
+    param_mask: Iterable | None,
+    param_l_mask: Iterable | None,
+    param_u_mask: Iterable | None,
+) -> tuple[list[torch.Tensor] | None, list[torch.Tensor] | None]:
+    """Combine the shared freeze mask with independent lower and upper masks."""
+    shared = _validate_param_mask(param_mask, bounded_model.param_l, "param_mask")
+    lower = _validate_param_mask(param_l_mask, bounded_model.param_l, "param_l_mask")
+    upper = _validate_param_mask(param_u_mask, bounded_model.param_u, "param_u_mask")
+
+    if shared is None and lower is None and upper is None:
+        return None, None
+
+    effective_l = []
+    effective_u = []
+    for index, (pl, pu) in enumerate(
+        zip(bounded_model.param_l, bounded_model.param_u)
+    ):
+        shared_entry = (
+            shared[index] if shared is not None else torch.zeros_like(pl, dtype=torch.bool)
+        )
+        lower_entry = (
+            lower[index] if lower is not None else torch.zeros_like(pl, dtype=torch.bool)
+        )
+        upper_entry = (
+            upper[index] if upper is not None else torch.zeros_like(pu, dtype=torch.bool)
+        )
+        effective_l.append(shared_entry | lower_entry)
+        effective_u.append(shared_entry | upper_entry)
+    return effective_l, effective_u
 
 
 def compute_rashomon_set(
@@ -579,6 +671,8 @@ def compute_rashomon_set(
     param_select_fn: Callable | None = None,
     domain_map_fn: Callable | None = None,
     param_mask: Iterable | None = None,
+    param_l_mask: Iterable | None = None,
+    param_u_mask: Iterable | None = None,
     group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
     has_input_intervals: bool = False,
     certification_method: str = "IBP",
@@ -625,6 +719,13 @@ def compute_rashomon_set(
         custom_objective (Callable, optional): Custom objective function to use instead of the default one.
         param_select_fn (Callable, optional): Function to select parameters that we wish to compute rashomon sets over.
             If None, all parameters are used.
+        param_mask (Iterable, optional): Boolean tensors marking parameters whose lower and
+            upper bounds must both remain fixed at the nominal parameter values. Combined
+            with `param_l_mask` and `param_u_mask` using boolean OR.
+        param_l_mask (Iterable, optional): Boolean tensors marking lower-bound entries that
+            must remain fixed at the nominal parameter values.
+        param_u_mask (Iterable, optional): Boolean tensors marking upper-bound entries that
+            must remain fixed at the nominal parameter values.
         group_by (Callable, optional): Function applied to each minibatch's `y` (the per-row multi-hot
             admissible-set tensor) producing an integer group-id tensor. Each unique group gets its own
             Lagrangian constraint with its own target accuracy and calibrated temperature, resolved via
@@ -670,11 +771,16 @@ def compute_rashomon_set(
         pl.requires_grad = True
         pu.requires_grad = True
 
+    effective_param_l_mask, effective_param_u_mask = _resolve_param_masks(
+        bounded_model, param_mask, param_l_mask, param_u_mask
+    )
     hooks = []
-    if param_mask:
-        for pl, pu, m in zip(bounded_model.param_l, bounded_model.param_u, param_mask):
-            hooks.append(pl.register_hook(_create_hook(m)))
-            hooks.append(pu.register_hook(_create_hook(m)))
+    if effective_param_l_mask is not None:
+        for pl, mask in zip(bounded_model.param_l, effective_param_l_mask):
+            hooks.append(pl.register_hook(_create_hook(mask)))
+    if effective_param_u_mask is not None:
+        for pu, mask in zip(bounded_model.param_u, effective_param_u_mask):
+            hooks.append(pu.register_hook(_create_hook(mask)))
 
     # Create the dataloader for the optimization, and get sample the batch we use for our final certificates
     dataloader = torch.utils.data.DataLoader(
@@ -714,6 +820,11 @@ def compute_rashomon_set(
         bounded_model.param_u[-2].data += (
             (1 - context_mask) * MAX_PARAMETER_WIDTH
         ).unsqueeze(1)
+    _project_bounded_model(
+        bounded_model,
+        param_l_mask=effective_param_l_mask,
+        param_u_mask=effective_param_u_mask,
+    )
     dl_cert = torch.utils.data.DataLoader(
         dataset,
         batch_size=certificate_samples * encountered_groups,
@@ -736,13 +847,25 @@ def compute_rashomon_set(
             "Warning: target accuracy <= 0.0 for every group; returning without computing Rashomon set."
         )
         if outer_bbox is not None:
-            bounded_model = copy.deepcopy(outer_bbox)
+            for pl, pu, ol, ou in zip(
+                bounded_model.param_l,
+                bounded_model.param_u,
+                outer_bbox.param_l,
+                outer_bbox.param_u,
+            ):
+                pl.data.copy_(ol.data)
+                pu.data.copy_(ou.data)
         else:
             for pl, p, pu in zip(
                 bounded_model.param_l, model.parameters(), bounded_model.param_u
             ):
                 pl.data = p - MAX_PARAMETER_WIDTH
                 pu.data = p + MAX_PARAMETER_WIDTH
+        _project_bounded_model(
+            bounded_model,
+            param_l_mask=effective_param_l_mask,
+            param_u_mask=effective_param_u_mask,
+        )
         zero_certs = [RashomonCertificate(group=g, min_surrogate=0.0, min_hard_acc=0.0) for g in groups]
         return RashomonResult(
             bounded_models=[bounded_model], certificates=[zero_certs],
@@ -809,8 +932,22 @@ def compute_rashomon_set(
         print(
             f"Computing Rashomon set within outer box of size: {_bounded_model_width(outer_bbox).item():.2f}"
         )
+        outer_candidate = copy.deepcopy(bounded_model)
+        for pl, pu, ol, ou in zip(
+            outer_candidate.param_l,
+            outer_candidate.param_u,
+            outer_bbox.param_l,
+            outer_bbox.param_u,
+        ):
+            pl.data.copy_(ol.data)
+            pu.data.copy_(ou.data)
+        _project_bounded_model(
+            outer_candidate,
+            param_l_mask=effective_param_l_mask,
+            param_u_mask=effective_param_u_mask,
+        )
         outer_certs = _certify_groups(
-            outer_bbox, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+            outer_candidate, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
             context_mask, temperatures,
         )
         if all(
@@ -822,7 +959,7 @@ def compute_rashomon_set(
                 "No need to compute Rashomon set."
             )
             return RashomonResult(
-                bounded_models=[outer_bbox], certificates=[outer_certs], temperatures=temperatures,
+                bounded_models=[outer_candidate], certificates=[outer_certs], temperatures=temperatures,
             )
 
     # Instantiate the Constrained Minimization Problem (CMP)
@@ -838,6 +975,8 @@ def compute_rashomon_set(
         group_by=group_by,
         has_input_intervals=has_input_intervals,
         temperatures=temperatures,
+        param_l_mask=effective_param_l_mask,
+        param_u_mask=effective_param_u_mask,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -893,7 +1032,13 @@ def compute_rashomon_set(
             dual_lr_scheduler.step()
 
         # apply projection
-        _project_bounded_model(bounded_model, outer_bbox, context_mask)
+        _project_bounded_model(
+            bounded_model,
+            outer_bbox,
+            context_mask,
+            param_l_mask=effective_param_l_mask,
+            param_u_mask=effective_param_u_mask,
+        )
 
         # Logging
         losses.append(roll_out.cmp_state.loss.item())
