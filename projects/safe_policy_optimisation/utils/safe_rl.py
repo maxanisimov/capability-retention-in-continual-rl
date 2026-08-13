@@ -113,6 +113,19 @@ def make_minipacman_env(
     )
 
 
+def obs_state_id(env: gym.Env, obs: Any) -> int:
+    """Integer state id for an observation, whatever the observation mode.
+
+    In ``"features"`` mode the observation is a normalised ``Box`` vector; decode
+    it via the env's exact inverse. In ``"index"`` mode the observation *is* the
+    state id.
+    """
+    unwrapped = env.unwrapped
+    if getattr(unwrapped, "_observation_mode", "index") == "features":
+        return int(unwrapped.features_to_state(obs))
+    return int(np.asarray(obs).item())
+
+
 def state_cost(env: gym.Env, obs: Any, info: dict[str, Any] | None = None) -> float:
     """Return the per-state safety cost for a MASA-style tabular state."""
 
@@ -121,8 +134,7 @@ def state_cost(env: gym.Env, obs: Any, info: dict[str, Any] | None = None) -> fl
     unwrapped = env.unwrapped
     if not (hasattr(unwrapped, "label_fn") and hasattr(unwrapped, "cost_fn")):
         return 0.0
-    state = int(np.asarray(obs).item())
-    return float(unwrapped.cost_fn(unwrapped.label_fn(state)))
+    return float(unwrapped.cost_fn(unwrapped.label_fn(obs_state_id(env, obs))))
 
 
 def minipacman_state_cost(env: gym.Env, obs: Any) -> float:
@@ -162,6 +174,7 @@ def build_safe_rl_baseline(
     cost_limit: float,
     seed: int,
     device: str = "cpu",
+    net_arch: tuple[int, ...] = (64, 64),
     **hyperparameters: Any,
 ) -> Any:
     """Build one safe-RL baseline with smoke-friendly tabular defaults."""
@@ -180,7 +193,7 @@ def build_safe_rl_baseline(
     common: dict[str, Any] = {
         "cost_fn": make_state_cost_fn(env),
         "cost_limit": cost_limit,
-        "net_arch": (64, 64),
+        "net_arch": tuple(net_arch),
         "seed": seed,
         "device": device,
         **baseline_hyperparameters,

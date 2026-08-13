@@ -42,29 +42,30 @@ class MiniPacmanCostTests(unittest.TestCase):
     def test_state_cost_uses_masa_labels(self) -> None:
         env = make_minipacman_env(max_episode_steps=5)
         try:
+            u = env.unwrapped
             safe_obs, _ = env.reset(seed=0)
-            ghost_obs = next(
-                state
-                for state in range(env.observation_space.n)
-                if "ghost" in env.unwrapped.label_fn(state)
+            # label_fn is keyed by state id; the observation is a feature vector.
+            ghost_state = next(
+                s for s in range(u._n_states) if "ghost" in u.label_fn(s)  # noqa: SLF001
             )
 
             self.assertEqual(minipacman_state_cost(env, safe_obs), 0.0)
-            self.assertEqual(minipacman_state_cost(env, ghost_obs), 1.0)
+            self.assertEqual(minipacman_state_cost(env, u.state_to_features(ghost_state)), 1.0)
         finally:
             env.close()
 
     def test_cost_callback_reads_next_state(self) -> None:
         env = make_minipacman_env(max_episode_steps=5)
         try:
+            u = env.unwrapped
             cost_fn = make_minipacman_cost_fn(env)
-            ghost_obs = next(
-                state
-                for state in range(env.observation_space.n)
-                if "ghost" in env.unwrapped.label_fn(state)
+            ghost_state = next(
+                s for s in range(u._n_states) if "ghost" in u.label_fn(s)  # noqa: SLF001
             )
 
-            self.assertEqual(cost_fn(0, 0, 0.0, ghost_obs, False, False, {}), 1.0)
+            self.assertEqual(
+                cost_fn(0, 0, 0.0, u.state_to_features(ghost_state), False, False, {}), 1.0
+            )
         finally:
             env.close()
 

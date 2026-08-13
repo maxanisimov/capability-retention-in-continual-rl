@@ -50,6 +50,8 @@ These are additive to whatever flat keys a pipeline's loader already reads.
 
 - Entrypoints: `train_source_policy.py` / `train_source_policy_multi_seed.py`,
   `downstream_adaptation_<method>.py` / `downstream_adaptation_<method>_multi_seed.py`.
+  Active trajectory-retention methods include `unconstrained`, `ewc`, `distillation`, and
+  `rashomon` variants where implemented.
 - Aggregation/analysis scripts: `aggregate_<metric>_<scope>.py`.
 - Superseded results or old pipeline versions go under `projects/safe_crl/archive/`, mirroring their
   original relative path — not ad hoc `_PREV`/`v1`/`v2` suffixes next to the live path.

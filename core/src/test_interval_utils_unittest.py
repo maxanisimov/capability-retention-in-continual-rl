@@ -21,6 +21,7 @@ from src.interval_utils import (
     compute_rashomon_set,
 )
 from src.rashomon_spec import resolve_accuracy
+from src.zonotope_rashomon import compute_zonotope_rashomon_set
 
 
 def _build_model_and_bounds():
@@ -322,6 +323,60 @@ class GetMinAccTests(unittest.TestCase):
             expected = _order_statistic_select(per_sample, target_accuracy)
             self.assertTrue(torch.allclose(acc, expected), msg=f"target_accuracy={target_accuracy}")
 
+    def test_logsumexp_surrogate_matches_independently_computed_order_statistic(self):
+        bounded_model, X, y = _build_model_and_bounds()
+        tau = 0.7
+        per_sample = verify.bound_multi_label_accuracy_margin(
+            _raw_logits(bounded_model, X, X),
+            y,
+            tau=tau,
+            lower=True,
+            aggregation="none",
+            surrogate="logsumexp",
+        )
+        for target_accuracy in (1.0, 0.8, 0.6, 0.4, 0.2):
+            actual = _get_min_acc(
+                bounded_model,
+                X,
+                X,
+                y,
+                target_accuracy,
+                group=None,
+                tau=tau,
+                soft=True,
+                surrogate="logsumexp",
+            )
+            expected = _order_statistic_select(per_sample, target_accuracy)
+            self.assertTrue(torch.allclose(actual, expected), msg=f"target_accuracy={target_accuracy}")
+
+    def test_all_mode_matches_independently_computed_order_statistic(self):
+        bounded_model, X, y = _build_model_and_bounds()
+        tau = 0.5
+        logits = _raw_logits(bounded_model, X, X)
+        per_sample_hard = verify.bound_multi_label_accuracy(
+            logits, y, lower=True, aggregation="none", mode="all",
+        )
+        per_sample_soft = verify.bound_multi_label_accuracy_margin(
+            logits, y, tau=tau, lower=True, aggregation="none", mode="all",
+        )
+        for target_accuracy in (1.0, 0.8, 0.6, 0.4, 0.2):
+            hard = _get_min_acc(
+                bounded_model, X, X, y, target_accuracy, group=None, tau=tau,
+                soft=False, multi_label_mode="all",
+            )
+            soft = _get_min_acc(
+                bounded_model, X, X, y, target_accuracy, group=None, tau=tau,
+                soft=True, multi_label_mode="all",
+            )
+            self.assertTrue(
+                torch.allclose(hard, _order_statistic_select(per_sample_hard, target_accuracy)),
+                msg=f"hard target_accuracy={target_accuracy}",
+            )
+            self.assertTrue(
+                torch.allclose(soft, _order_statistic_select(per_sample_soft, target_accuracy)),
+                msg=f"soft target_accuracy={target_accuracy}",
+            )
+
     def test_target_accuracy_one_matches_old_strict_min_behavior(self):
         # target_accuracy=1.0 -> k=1 -> the literal minimum, i.e. the old aggregation="min".
         bounded_model, X, y = _build_model_and_bounds()
@@ -409,6 +464,29 @@ class ResolveAccuracyTests(unittest.TestCase):
 
 
 class CalibrateTemperatureTests(unittest.TestCase):
+    def test_logsumexp_calibration_uses_logsumexp_margin(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        with torch.no_grad():
+            model[0].weight.zero_()
+            model[0].bias.copy_(torch.tensor([1.0, 0.0]))
+        bounded_model = IntervalBoundedModel(model)
+        X = torch.zeros(3, 2)
+        y = torch.tensor([[1.0, 0.0]]).expand(3, -1).clone()
+
+        temperatures = _calibrate_temperature(
+            bounded_model,
+            X,
+            X,
+            y,
+            accuracy=1.0,
+            groups=[None],
+            group_by=None,
+            context_mask=None,
+            surrogate="logsumexp",
+        )
+
+        self.assertEqual(temperatures, {None: 0.1})
+
     def test_calibrates_a_temperature_from_the_doubling_ladder(self):
         bounded_model, X, y = _build_model_and_bounds()
         accuracy = 0.6
@@ -533,8 +611,35 @@ class ComputeRashomonSetSmokeTests(unittest.TestCase):
             model, dataset, accuracy,
             batch_size=n, certificate_samples=n, n_iters=2,
             temperatures={None: forced_temperature},
+            surrogate="logsumexp",
         )
         self.assertEqual(result.temperatures, {None: forced_temperature})
+        self.assertEqual(result.surrogate, "logsumexp")
+        self.assertEqual(result.resolved_surrogate, "logsumexp")
+
+    def test_zonotope_engine_records_and_uses_logsumexp_surrogate(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        with torch.no_grad():
+            model[0].weight.zero_()
+            model[0].bias.copy_(torch.tensor([2.0, 0.0]))
+        inputs = torch.zeros(4, 2)
+        targets = torch.tensor([[1.0, 0.0]]).expand(4, -1).clone()
+        dataset = torch.utils.data.TensorDataset(inputs, targets)
+
+        result = compute_zonotope_rashomon_set(
+            model,
+            dataset,
+            rank=1,
+            n_iters=1,
+            checkpoint=1,
+            batch_size=4,
+            certificate_samples=4,
+            surrogate="logsumexp",
+        )
+
+        self.assertEqual(result.surrogate, "logsumexp")
+        self.assertEqual(result.resolved_surrogate, "logsumexp")
+        self.assertGreater(result.certificates[-1][0].min_surrogate, 0.0)
 
     def test_infeasible_hard_accuracy_terminates_without_calibration(self):
         torch.manual_seed(0)

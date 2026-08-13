@@ -18,11 +18,22 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 from provably_safe_policy_optimisation import ProvablySafePPO, Shield  # noqa: E402
 
 from projects.safe_policy_optimisation.utils import io  # noqa: E402
-from projects.safe_policy_optimisation.utils.cli import add_ppo_hyperparameter_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
+    add_architecture_args,
+    add_ppo_hyperparameter_args,
+    net_arch_from_args,
+)
+from projects.safe_policy_optimisation.utils.episode_recording import (  # noqa: E402
+    EpisodeRecorderWrapper,
+)
 from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
-from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
+    success_mode_for_env,
+    summarise_evaluation,
+)
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
+    episode_success,
     LearningCurveLogger,
     UnshieldedRewardCurveCallback,
 )
@@ -30,6 +41,7 @@ from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     EpisodeMetrics,
     aggregate_training_violations,
     aggregate_violations,
+    obs_state_id,
 )
 from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
@@ -38,64 +50,6 @@ ALGORITHM_NAME = "shielded_ppo"
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT / "projects" / "safe_policy_optimisation" / "artifacts" / "shielded_policy"
 )
-
-
-class EpisodeRecorderWrapper(gym.Wrapper):
-    """Record completed episode reward/cost/length for a Gymnasium env."""
-
-    def __init__(self, env: gym.Env, *, cost_limit: float) -> None:
-        super().__init__(env)
-        self.cost_limit = float(cost_limit)
-        self.episodes: list[dict[str, float | int | bool]] = []
-        self._episode_index = 0
-        self._reset_accumulators()
-
-    def _reset_accumulators(self) -> None:
-        self._episode_reward = 0.0
-        self._episode_cost = 0.0
-        self._episode_unsafe_state_visits = 0
-        self._episode_length = 0
-
-    def reset(self, **kwargs: Any):
-        self._reset_accumulators()
-        obs, info = self.env.reset(**kwargs)
-        initial_cost = self._state_cost(obs, dict(info))
-        self._episode_cost += initial_cost
-        self._episode_unsafe_state_visits += int(initial_cost > 0.0)
-        return obs, info
-
-    def _state_cost(self, obs: Any, info: dict[str, Any]) -> float:
-        if "cost" in info:
-            return float(info["cost"])
-        unwrapped = self.unwrapped
-        if hasattr(unwrapped, "label_fn") and hasattr(unwrapped, "cost_fn"):
-            state = int(np.asarray(obs).item())
-            return float(unwrapped.cost_fn(unwrapped.label_fn(state)))
-        return 0.0
-
-    def step(self, action: Any):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        info = dict(info)
-        cost = self._state_cost(obs, info)
-        info["cost"] = cost
-        self._episode_reward += float(reward)
-        self._episode_cost += cost
-        self._episode_length += 1
-        if terminated or truncated:
-            self.episodes.append(
-                {
-                    "episode": self._episode_index,
-                    "reward": self._episode_reward,
-                    "cost": self._episode_cost,
-                    "length": self._episode_length,
-                    "violated": self._episode_cost > self.cost_limit,
-                    "unsafe_state_visit_count": int(self._episode_unsafe_state_visits),
-                    "safe_trajectory": bool(self._episode_unsafe_state_visits == 0),
-                }
-            )
-            self._episode_index += 1
-            self._reset_accumulators()
-        return obs, reward, terminated, truncated, info
 
 
 def make_unshielded_env(
@@ -124,21 +78,41 @@ def make_unshielded_env(
     return env
 
 
+def masa_state_count(env: gym.Env) -> int:
+    """Number of discrete states, whatever the observation representation.
+
+    In the default ``"features"`` mode the observation space is a ``Box`` and no
+    longer reports ``.n``; the tabular envs keep the count in ``_n_states``.
+    """
+    n_states = getattr(env.unwrapped, "_n_states", None)
+    if n_states is not None:
+        return int(n_states)
+    if isinstance(env.observation_space, gym.spaces.Discrete):
+        return int(env.observation_space.n)
+    raise ValueError(
+        f"Cannot determine the state count for a {type(env.observation_space).__name__} "
+        "observation space without a tabular '_n_states'."
+    )
+
+
 def validate_shield_for_env(mask: np.ndarray, env: gym.Env) -> None:
-    if not isinstance(env.observation_space, gym.spaces.Discrete):
+    # The observation may be a Discrete id or a Box feature vector; either way
+    # the shield mask is indexed by the underlying integer state id.
+    if not isinstance(env.observation_space, gym.spaces.Discrete | gym.spaces.Box):
         raise ValueError(
-            "Generic shielded PPO currently requires a Discrete observation space. "
+            "Shielded PPO requires a Discrete or Box observation space. "
             f"Got {type(env.observation_space).__name__}."
         )
     if not isinstance(env.action_space, gym.spaces.Discrete):
         raise ValueError(
-            "Generic shielded PPO currently requires a Discrete action space. "
+            "Shielded PPO requires a Discrete action space. "
             f"Got {type(env.action_space).__name__}."
         )
-    if mask.shape != (int(env.observation_space.n), int(env.action_space.n)):
+    n_states = masa_state_count(env)
+    if mask.shape != (n_states, int(env.action_space.n)):
         raise ValueError(
-            "Shield shape does not match env spaces: "
-            f"shield={mask.shape}, expected={(int(env.observation_space.n), int(env.action_space.n))}."
+            "Shield shape does not match env: "
+            f"shield={mask.shape}, expected={(n_states, int(env.action_space.n))}."
         )
 
 
@@ -209,20 +183,12 @@ def evaluate_unshielded_policy(
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             action_int = int(np.asarray(action).item())
-            state = int(np.asarray(obs).item())
+            state = obs_state_id(env, obs)
             checked += 1
             unsafe += int(not bool(shield_mask[state, action_int]))
             obs, _reward, terminated, truncated, _info = env.step(action_int)
             done = bool(terminated or truncated)
     return list(env.episodes), _action_safety_row(checked, unsafe)
-
-
-def episode_success(total_reward: float, infos: list[dict[str, Any]], *, reward_threshold: float) -> bool:
-    for key in ("is_success", "success"):
-        for info in reversed(infos):
-            if key in info:
-                return bool(info[key])
-    return float(total_reward) > float(reward_threshold)
 
 
 def evaluate_unshielded_success_rate(
@@ -365,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     add_ppo_hyperparameter_args(parser)
+    add_architecture_args(parser)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--early-stop-eval-freq", type=int, default=0)
     parser.add_argument("--early-stop-eval-episodes", type=int, default=20)
@@ -391,9 +358,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("unshielded", "shielded"),
         default="unshielded",
         help=(
-            "Policy used for the final evaluation rollout. 'unshielded' executes the raw greedy "
-            "policy and audits whether its proposed actions are shield-safe; 'shielded' applies "
-            "the shield before stepping the environment."
+            "Deprecated, ignored: both the shielded and nominal/unshielded final "
+            "evaluations always run now and are stored separately (see "
+            "metrics.json['shielded']/['nominal'] and episodes_shielded.csv/"
+            "episodes_nominal.csv). Kept only so existing callers passing this "
+            "flag do not break."
         ),
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -427,11 +396,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         record_episodes=True,
     )
     validate_shield_for_env(mask, train_env)
+    # In "features" mode the observation is a Box vector; the shield is indexed
+    # by state id, so it needs the env's exact features->state inverse. In
+    # "index" mode this is the identity cast (== the shield's own default).
+    obs_to_state = train_env.unwrapped.make_obs_to_state()
     try:
         model = ProvablySafePPO(
             "MlpPolicy",
             train_env,
             shield=mask,
+            obs_to_state=obs_to_state,
             shield_seed=args.seed,
             shield_action_storage=args.shield_action_storage,
             learning_rate=args.learning_rate,
@@ -444,6 +418,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ent_coef=args.ent_coef,
             vf_coef=args.vf_coef,
             max_grad_norm=args.max_grad_norm,
+            policy_kwargs={"net_arch": net_arch_from_args(args)},
             seed=args.seed,
             device=args.device,
             verbose=1,
@@ -464,6 +439,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             reward_threshold=args.success_reward_threshold,
             shield_mask=mask,
         )
+        # Second curve for the *deployed* system (shield overrides unsafe
+        # actions). Paired with the unshielded curve above, this separates
+        # "PPO-Shield" (what you ship) from "PPO-Shield-Nominal" (the raw policy,
+        # which measures whether safety was actually internalised). Uses a
+        # distinct seed offset so the two curves are independent samples.
+        shielded_reward_curve = UnshieldedRewardCurveCallback(
+            env_factory=lambda: make_unshielded_env(
+                args.env_id,
+                env_kwargs=env_kwargs,
+                max_episode_steps=args.max_episode_steps,
+                cost_limit=args.cost_limit,
+                record_episodes=False,
+            ),
+            curve_logger=curve_logger,
+            eval_freq=curve_eval_freq,
+            eval_episodes=args.curve_eval_episodes,
+            seed=args.seed + 40_000,
+            reward_threshold=args.success_reward_threshold,
+            shield_mask=mask,
+            apply_shield=True,
+        )
         early_stop = EarlyStopOnUnshieldedSuccessCallback(
             env_id=args.env_id,
             env_kwargs=env_kwargs,
@@ -476,8 +472,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             reward_threshold=args.success_reward_threshold,
         )
         log_info(f"[{ALGORITHM_NAME}] training for {args.total_timesteps} timesteps")
-        model.learn(total_timesteps=args.total_timesteps, callback=[reward_curve, early_stop])
+        model.learn(
+            total_timesteps=args.total_timesteps,
+            callback=[reward_curve, shielded_reward_curve, early_stop],
+        )
         final_curve_evaluation = reward_curve.record_final_evaluation()
+        shielded_reward_curve.record_final_evaluation()
         training_records = list(train_env.episodes)
         training_shield_diagnostics = model.shield_diagnostics()
         model.save(run_dir / "model.zip")
@@ -485,7 +485,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         train_env.close()
         curve_logger.close()
 
-    eval_env = make_unshielded_env(
+    # Two separate env instances: EpisodeRecorderWrapper.episodes accumulates
+    # across calls (reset() only clears the per-episode accumulators), so
+    # reusing one env for both evaluations would let the nominal pass's
+    # returned episode list include the shielded pass's episodes too.
+    eval_env_shielded = make_unshielded_env(
         args.env_id,
         env_kwargs=env_kwargs,
         max_episode_steps=args.max_episode_steps,
@@ -493,31 +497,41 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         record_episodes=True,
     )
     try:
-        if args.evaluation_policy == "shielded":
-            eval_shield = Shield(mask, seed=args.seed)
-            eval_records = evaluate_shielded_policy(
-                model,
-                eval_env,
-                eval_shield,
-                episodes=args.eval_episodes,
-                seed=args.seed + 10_000,
-            )
-            eval_shield_diagnostics = eval_shield.diagnostics()
-            eval_action_safety = _action_safety_row(
-                int(eval_shield_diagnostics["checked"]),
-                int(eval_shield_diagnostics["overridden"]),
-            )
-        else:
-            eval_records, eval_action_safety = evaluate_unshielded_policy(
-                model,
-                eval_env,
-                mask,
-                episodes=args.eval_episodes,
-                seed=args.seed + 10_000,
-            )
-            eval_shield_diagnostics = None
+        eval_shield = Shield(
+            mask, obs_to_state=eval_env_shielded.unwrapped.make_obs_to_state(), seed=args.seed,
+        )
+        eval_records_shielded = evaluate_shielded_policy(
+            model,
+            eval_env_shielded,
+            eval_shield,
+            episodes=args.eval_episodes,
+            seed=args.seed + 10_000,
+        )
+        eval_shield_diagnostics = eval_shield.diagnostics()
+        eval_action_safety_shielded = _action_safety_row(
+            int(eval_shield_diagnostics["checked"]),
+            int(eval_shield_diagnostics["overridden"]),
+        )
     finally:
-        eval_env.close()
+        eval_env_shielded.close()
+
+    eval_env_nominal = make_unshielded_env(
+        args.env_id,
+        env_kwargs=env_kwargs,
+        max_episode_steps=args.max_episode_steps,
+        cost_limit=args.cost_limit,
+        record_episodes=True,
+    )
+    try:
+        eval_records_nominal, eval_action_safety_nominal = evaluate_unshielded_policy(
+            model,
+            eval_env_nominal,
+            mask,
+            episodes=args.eval_episodes,
+            seed=args.seed + 10_000,
+        )
+    finally:
+        eval_env_nominal.close()
 
     config = {
         "algorithm": ALGORITHM_NAME,
@@ -545,7 +559,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "max_grad_norm": float(args.max_grad_norm),
         },
         "eval_episodes": int(args.eval_episodes),
-        "evaluation_policy": args.evaluation_policy,
+        "evaluation_modes": ["shielded", "nominal"],
         "early_stop_eval_policy": "unshielded",
         "early_stop_eval_freq": int(args.early_stop_eval_freq),
         "early_stop_eval_episodes": int(args.early_stop_eval_episodes),
@@ -560,7 +574,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     write_json(run_dir / "config.json", config)
 
     _write_episode_csv(run_dir / "training_episodes.csv", _training_rows(training_records), include_end_timestep=True)
-    _write_episode_csv(run_dir / "episodes.csv", _episode_rows(eval_records))
+    _write_episode_csv(run_dir / "episodes_shielded.csv", _episode_rows(eval_records_shielded))
+    _write_episode_csv(run_dir / "episodes_nominal.csv", _episode_rows(eval_records_nominal))
     _write_csv_path = run_dir / "early_stop_evaluations.csv"
     _write_csv_path.parent.mkdir(parents=True, exist_ok=True)
     with _write_csv_path.open("w", newline="", encoding="utf-8") as handle:
@@ -600,26 +615,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "early_stop_triggered": bool(early_stop.stop_triggered),
         "last_early_stop_evaluation": early_stop.evaluations[-1] if early_stop.evaluations else None,
         "training": aggregate_training_violations(training_records),
-        "evaluation": aggregate_violations(_records_to_metrics(eval_records)),
-        "evaluation_policy": args.evaluation_policy,
-        "evaluation_proposed_action_safety": eval_action_safety,
+        "evaluation_shielded": aggregate_violations(_records_to_metrics(eval_records_shielded)),
+        "evaluation_nominal": aggregate_violations(_records_to_metrics(eval_records_nominal)),
+        "evaluation_modes": ["shielded", "nominal"],
+        "evaluation_proposed_action_safety_shielded": eval_action_safety_shielded,
+        "evaluation_proposed_action_safety_nominal": eval_action_safety_nominal,
         "training_shield_diagnostics": training_shield_diagnostics,
         "evaluation_shield_diagnostics": eval_shield_diagnostics,
         "learning_curves": {
             "curve_dir": str(curve_logger.curve_dir),
             "tensorboard_log_dir": str(curve_logger.tensorboard_log_dir),
             "unshielded_reward_evaluations": reward_curve.evaluations,
+            "shielded_reward_evaluations": shielded_reward_curve.evaluations,
         },
     }
     write_json(run_dir / "summary.json", summary)
     write_json(
         run_dir / "metrics.json",
-        summarise_evaluation(
-            eval_records,
-            success_reward_threshold=float(args.success_reward_threshold),
-            cost_limit=float(args.cost_limit),
-            algorithm=ALGORITHM_NAME,
-        ),
+        {
+            "shielded": summarise_evaluation(
+                eval_records_shielded,
+                success_reward_threshold=float(args.success_reward_threshold),
+                success_mode=success_mode_for_env(getattr(args, "env_id", None)),
+                cost_limit=float(args.cost_limit),
+                algorithm=ALGORITHM_NAME,
+            ),
+            "nominal": summarise_evaluation(
+                eval_records_nominal,
+                success_reward_threshold=float(args.success_reward_threshold),
+                success_mode=success_mode_for_env(getattr(args, "env_id", None)),
+                cost_limit=float(args.cost_limit),
+                algorithm=ALGORITHM_NAME,
+            ),
+        },
     )
     log_info(
         "[{algorithm}] training overrides: {overridden}/{checked} ({rate:.2%})".format(

@@ -15,17 +15,24 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from projects.safe_policy_optimisation.stages.train_discrete_shielded_policy import (  # noqa: E402
+from projects.safe_policy_optimisation.stages.train_ppo_shield import (  # noqa: E402
     EarlyStopOnUnshieldedSuccessCallback,
     _records_to_metrics,
     _resolve_curve_eval_freq,
     make_unshielded_env,
 )
 from projects.safe_policy_optimisation.utils import io  # noqa: E402
-from projects.safe_policy_optimisation.utils.cli import add_ppo_hyperparameter_args  # noqa: E402
+from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
+    add_architecture_args,
+    add_ppo_hyperparameter_args,
+    net_arch_from_args,
+)
 from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
-from projects.safe_policy_optimisation.utils.metrics import summarise_evaluation  # noqa: E402
+from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
+    success_mode_for_env,
+    summarise_evaluation,
+)
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
     LearningCurveLogger,
     UnshieldedRewardCurveCallback,
@@ -77,17 +84,29 @@ def _write_early_stop_evaluations(path: Path, rows: list[dict[str, Any]]) -> Non
 class ShieldUnsafeActionProposalCallback(BaseCallback):
     """Audit PPO's sampled exploration actions against a shield without masking them."""
 
-    def __init__(self, shield_mask: Any, curve_logger: LearningCurveLogger) -> None:
+    def __init__(
+        self,
+        shield_mask: Any,
+        curve_logger: LearningCurveLogger,
+        obs_to_state: Any = None,
+    ) -> None:
         super().__init__()
         self.shield_mask = np.asarray(shield_mask) != 0
         if self.shield_mask.ndim != 2:
             raise ValueError(f"shield_mask must be 2-D, got shape {self.shield_mask.shape}.")
         self.curve_logger = curve_logger
+        # In features mode the observation is a Box vector; decode it to the
+        # integer state id that indexes the shield. None == identity (index mode).
+        self._obs_to_state = obs_to_state
 
     def _on_step(self) -> bool:
         actions = np.asarray(self.locals.get("actions", []), dtype=np.int64).reshape(-1)
         algo = self.locals.get("self", self.model)
-        obs = np.asarray(getattr(algo, "_last_obs", []), dtype=np.int64).reshape(-1)
+        raw_obs = getattr(algo, "_last_obs", [])
+        if self._obs_to_state is not None:
+            obs = np.asarray(self._obs_to_state(raw_obs), dtype=np.int64).reshape(-1)
+        else:
+            obs = np.asarray(raw_obs, dtype=np.int64).reshape(-1)
         if actions.size == 0 or obs.size == 0:
             return True
         if obs.size == 1 and actions.size > 1:
@@ -117,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     add_ppo_hyperparameter_args(parser)
+    add_architecture_args(parser)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--shield-path",
@@ -192,6 +212,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ent_coef=args.ent_coef,
             vf_coef=args.vf_coef,
             max_grad_norm=args.max_grad_norm,
+            policy_kwargs={"net_arch": net_arch_from_args(args)},
             seed=args.seed,
             device=args.device,
             verbose=1,
@@ -225,7 +246,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         log_info(f"[{ALGORITHM_NAME}] training for {args.total_timesteps} timesteps")
         callbacks: list[BaseCallback] = [reward_curve, early_stop]
         if shield_mask is not None:
-            callbacks.append(ShieldUnsafeActionProposalCallback(shield_mask, curve_logger))
+            callbacks.append(
+                ShieldUnsafeActionProposalCallback(
+                    shield_mask, curve_logger, obs_to_state=train_env.unwrapped.make_obs_to_state()
+                )
+            )
         model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
         final_curve_evaluation = reward_curve.record_final_evaluation()
         training_records = list(train_env.episodes)
@@ -330,6 +355,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         summarise_evaluation(
             eval_records,
             success_reward_threshold=float(args.success_reward_threshold),
+            success_mode=success_mode_for_env(getattr(args, "env_id", None)),
             cost_limit=float(args.cost_limit),
             algorithm=ALGORITHM_NAME,
         ),

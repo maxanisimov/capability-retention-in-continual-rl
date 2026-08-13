@@ -210,5 +210,98 @@ class ConfigSchemaTests(unittest.TestCase):
             validate_task_mapping("t", {"env_id": "E-v0", "bogus": 1})
 
 
+class SeedAggregationTests(unittest.TestCase):
+    def _write_metrics(self, run_dir: Path, stage: str, payload: dict) -> None:
+        import json
+
+        d = run_dir / stage
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "metrics.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _single(self, success_rate: float, reward: float) -> dict:
+        return {
+            "algorithm": "shielded_ppo",
+            "eval_episodes": 2,
+            "success": {"success_rate": success_rate, "success_count": 1},
+            "reward": {"mean_total_reward": reward},
+            "safety": {"safety_rate": 1.0, "violation_count": 0},
+        }
+
+    def test_load_run_metrics_flattens_single_and_baseline(self) -> None:
+        from projects.safe_policy_optimisation.utils.metrics import load_run_metrics
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            self._write_metrics(run, "shielded_policy", self._single(0.5, 1.0))
+            self._write_metrics(
+                run,
+                "ppo_lagrangian",
+                {"cpo": self._single(0.2, -1.0), "ppo_lagrangian": self._single(0.8, 2.0)},
+            )
+            flat = load_run_metrics(run)
+        self.assertEqual(flat["shielded_policy.success.success_rate"], 0.5)
+        self.assertEqual(flat["ppo_lagrangian/cpo.success.success_rate"], 0.2)
+        self.assertEqual(flat["ppo_lagrangian/ppo_lagrangian.reward.mean_total_reward"], 2.0)
+        self.assertNotIn("shielded_policy.algorithm", flat)  # strings dropped
+
+    def test_aggregate_seed_metrics_mean_std(self) -> None:
+        from projects.safe_policy_optimisation.utils.metrics import (
+            aggregate_seed_metrics,
+            seed_metrics_rows,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            r0, r1 = root / "seed0", root / "seed1"
+            self._write_metrics(r0, "shielded_policy", self._single(0.4, 1.0))
+            self._write_metrics(r1, "shielded_policy", self._single(0.6, 3.0))
+            agg = aggregate_seed_metrics({0: r0, 1: r1})
+
+        self.assertEqual(agg["seeds"], [0, 1])
+        sr = agg["metrics"]["shielded_policy.success.success_rate"]
+        self.assertAlmostEqual(sr["mean"], 0.5)
+        self.assertEqual(sr["n"], 2)
+        self.assertAlmostEqual(sr["std"], 0.1414213562, places=6)  # sample stdev of {0.4,0.6}
+        self.assertEqual(sr["per_seed"], {"0": 0.4, "1": 0.6})
+        rows = seed_metrics_rows(agg)
+        self.assertTrue(any(row["metric"] == "shielded_policy.reward.mean_total_reward" for row in rows))
+
+    def test_aggregate_handles_single_seed(self) -> None:
+        from projects.safe_policy_optimisation.utils.metrics import aggregate_seed_metrics
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r0 = Path(tmp) / "seed0"
+            self._write_metrics(r0, "ppo_policy", self._single(1.0, 5.0))
+            agg = aggregate_seed_metrics({7: r0})
+        stat = agg["metrics"]["ppo_policy.success.success_rate"]
+        self.assertEqual(stat["n"], 1)
+        self.assertEqual(stat["std"], 0.0)
+
+
+class CorePartitionTests(unittest.TestCase):
+    def test_even_split_distributes_remainder(self) -> None:
+        from projects.safe_policy_optimisation.utils.parallel import partition_cores
+
+        groups = partition_cores(list(range(10)), 3, cores_per_group=None)
+        self.assertEqual([len(g) for g in groups], [4, 3, 3])
+        flat = [c for g in groups for c in g]
+        self.assertEqual(flat, list(range(10)))  # disjoint, contiguous, complete
+
+    def test_fixed_cores_per_group_leaves_remainder_unused(self) -> None:
+        from projects.safe_policy_optimisation.utils.parallel import partition_cores
+
+        groups = partition_cores(list(range(10)), 3, cores_per_group=3)
+        self.assertEqual(groups, [[0, 1, 2], [3, 4, 5], [6, 7, 8]])
+
+    def test_groups_are_disjoint(self) -> None:
+        from projects.safe_policy_optimisation.utils.parallel import partition_cores
+
+        groups = partition_cores(list(range(16)), 4, cores_per_group=None)
+        seen: set[int] = set()
+        for g in groups:
+            self.assertFalse(seen & set(g))
+            seen |= set(g)
+
+
 if __name__ == "__main__":
     unittest.main()

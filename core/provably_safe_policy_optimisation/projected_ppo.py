@@ -69,6 +69,7 @@ from provably_safe_policy_optimisation.policy_introspection import (
 )
 from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
 from provably_safe_policy_optimisation.projection import ActorParamBounds, ProjectionResult
+from provably_safe_policy_optimisation.regions import SafeParameterRegion
 
 ProjectionTarget = Literal["feature_actor", "all"]
 
@@ -176,6 +177,21 @@ class ProjectedPPO(PPO):
         target_params = self._resolve_projection_params()
         self.policy.optimizer.set_bounds(
             param_bounds_l, param_bounds_u, params=target_params, project_on_set=project_on_set
+        )
+
+    def set_projection_regions(
+        self,
+        regions: list[SafeParameterRegion],
+        *,
+        project_on_set: bool = True,
+    ) -> None:
+        """Attach generic safe regions on the actor subset."""
+
+        target_params = self._resolve_projection_params()
+        self.policy.optimizer.set_regions(
+            regions,
+            params=target_params,
+            project_on_set=project_on_set,
         )
 
     def project_now(self) -> ProjectionResult:

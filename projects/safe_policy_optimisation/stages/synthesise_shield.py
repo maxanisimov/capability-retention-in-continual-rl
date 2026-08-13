@@ -9,7 +9,6 @@ result under this project's artifacts directory by default.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 
@@ -38,21 +37,6 @@ def default_output_dir(env_id: str, task: str) -> Path:
     """Default shield directory inside the safe_policy_optimisation project."""
 
     return PROJECT_ROOT / "artifacts" / "shields" / environment_subdir(env_id) / task
-
-
-def _parse_json_dict(value: str | None, *, flag: str) -> dict:
-    if value is None:
-        return {}
-    parsed = json.loads(value)
-    if not isinstance(parsed, dict):
-        raise ValueError(f"{flag} must be a JSON object, got {type(parsed).__name__}.")
-    return parsed
-
-
-def _resolve_risk_threshold(constraint_kwargs: dict) -> float:
-    if "alpha" in constraint_kwargs:
-        return float(constraint_kwargs["alpha"])
-    return 0.0
 
 
 def _resolve_max_episode_steps(env_id: str, task: str, cli_value: int | None) -> int | None:
@@ -89,18 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Task-library key defining the environment instance.",
     )
     parser.add_argument("--seed", type=int, default=0, help="Seed passed to env.reset during synthesis.")
-    parser.add_argument(
-        "--constraint",
-        type=str,
-        default="PCTL",
-        help="Constraint family recorded in the saved shield metadata. Default: PCTL.",
-    )
-    parser.add_argument(
-        "--constraint-kwargs",
-        type=str,
-        default=None,
-        help='JSON constraint kwargs recorded in metadata, e.g. \'{"alpha": 0.01}\'.',
-    )
     parser.add_argument(
         "--theta",
         type=float,
@@ -160,9 +132,6 @@ def run(args: argparse.Namespace) -> Path:
         raise ValueError("--env is required for shield synthesis.")
     if args.task is None:
         raise ValueError("--task is required for shield synthesis.")
-    constraint_kwargs = _parse_json_dict(args.constraint_kwargs, flag="--constraint-kwargs")
-    args.constraint_kwargs = constraint_kwargs
-    args.risk_threshold = _resolve_risk_threshold(constraint_kwargs)
     args.max_episode_steps = _resolve_max_episode_steps(args.env, args.task, args.max_episode_steps)
 
     output_dir = args.output_dir or default_output_dir(args.env, args.task)

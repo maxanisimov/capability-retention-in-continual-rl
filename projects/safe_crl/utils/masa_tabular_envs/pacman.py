@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import numpy as np
 from gymnasium import spaces
 
-from projects.safe_crl.utils.masa_tabular_envs.base import TabularEnv
+from projects.safe_crl.utils.masa_tabular_envs.base import ObservationMode, TabularEnv
 from projects.safe_crl.utils.masa_tabular_envs.dynamics import (
     PACMAN_ACTION_MAP,
     PACMAN_DIRECTION_MAP,
@@ -76,9 +77,11 @@ class _PacmanBase(TabularEnv):
         self._init_rng(seed)
         self._state = self._start_state
         self._step_count = 0
+        self._food_collected = False
+        self._ghost_collision_seen = False
         if self.render_mode == "human":
             self.render()
-        return self._state, {}
+        return self._observe(self._state), {}
 
     def step(self, action: int):
         if not self.action_space.contains(action):
@@ -106,10 +109,40 @@ class _PacmanBase(TabularEnv):
             and food
             else 0.0
         )
+        collision = bool((agent_y, agent_x) == (ghost_y, ghost_x))
+        self._food_collected = bool(getattr(self, "_food_collected", False) or reward > 0.0)
+        self._ghost_collision_seen = bool(getattr(self, "_ghost_collision_seen", False) or collision)
         terminated = bool((agent_x, agent_y) == (self._agent_term_x, self._agent_term_y))
+        # Success = the agent's two actual goals: it ate the food and never hit
+        # the ghost. Reaching the terminal cell is deliberately NOT required --
+        # nothing rewards it, so no policy is trained towards it, and requiring
+        # it anti-correlates with policy quality (a random walk wanders into the
+        # terminal cell far more often than a converged deterministic policy,
+        # which settles into a fixed cycle once the food is gone). Both flags
+        # below are sticky, so this holds however the episode ends: by
+        # termination at the terminal cell or by TimeLimit truncation.
+        success = bool(self._food_collected and not self._ghost_collision_seen)
         if self.render_mode == "human":
             self.render()
-        return self._state, reward, terminated, False, {}
+        return self._observe(self._state), reward, terminated, False, {
+            "success": success,
+            "is_success": success,
+        }
+
+    # State id <-> (agent_y, agent_x, agent_dir, ghost_y, ghost_x, ghost_dir, food).
+    # Poses are filtered (blocked cells dropped), so re-encoding a rounded feature
+    # vector must go through the state map, not mixed-radix arithmetic.
+    def _state_components(self, state: int) -> tuple[int, ...]:
+        return tuple(int(c) for c in self._reverse_state_map[int(state)])
+
+    def _components_to_state(self, components: Sequence[int]) -> int:
+        return int(self._state_map[tuple(int(c) for c in components)])
+
+    def _component_maxima(self) -> tuple[int, ...]:
+        n_row, n_col = int(self._n_row), int(self._n_col)
+        d = int(self._n_directions)
+        # (agent_y, agent_x, agent_dir, ghost_y, ghost_x, ghost_dir, food)
+        return (n_row - 1, n_col - 1, d - 1, n_row - 1, n_col - 1, d - 1, 1)
 
     def render(self):
         return self._renderer.render()
@@ -153,6 +186,7 @@ class CustomMiniPacman(_PacmanBase):
         render_window_size: int = 512,
         pacman_hat: PacmanHat = "none",
         ghost_colors: tuple[RGBColor, ...] | None = None,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         validate_renderer_options(render_mode, render_window_size, pacman_hat)
@@ -177,6 +211,7 @@ class CustomMiniPacman(_PacmanBase):
         self.ghost_colors = ghost_colors
         self._renderer = PacmanRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
 
 class CustomPacman(_PacmanBase):
@@ -195,6 +230,7 @@ class CustomPacman(_PacmanBase):
         render_window_size: int = 512,
         pacman_hat: PacmanHat = "none",
         ghost_colors: tuple[RGBColor, ...] | None = None,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         validate_renderer_options(render_mode, render_window_size, pacman_hat)
@@ -225,6 +261,7 @@ class CustomPacman(_PacmanBase):
         self.ghost_colors = ghost_colors
         self._renderer = PacmanRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
     def _lazy_successor_distribution(self, state: int, action: int) -> tuple[list[int], np.ndarray]:
         agent_y, agent_x, agent_direction, ghost_y, ghost_x, ghost_direction, food = self._reverse_state_map[int(state)]

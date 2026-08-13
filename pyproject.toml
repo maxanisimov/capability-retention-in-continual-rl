@@ -48,6 +48,7 @@ include-package-data = true
 where = ["core", "."]
 include = [
     "abstract_gradient_training*",
+    "barrier_tools*",
     "certified_continual_learning*",
     "configs*",
     "provably_safe_policy_optimisation*",

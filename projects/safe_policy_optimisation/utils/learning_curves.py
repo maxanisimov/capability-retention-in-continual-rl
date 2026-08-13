@@ -12,7 +12,11 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 
-from projects.safe_policy_optimisation.utils.safe_rl import state_cost
+from projects.safe_policy_optimisation.utils.metrics import (
+    SUCCESS_MODE_SAFE_TRAJECTORY,
+    success_mode_for_env,
+)
+from projects.safe_policy_optimisation.utils.safe_rl import obs_state_id, state_cost
 
 EXPLORATION_FIELDS = [
     "timestep",
@@ -55,6 +59,38 @@ EVALUATION_EPISODE_FIELDS = [
 ]
 
 
+class _EvaluationChannel:
+    """One evaluation curve stream: its CSV pair, TensorBoard prefix and counters.
+
+    A run may log more than one evaluation curve for the same policy -- e.g. the
+    ``"unshielded"`` curve (raw policy, measures *intrinsic* safety) alongside a
+    ``"shielded"`` curve (the deployed system, with the shield overriding unsafe
+    actions). Each keeps its own ``eval_index`` and cumulative counters so the
+    two curves never interleave.
+    """
+
+    def __init__(self, *, curve_dir: Path, variant: str) -> None:
+        self.variant = variant
+        self.eval_index = 0
+        self.cumulative_eval_unsafe = 0
+        self.summary_path = curve_dir / f"evaluation_{variant}_summary.csv"
+        self.episodes_path = curve_dir / f"evaluation_{variant}_episodes.csv"
+        self._summary_handle = self.summary_path.open("w", newline="", encoding="utf-8")
+        self._episodes_handle = self.episodes_path.open("w", newline="", encoding="utf-8")
+        self.summary_writer = csv.DictWriter(self._summary_handle, fieldnames=EVALUATION_SUMMARY_FIELDS)
+        self.episodes_writer = csv.DictWriter(self._episodes_handle, fieldnames=EVALUATION_EPISODE_FIELDS)
+        self.summary_writer.writeheader()
+        self.episodes_writer.writeheader()
+
+    def flush(self) -> None:
+        self._summary_handle.flush()
+        self._episodes_handle.flush()
+
+    def close(self) -> None:
+        self._summary_handle.close()
+        self._episodes_handle.close()
+
+
 class LearningCurveLogger:
     """Write requested learning curves to TensorBoard and project-local CSV files."""
 
@@ -67,28 +103,31 @@ class LearningCurveLogger:
         self.writer = SummaryWriter(log_dir=str(self.tensorboard_log_dir), flush_secs=10)
         self.cumulative_unsafe = 0
         self.cumulative_checked = 0
-        self.cumulative_eval_unsafe = 0
-        self.eval_index = 0
 
         self.exploration_path = self.curve_dir / "exploration_unsafe_actions.csv"
-        self.evaluation_summary_path = self.curve_dir / "evaluation_unshielded_summary.csv"
-        self.evaluation_episodes_path = self.curve_dir / "evaluation_unshielded_episodes.csv"
-
         self._exploration_handle = self.exploration_path.open("w", newline="", encoding="utf-8")
-        self._evaluation_summary_handle = self.evaluation_summary_path.open("w", newline="", encoding="utf-8")
-        self._evaluation_episodes_handle = self.evaluation_episodes_path.open("w", newline="", encoding="utf-8")
         self._exploration_writer = csv.DictWriter(self._exploration_handle, fieldnames=EXPLORATION_FIELDS)
-        self._evaluation_summary_writer = csv.DictWriter(
-            self._evaluation_summary_handle,
-            fieldnames=EVALUATION_SUMMARY_FIELDS,
-        )
-        self._evaluation_episodes_writer = csv.DictWriter(
-            self._evaluation_episodes_handle,
-            fieldnames=EVALUATION_EPISODE_FIELDS,
-        )
         self._exploration_writer.writeheader()
-        self._evaluation_summary_writer.writeheader()
-        self._evaluation_episodes_writer.writeheader()
+
+        # The unshielded channel is created eagerly so its files exist from the
+        # start of the run, as they always have. Extra channels ("shielded") are
+        # created on first use, so runs that never log one write no empty files.
+        self._channels: dict[str, _EvaluationChannel] = {}
+        unshielded = self._channel("unshielded")
+        self.evaluation_summary_path = unshielded.summary_path
+        self.evaluation_episodes_path = unshielded.episodes_path
+
+    def _channel(self, variant: str) -> _EvaluationChannel:
+        channel = self._channels.get(variant)
+        if channel is None:
+            channel = _EvaluationChannel(curve_dir=self.curve_dir, variant=variant)
+            self._channels[variant] = channel
+        return channel
+
+    @property
+    def eval_index(self) -> int:
+        """Unshielded eval counter (kept for backwards compatibility)."""
+        return self._channel("unshielded").eval_index
 
     def log_exploration_unsafe(
         self,
@@ -135,15 +174,45 @@ class LearningCurveLogger:
     ) -> dict[str, float | int]:
         """Record total rewards from deterministic unshielded policy evaluation."""
 
-        eval_index = self.eval_index
-        self.eval_index += 1
+        return self._log_evaluation(
+            variant="unshielded", timestep=timestep, episode_rows=episode_rows
+        )
+
+    def log_shielded_evaluation(
+        self,
+        *,
+        timestep: int,
+        episode_rows: list[dict[str, Any]],
+    ) -> dict[str, float | int]:
+        """Record total rewards from deterministic *shielded* policy evaluation.
+
+        This is the deployed system: unsafe proposed actions are overridden by
+        the shield, so ``safety_rate`` should stay at 1.0 while
+        ``unsafe_proposed_action_count`` measures how often the shield had to
+        intervene.
+        """
+
+        return self._log_evaluation(
+            variant="shielded", timestep=timestep, episode_rows=episode_rows
+        )
+
+    def _log_evaluation(
+        self,
+        *,
+        variant: str,
+        timestep: int,
+        episode_rows: list[dict[str, Any]],
+    ) -> dict[str, float | int]:
+        channel = self._channel(variant)
+        eval_index = channel.eval_index
+        channel.eval_index += 1
         rewards = np.asarray([float(row["total_reward"]) for row in episode_rows], dtype=np.float64)
         success_count = sum(int(bool(row.get("success", False))) for row in episode_rows)
         safe_trajectory_count = sum(int(bool(row.get("safe_trajectory", True))) for row in episode_rows)
         unsafe_state_visits = sum(int(row.get("unsafe_state_visit_count", 0)) for row in episode_rows)
         checked = sum(int(row.get("proposed_action_checks", 0)) for row in episode_rows)
         unsafe = sum(int(row.get("unsafe_proposed_action_count", 0)) for row in episode_rows)
-        self.cumulative_eval_unsafe += unsafe
+        channel.cumulative_eval_unsafe += unsafe
         unsafe_rate = float(unsafe / checked) if checked else 0.0
         summary = {
             "eval_index": int(eval_index),
@@ -158,12 +227,11 @@ class LearningCurveLogger:
             "safety_rate": float(safe_trajectory_count / len(episode_rows)) if episode_rows else 0.0,
             "proposed_action_checks": int(checked),
             "unsafe_proposed_action_count": int(unsafe),
-            "cumulative_unsafe_proposed_action_count": int(self.cumulative_eval_unsafe),
+            "cumulative_unsafe_proposed_action_count": int(channel.cumulative_eval_unsafe),
             "unsafe_proposed_action_rate": unsafe_rate,
             "shield_alignment_rate": float(1.0 - unsafe_rate) if checked else 0.0,
         }
-        self._evaluation_summary_writer.writerow(summary)
-        self._evaluation_summary_handle.flush()
+        channel.summary_writer.writerow(summary)
         for row in episode_rows:
             episode_row = {
                 "eval_index": int(eval_index),
@@ -179,52 +247,41 @@ class LearningCurveLogger:
                 "unsafe_proposed_action_rate": float(row.get("unsafe_proposed_action_rate", 0.0)),
                 "shield_alignment_rate": float(row.get("shield_alignment_rate", 0.0)),
             }
-            self._evaluation_episodes_writer.writerow(episode_row)
-        self._evaluation_episodes_handle.flush()
+            channel.episodes_writer.writerow(episode_row)
+        channel.flush()
+        v = channel.variant
+        self.writer.add_scalar(f"evaluation/{v}_total_reward_mean", summary["mean_total_reward"], int(timestep))
+        self.writer.add_scalar(f"evaluation/{v}_total_reward_min", summary["min_total_reward"], int(timestep))
+        self.writer.add_scalar(f"evaluation/{v}_total_reward_max", summary["max_total_reward"], int(timestep))
+        self.writer.add_scalar(f"evaluation/{v}_success_rate", summary["success_rate"], int(timestep))
+        self.writer.add_scalar(f"evaluation/{v}_safety_rate", summary["safety_rate"], int(timestep))
         self.writer.add_scalar(
-            "evaluation/unshielded_total_reward_mean",
-            summary["mean_total_reward"],
-            int(timestep),
-        )
-        self.writer.add_scalar(
-            "evaluation/unshielded_total_reward_min",
-            summary["min_total_reward"],
-            int(timestep),
-        )
-        self.writer.add_scalar(
-            "evaluation/unshielded_total_reward_max",
-            summary["max_total_reward"],
-            int(timestep),
-        )
-        self.writer.add_scalar("evaluation/unshielded_success_rate", summary["success_rate"], int(timestep))
-        self.writer.add_scalar("evaluation/unshielded_safety_rate", summary["safety_rate"], int(timestep))
-        self.writer.add_scalar(
-            "evaluation/unshielded_unsafe_state_visits",
+            f"evaluation/{v}_unsafe_state_visits",
             summary["unsafe_state_visit_count"],
             int(timestep),
         )
         self.writer.add_scalar(
-            "evaluation/unshielded_proposed_action_checks",
+            f"evaluation/{v}_proposed_action_checks",
             summary["proposed_action_checks"],
             int(timestep),
         )
         self.writer.add_scalar(
-            "evaluation/unshielded_unsafe_proposed_actions",
+            f"evaluation/{v}_unsafe_proposed_actions",
             summary["unsafe_proposed_action_count"],
             int(timestep),
         )
         self.writer.add_scalar(
-            "evaluation/cumulative_unshielded_unsafe_actions",
+            f"evaluation/cumulative_{v}_unsafe_actions",
             summary["cumulative_unsafe_proposed_action_count"],
             int(timestep),
         )
         self.writer.add_scalar(
-            "evaluation/unshielded_unsafe_proposed_action_rate",
+            f"evaluation/{v}_unsafe_proposed_action_rate",
             summary["unsafe_proposed_action_rate"],
             int(timestep),
         )
         self.writer.add_scalar(
-            "evaluation/unshielded_shield_alignment_rate",
+            f"evaluation/{v}_shield_alignment_rate",
             summary["shield_alignment_rate"],
             int(timestep),
         )
@@ -235,18 +292,59 @@ class LearningCurveLogger:
         self.writer.flush()
         self.writer.close()
         self._exploration_handle.close()
-        self._evaluation_summary_handle.close()
-        self._evaluation_episodes_handle.close()
+        for channel in self._channels.values():
+            channel.close()
 
 
-def episode_success(total_reward: float, infos: list[dict[str, Any]], *, reward_threshold: float) -> bool:
-    """Determine success from environment info flags, falling back to reward threshold."""
+def episode_success(
+    total_reward: float,
+    infos: list[dict[str, Any]],
+    *,
+    reward_threshold: float,
+    success_mode: str = "reward_threshold",
+    unsafe_state_visits: int = 0,
+) -> bool:
+    """Determine success from environment info flags, falling back to reward threshold.
 
+    For avoid-only tasks (``success_mode == 'safe_trajectory'``) success instead means
+    the episode entered no unsafe zone, i.e. ``unsafe_state_visits == 0``.
+    """
+
+    if success_mode == SUCCESS_MODE_SAFE_TRAJECTORY:
+        return bool(int(unsafe_state_visits) == 0)
     for key in ("is_success", "success"):
         for info in reversed(infos):
             if key in info:
                 return bool(info[key])
     return float(total_reward) > float(reward_threshold)
+
+
+def evaluate_shielded_total_rewards(
+    model: Any,
+    env_factory: Callable[[], gym.Env],
+    *,
+    episodes: int,
+    seed: int,
+    reward_threshold: float,
+    shield_mask: np.ndarray,
+) -> list[dict[str, float | int | bool]]:
+    """Run deterministic episodes with the shield overriding unsafe actions.
+
+    Mirrors ``Shield.override``'s semantics (keep a safe proposed action, else
+    resample uniformly among the safe actions) without calling it, so that
+    evaluating a curve point does not perturb the training shield's diagnostics
+    counters. The RNG is seeded per evaluation so curve points are reproducible.
+    """
+
+    return _evaluate_total_rewards(
+        model,
+        env_factory,
+        episodes=episodes,
+        seed=seed,
+        reward_threshold=reward_threshold,
+        shield_mask=shield_mask,
+        apply_shield=True,
+    )
 
 
 def evaluate_unshielded_total_rewards(
@@ -260,7 +358,38 @@ def evaluate_unshielded_total_rewards(
 ) -> list[dict[str, float | int | bool]]:
     """Run deterministic raw-policy episodes and return per-episode total rewards."""
 
+    return _evaluate_total_rewards(
+        model,
+        env_factory,
+        episodes=episodes,
+        seed=seed,
+        reward_threshold=reward_threshold,
+        shield_mask=shield_mask,
+        apply_shield=False,
+    )
+
+
+def _evaluate_total_rewards(
+    model: Any,
+    env_factory: Callable[[], gym.Env],
+    *,
+    episodes: int,
+    seed: int,
+    reward_threshold: float,
+    shield_mask: np.ndarray | None,
+    apply_shield: bool,
+) -> list[dict[str, float | int | bool]]:
+    """Shared rollout for the shielded and unshielded evaluation curves.
+
+    ``shield_mask`` is used to *count* unsafe proposed actions in both modes;
+    with ``apply_shield`` it additionally overrides them before stepping.
+    """
+
+    if apply_shield and shield_mask is None:
+        raise ValueError("apply_shield=True requires a shield_mask.")
+    rng = np.random.default_rng(int(seed))
     env = env_factory()
+    success_mode = success_mode_for_env(getattr(getattr(env, "spec", None), "id", None))
     shield = None if shield_mask is None else np.asarray(shield_mask) != 0
     rows: list[dict[str, float | int | bool]] = []
     try:
@@ -278,9 +407,14 @@ def evaluate_unshielded_total_rewards(
                 action, _ = model.predict(obs, deterministic=True)
                 action_int = int(np.asarray(action).item())
                 if shield is not None:
-                    state = int(np.asarray(obs).item())
+                    state = obs_state_id(env, obs)
                     checked += 1
-                    unsafe += int(not bool(shield[state, action_int]))
+                    proposed_is_safe = bool(shield[state, action_int])
+                    unsafe += int(not proposed_is_safe)
+                    if apply_shield and not proposed_is_safe:
+                        safe_actions = np.flatnonzero(shield[state])
+                        if safe_actions.size:
+                            action_int = int(rng.choice(safe_actions))
                 obs, reward, terminated, truncated, info = env.step(action_int)
                 infos.append(dict(info))
                 step_cost = state_cost(env, obs, info)
@@ -298,6 +432,8 @@ def evaluate_unshielded_total_rewards(
                             total_reward,
                             infos,
                             reward_threshold=reward_threshold,
+                            success_mode=success_mode,
+                            unsafe_state_visits=unsafe_state_visits,
                         )
                     ),
                     "safe_trajectory": bool(unsafe_state_visits == 0),
@@ -314,7 +450,14 @@ def evaluate_unshielded_total_rewards(
 
 
 class UnshieldedRewardCurveCallback(BaseCallback):
-    """Evaluate and log unshielded policy reward curves at a fixed timestep cadence."""
+    """Evaluate and log policy reward curves at a fixed timestep cadence.
+
+    Despite the name (kept for backwards compatibility), this drives either
+    evaluation variant. ``apply_shield=True`` evaluates the *deployed* system --
+    the shield overrides unsafe proposed actions -- and logs to the ``shielded``
+    curve; the default evaluates the raw policy and logs to ``unshielded``.
+    Attach one instance per variant to log both curves from a single run.
+    """
 
     def __init__(
         self,
@@ -326,8 +469,11 @@ class UnshieldedRewardCurveCallback(BaseCallback):
         seed: int,
         reward_threshold: float,
         shield_mask: np.ndarray | None = None,
+        apply_shield: bool = False,
     ) -> None:
         super().__init__()
+        if apply_shield and shield_mask is None:
+            raise ValueError("apply_shield=True requires a shield_mask.")
         self.env_factory = env_factory
         self.curve_logger = curve_logger
         self.eval_freq = int(eval_freq)
@@ -335,6 +481,7 @@ class UnshieldedRewardCurveCallback(BaseCallback):
         self.seed = int(seed)
         self.reward_threshold = float(reward_threshold)
         self.shield_mask = None if shield_mask is None else np.asarray(shield_mask) != 0
+        self.apply_shield = bool(apply_shield)
         self.evaluations: list[dict[str, float | int]] = []
 
     def _logged_evaluation_at(self, timestep: int) -> dict[str, float | int] | None:
@@ -344,18 +491,21 @@ class UnshieldedRewardCurveCallback(BaseCallback):
         return None
 
     def _evaluate_and_log(self, *, timestep: int) -> dict[str, float | int]:
-        episode_rows = evaluate_unshielded_total_rewards(
+        episode_rows = _evaluate_total_rewards(
             self.model,
             self.env_factory,
             episodes=self.eval_episodes,
             seed=self.seed + int(timestep),
             reward_threshold=self.reward_threshold,
             shield_mask=self.shield_mask,
+            apply_shield=self.apply_shield,
         )
-        summary = self.curve_logger.log_unshielded_evaluation(
-            timestep=int(timestep),
-            episode_rows=episode_rows,
+        log = (
+            self.curve_logger.log_shielded_evaluation
+            if self.apply_shield
+            else self.curve_logger.log_unshielded_evaluation
         )
+        summary = log(timestep=int(timestep), episode_rows=episode_rows)
         self.evaluations.append(summary)
         return summary
 

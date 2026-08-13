@@ -14,6 +14,14 @@
 
 minipacman_default:
   env: CustomMiniPacman-v0
+  max_episode_steps: 100
   env_kwargs: null
   stochasticity:
     ghost_rand_prob: 0.0
+
+customminipacman_paper_2503_07671:
+  env: CustomMiniPacman-v0
+  max_episode_steps: 1000
+  env_kwargs: null
+  stochasticity:
+    ghost_rand_prob: 0.6

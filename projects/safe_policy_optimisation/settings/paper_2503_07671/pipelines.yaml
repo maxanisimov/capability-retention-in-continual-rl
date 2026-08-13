@@ -10,9 +10,6 @@ _defaults:
     seed: 0
     device: cpu
   shield_synthesis: &shield_synthesis
-    constraint: PCTL
-    constraint_kwargs:
-      alpha: 0.01
     init_safety_bound: 0.01
     theta: 1.0e-12
     max_vi_steps: 2000
@@ -45,15 +42,21 @@ _defaults:
     rashomon_checkpoint: 100
     rashomon_batch_size: 500
     certificate_samples: 1000
+    # Base-policy architecture; also sets the PSPO actor/critic so it
+    # matches the [64, 64] MLP used by every baseline.
+    n_hidden: 2
+    hidden_dim: 64
   early_stopping: &early_stopping
-    early_stop_eval_freq: 2048
+    early_stop_eval_freq: 0  # 0 disables mid-training early stopping (train to full total_timesteps)
     early_stop_eval_episodes: 100
     early_stop_success_rate: 1.0
     success_reward_threshold: 0.0
   evaluation: &evaluation
     eval_episodes: 100
-    shielded_evaluation_policy: shielded
-    rashomon_evaluation_policy: shielded
+    # Evaluate shield-trained policies UNSHIELDED to measure intrinsic safety
+    # (the shielded eval trivially satisfies the guarantee and hides shield-dependence).
+    shielded_evaluation_policy: unshielded
+    rashomon_evaluation_policy: unshielded
   monitoring: &monitoring
     curve_eval_freq: 2048
     curve_eval_episodes: 20
@@ -73,18 +76,16 @@ pipelines:
     runtime: *runtime
     shield_synthesis:
       <<: *shield_synthesis
-      constraint_kwargs:
-        alpha: 0.001
       init_safety_bound: 0.001
     safety:
       <<: *safety
       cost_limit: 0.001
-      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomMediaStreaming/custommediastreamingv2_paper_2503_07671/shield_q.pt
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/media_streaming/shield_q.pt
     safe_rl_baselines: *safe_rl_baselines
     training: *training
     rashomon_set:
       <<: *rashomon_set
-      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/media_streaming
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/media_streaming/rashomon_fullcov
     early_stopping:
       <<: *early_stopping
       success_reward_threshold: -0.5
@@ -102,18 +103,16 @@ pipelines:
     runtime: *runtime
     shield_synthesis:
       <<: *shield_synthesis
-      constraint_kwargs:
-        alpha: 0.05
       init_safety_bound: 0.05
     safety:
       <<: *safety
       cost_limit: 0.05
-      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomColourBombGridWorld/customcolourgridworld_paper_2503_07671/shield_q.pt
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/colour_bomb/shield_q.pt
     safe_rl_baselines: *safe_rl_baselines
     training: *training
     rashomon_set:
       <<: *rashomon_set
-      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/colour_bomb
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/colour_bomb/rashomon_fullcov
     early_stopping: *early_stopping
     evaluation: *evaluation
     monitoring: *monitoring
@@ -129,20 +128,18 @@ pipelines:
     runtime: *runtime
     shield_synthesis:
       <<: *shield_synthesis
-      constraint_kwargs:
-        alpha: 0.05
       init_safety_bound: 0.05
     safety:
       <<: *safety
       cost_limit: 0.05
-      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomColourBombGridWorld/customcolourgridworldv3_paper_2503_07671/shield_q.pt
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/colour_bomb_v2/shield_q.pt
     safe_rl_baselines: *safe_rl_baselines
     training:
       <<: *training
       total_timesteps: 100000
     rashomon_set:
       <<: *rashomon_set
-      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/colour_bomb_v2
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/colour_bomb_v2/rashomon_fullcov
     early_stopping: *early_stopping
     evaluation: *evaluation
     monitoring: *monitoring
@@ -159,14 +156,14 @@ pipelines:
     shield_synthesis: *shield_synthesis
     safety:
       <<: *safety
-      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomBridgeCrossing/custombridgecrossing_paper_2503_07671/shield_q.pt
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/bridge_crossing/shield_q.pt
     safe_rl_baselines: *safe_rl_baselines
     training:
       <<: *training
       total_timesteps: 200000
     rashomon_set:
       <<: *rashomon_set
-      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/bridge_crossing
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/bridge_crossing/rashomon_fullcov
     early_stopping: *early_stopping
     evaluation: *evaluation
     monitoring: *monitoring
@@ -183,38 +180,38 @@ pipelines:
     shield_synthesis: *shield_synthesis
     safety:
       <<: *safety
-      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomBridgeCrossing/custombridgecrossingv2_paper_2503_07671/shield_q.pt
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/bridge_crossing_v2/shield_q.pt
     safe_rl_baselines: *safe_rl_baselines
     training:
       <<: *training
       total_timesteps: 200000
     rashomon_set:
       <<: *rashomon_set
-      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/bridge_crossing_v2
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/bridge_crossing_v2/rashomon_fullcov
     early_stopping: *early_stopping
     evaluation: *evaluation
     monitoring: *monitoring
     stages: *stages
 
-  paper_2503_07671_pacman:
-    description: Main-paper Pacman experiment from arXiv:2503.07671.
+  paper_2503_07671_minipacman:
+    description: MiniPacman experiment similar to the Pacman experiment from arXiv:2503.07671.
     module: *module
-    default_task: paper_2503_07671_pacman
+    default_task: paper_2503_07671_mini_pacman
     output:
-      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/pacman
-      run_id: paper_2503_07671_pacman
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/mini_pacman
+      run_id: paper_2503_07671_mini_pacman
     runtime: *runtime
     shield_synthesis: *shield_synthesis
     safety:
       <<: *safety
-      shield_path: projects/safe_policy_optimisation/artifacts/shields/CustomPacman/custompacman_paper_2503_07671/shield_q.pt
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/mini_pacman/shield_q.pt
     safe_rl_baselines: *safe_rl_baselines
     training:
       <<: *training
       total_timesteps: 500000
     rashomon_set:
       <<: *rashomon_set
-      rashomon_dir: projects/safe_policy_optimisation/artifacts/shield_rashomon/paper_2503_07671/pacman
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/mini_pacman/rashomon_fullcov
     early_stopping: *early_stopping
     evaluation: *evaluation
     monitoring: *monitoring

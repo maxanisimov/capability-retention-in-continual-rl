@@ -19,6 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
 from projects.safe_crl.pipelines.trajectory_retention.frozenlake.core.orchestration.run_paths import (
     RL_CHOICES,
     SOURCE_MODE,
+    default_adapt_distillation_settings_file,
     default_adapt_ewc_settings_file,
     default_adapt_ppo_settings_file,
     default_adapt_rashomon_settings_file,
@@ -36,18 +37,21 @@ from projects.safe_crl.pipelines.trajectory_retention.frozenlake.core.orchestrat
 METHOD_TO_MODE = {
     "unconstrained": "downstream_unconstrained",
     "ewc": "downstream_ewc",
+    "distillation": "downstream_distillation",
     "rashomon": "downstream_rashomon",
 }
-METHOD_ORDER = ("unconstrained", "ewc", "rashomon")
+METHOD_ORDER = ("unconstrained", "ewc", "distillation", "rashomon")
 MODE_TO_CLI = {
     SOURCE_MODE: "train_source.py",
     "downstream_unconstrained": "adapt_unconstrained.py",
     "downstream_ewc": "adapt_ewc.py",
+    "downstream_distillation": "adapt_distillation.py",
     "downstream_rashomon": "adapt_rashomon.py",
 }
 MODE_TO_RUN_SUBDIR = {
     "downstream_unconstrained": "downstream_unconstrained",
     "downstream_ewc": "downstream_ewc",
+    "downstream_distillation": "downstream_distillation",
     "downstream_rashomon": "downstream_rashomon",
 }
 
@@ -67,6 +71,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--source-settings-file", type=Path, default=default_train_source_settings_file())
     parser.add_argument("--adapt-settings-file", type=Path, default=default_adapt_ppo_settings_file())
     parser.add_argument("--ewc-settings-file", type=Path, default=default_adapt_ewc_settings_file())
+    parser.add_argument("--distillation-settings-file", type=Path, default=default_adapt_distillation_settings_file())
     parser.add_argument("--rashomon-settings-file", type=Path, default=default_adapt_rashomon_settings_file())
     parser.add_argument("--outputs-root", type=Path, default=default_outputs_root())
     parser.add_argument(
@@ -81,6 +86,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ewc-lambda-override", type=float, default=None)
     parser.add_argument("--fisher-sample-size", type=int, default=10_000)
     parser.add_argument("--ewc-apply-to-critic", action="store_true")
+    parser.add_argument("--distill-lambda-override", type=float, default=None)
+    parser.add_argument("--distill-batch-size", type=int, default=None)
     parser.add_argument("--rashomon-n-iters", type=int, default=None)
     parser.add_argument("--rashomon-min-hard-spec", type=float, default=None)
     parser.add_argument("--rashomon-surrogate-aggregation", choices=["mean", "min"], default=None)
@@ -140,6 +147,12 @@ def _build_method_cmd(args: argparse.Namespace, method: str) -> list[str]:
             cmd.extend(["--ewc-lambda-override", str(args.ewc_lambda_override)])
         if args.ewc_apply_to_critic:
             cmd.append("--ewc-apply-to-critic")
+    if method == "distillation":
+        cmd.extend(["--distillation-settings-file", str(args.distillation_settings_file)])
+        if args.distill_lambda_override is not None:
+            cmd.extend(["--distill-lambda-override", str(args.distill_lambda_override)])
+        if args.distill_batch_size is not None:
+            cmd.extend(["--distill-batch-size", str(args.distill_batch_size)])
     if method == "rashomon":
         cmd.extend(["--rashomon-settings-file", str(args.rashomon_settings_file)])
         if args.rashomon_n_iters is not None:

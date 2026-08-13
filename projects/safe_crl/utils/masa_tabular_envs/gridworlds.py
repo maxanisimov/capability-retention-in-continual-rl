@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import Any, Literal
+
+from projects.safe_crl.utils.masa_tabular_envs.base import ObservationMode
 
 import numpy as np
 from gymnasium import spaces
@@ -73,7 +76,7 @@ class _MatrixGridWorld(TabularEnv):
         self._step_count = 0
         if self.render_mode == "human":
             self.render()
-        return self._state, {}
+        return self._observe(self._state), {}
 
     def step(self, action: int):
         if not self.action_space.contains(action):
@@ -82,9 +85,25 @@ class _MatrixGridWorld(TabularEnv):
         self._step_count += 1
         terminated = bool(self._state in getattr(self, "_terminal_states", []))
         reward = 1.0 if self._state in getattr(self, "_goal_states", []) else 0.0
+        success = bool(terminated and self._state in getattr(self, "_goal_states", []))
         if self.render_mode == "human":
             self.render()
-        return self._state, reward, terminated, False, {}
+        return self._observe(self._state), reward, terminated, False, {
+            "success": success,
+            "is_success": success,
+        }
+
+    # Grid state id <-> (row, col). Rectangular-safe: col is the fast axis.
+    def _state_components(self, state: int) -> tuple[int, ...]:
+        row, col = divmod(int(state), self._ncol)
+        return row, col
+
+    def _components_to_state(self, components: Sequence[int]) -> int:
+        row, col = int(components[0]), int(components[1])
+        return row * self._ncol + col
+
+    def _component_maxima(self) -> tuple[int, ...]:
+        return self._nrow - 1, self._ncol - 1
 
     def render(self):
         return self._renderer.render()
@@ -171,9 +190,14 @@ class CustomLavaCrossing(TabularEnv):
         cell = self._cell(next_state)
         reward = 1.0 if cell == "G" else 0.0
         terminated = cell in {"G", "L"}
+        success = bool(terminated and cell == "G")
         if self.render_mode == "human":
             self.render()
-        return next_state, reward, bool(terminated), False, {"prob": float(probs[next_state])}
+        return next_state, reward, bool(terminated), False, {
+            "prob": float(probs[next_state]),
+            "success": success,
+            "is_success": success,
+        }
 
     def render(self):
         ansi = "\n".join(
@@ -322,6 +346,7 @@ class CustomBridgeCrossing(_MatrixGridWorld):
         lava_states: list[int] | None = None,
         render_mode: RenderMode | None = None,
         render_window_size: int = 512,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         self._grid_size = validate_positive_int("grid_size", grid_size)
@@ -357,6 +382,7 @@ class CustomBridgeCrossing(_MatrixGridWorld):
         validate_bridge_renderer_options(self.render_mode, self.render_window_size)
         self._renderer = BridgeCrossingRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
 
 class CustomBridgeCrossingV2(CustomBridgeCrossing):
@@ -370,6 +396,7 @@ class CustomBridgeCrossingV2(CustomBridgeCrossing):
         lava_states: list[int] | None = None,
         render_mode: RenderMode | None = None,
         render_window_size: int = 512,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         grid = _grid(grid_size)
         default_lava = list(grid[8:12, 2:16].flatten()) + [int(grid[11, 1])]
@@ -381,6 +408,7 @@ class CustomBridgeCrossingV2(CustomBridgeCrossing):
             lava_states=default_lava if lava_states is None else lava_states,
             render_mode=render_mode,
             render_window_size=render_window_size,
+            observation_mode=observation_mode,
         )
 
 
@@ -397,6 +425,7 @@ class CustomColourGridWorld(_MatrixGridWorld):
         purple_state: int = 4,
         render_mode: RenderMode | None = None,
         render_window_size: int = 512,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         self._grid_size = validate_positive_int("grid_size", grid_size)
@@ -444,6 +473,7 @@ class CustomColourGridWorld(_MatrixGridWorld):
         validate_colour_grid_renderer_options(self.render_mode, self.render_window_size)
         self._renderer = ColourGridWorldRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
 
 class CustomColourBombGridWorld(_MatrixGridWorld):
@@ -464,6 +494,7 @@ class CustomColourBombGridWorld(_MatrixGridWorld):
         medic_states: list[int] | None = None,
         render_mode: RenderMode | None = None,
         render_window_size: int = 512,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         self._grid_size = validate_positive_int("grid_size", grid_size)
@@ -533,6 +564,7 @@ class CustomColourBombGridWorld(_MatrixGridWorld):
         validate_colour_bomb_renderer_options(self.render_mode, self.render_window_size)
         self._renderer = ColourBombGridWorldRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
 
 class CustomColourBombGridWorldV2(CustomColourBombGridWorld):
@@ -542,6 +574,7 @@ class CustomColourBombGridWorldV2(CustomColourBombGridWorld):
         slip_prob: float = 0.1,
         render_mode: RenderMode | None = None,
         render_window_size: int = 512,
+        observation_mode: ObservationMode = "features",
         **overrides: Any,
     ) -> None:
         defaults = _colour_bomb_v2_defaults()
@@ -551,6 +584,7 @@ class CustomColourBombGridWorldV2(CustomColourBombGridWorld):
             grid_size=15,
             render_mode=render_mode,
             render_window_size=render_window_size,
+            observation_mode=observation_mode,
             **defaults,
         )
         self._medic_states = as_int_list(defaults["medic_states"])
@@ -568,6 +602,8 @@ class CustomColourBombGridWorldV2(CustomColourBombGridWorld):
         self._add_goal_restart_transitions()
         for state in self._medic_states:
             self._label_dict[state].add("medic")
+        self._goal_reached_once = False
+        self._unsafe_seen = False
 
     def _add_goal_restart_transitions(self) -> None:
         for state in self._goal_states:
@@ -577,8 +613,28 @@ class CustomColourBombGridWorldV2(CustomColourBombGridWorld):
                 self._transition_matrix[:, state, action] = probs
 
     def step(self, action: int):
+        # Use self._state (always the integer state id) rather than the returned
+        # observation, which is a feature vector in "features" mode.
         obs, reward, _terminated, truncated, info = super().step(action)
+        self._goal_reached_once = bool(
+            getattr(self, "_goal_reached_once", False) or self._state in self._goal_states
+        )
+        self._unsafe_seen = bool(
+            getattr(self, "_unsafe_seen", False) or self.cost_fn(self.label_fn(self._state)) > 0.0
+        )
+        success = bool(self._goal_reached_once and not self._unsafe_seen)
+        info = {
+            **info,
+            "success": success,
+            "is_success": success,
+        }
         return obs, reward, False, truncated, info
+
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        obs, info = super().reset(seed=seed, options=options)
+        self._goal_reached_once = bool(self._state in self._goal_states)
+        self._unsafe_seen = bool(self.cost_fn(self.label_fn(self._state)) > 0.0)
+        return obs, info
 
 
 class CustomColourBombGridWorldV3(CustomColourBombGridWorldV2):
@@ -589,6 +645,7 @@ class CustomColourBombGridWorldV3(CustomColourBombGridWorldV2):
         n_coloured_zones: int = 5,
         render_mode: RenderMode | None = None,
         render_window_size: int = 512,
+        observation_mode: ObservationMode = "features",
         **overrides: Any,
     ) -> None:
         base = _colour_bomb_v2_defaults()
@@ -659,11 +716,28 @@ class CustomColourBombGridWorldV3(CustomColourBombGridWorldV2):
         self.np_random = None
         self._state = None
         self._step_count = 0
+        self._goal_reached_once = False
+        self._unsafe_seen = False
         self.render_mode = render_mode
         self.render_window_size = int(render_window_size)
         validate_colour_bomb_renderer_options(self.render_mode, self.render_window_size)
         self._renderer = ColourBombGridWorldRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
+
+    # State id also carries a colour zone: state = zone*grid_area + (row*ncol+col).
+    def _state_components(self, state: int) -> tuple[int, ...]:
+        grid_area = self._grid_size**2
+        zone, cell = divmod(int(state), grid_area)
+        row, col = divmod(cell, self._ncol)
+        return zone, row, col
+
+    def _components_to_state(self, components: Sequence[int]) -> int:
+        zone, row, col = int(components[0]), int(components[1]), int(components[2])
+        return zone * (self._grid_size**2) + row * self._ncol + col
+
+    def _component_maxima(self) -> tuple[int, ...]:
+        return self._n_coloured_zones - 1, self._nrow - 1, self._ncol - 1
 
 
 def _colour_bomb_v2_defaults() -> dict[str, list[int] | int]:

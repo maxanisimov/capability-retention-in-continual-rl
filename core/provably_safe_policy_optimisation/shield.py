@@ -19,6 +19,7 @@ This module is independent of how a shield was synthesised; users supply a finis
 
 from __future__ import annotations
 
+import time
 import warnings
 from typing import Any, Callable, Literal
 
@@ -117,6 +118,7 @@ class Shield:
         if states.shape != actions.shape:
             raise ValueError(f"states and actions must have the same shape; got {states.shape} vs {actions.shape}.")
 
+        started = time.perf_counter()
         out = actions.copy()
         for i, (s, a) in enumerate(zip(states, actions)):
             self._n_checked += 1
@@ -137,6 +139,7 @@ class Shield:
                 continue
             out[i] = int(safe[rng.integers(safe.size)])
             self._n_overridden += 1
+        self._record_latency(time.perf_counter() - started, int(states.size))
         return out
 
     # --- diagnostics -------------------------------------------------------
@@ -144,10 +147,43 @@ class Shield:
         self._n_checked = 0
         self._n_overridden = 0
         self._n_no_safe_state = 0
+        self._n_override_calls = 0
+        self._override_seconds_total = 0.0
+        self._override_seconds_max_call = 0.0
+        self._max_call_actions = 0
+
+    def _record_latency(self, elapsed: float, n_actions: int) -> None:
+        self._n_override_calls += 1
+        self._override_seconds_total += float(elapsed)
+        if elapsed > self._override_seconds_max_call:
+            self._override_seconds_max_call = float(elapsed)
+            self._max_call_actions = int(n_actions)
 
     @property
     def intervention_rate(self) -> float:
         return (self._n_overridden / self._n_checked) if self._n_checked else 0.0
+
+    def latency_diagnostics(self) -> dict[str, float]:
+        """Wall-clock cost of running the shield.
+
+        ``override`` is called once per *step* but may carry several actions
+        (one per vectorised env during training, exactly one during
+        evaluation), so per-call figures are not comparable across those two
+        settings. ``mean_seconds_per_action`` normalises by action count and is
+        the figure to quote as "the latency cost of using the shield".
+        """
+        calls = int(self._n_override_calls)
+        actions = int(self._n_checked)
+        total = float(self._override_seconds_total)
+        return {
+            "override_calls": calls,
+            "actions_checked": actions,
+            "total_seconds": total,
+            "mean_seconds_per_call": (total / calls) if calls else 0.0,
+            "mean_seconds_per_action": (total / actions) if actions else 0.0,
+            "max_call_seconds": float(self._override_seconds_max_call),
+            "max_call_actions": int(self._max_call_actions),
+        }
 
     def diagnostics(self) -> dict[str, float]:
         return {
@@ -155,6 +191,7 @@ class Shield:
             "overridden": int(self._n_overridden),
             "no_safe_state": int(self._n_no_safe_state),
             "intervention_rate": self.intervention_rate,
+            "latency": self.latency_diagnostics(),
         }
 
 

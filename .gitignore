@@ -3,6 +3,25 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Reorganised local research and generated outputs
+projects/safe_crl/archive/
+projects/safe_crl/notebooks/
+projects/safe_crl/notes/
+projects/safe_policy_optimisation/docs/pspo_precomputed/
+aaai_figures/
+
+projects/**/outputs*/
+projects/**/results*/
+projects/**/paper_figures/
+projects/**/trained_multi_policies/
+projects/**/tensorboard/
+**/events.out.tfevents.*
+
+*.npy
+*.npz
+*.pth
+*.ckpt
+
 # C extensions
 *.so
 

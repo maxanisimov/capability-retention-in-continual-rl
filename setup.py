@@ -1,6 +1,5 @@
 from setuptools import find_packages, setup
 
-
 setup(
     name="capability-retention-in-continual-rl",
     version="0.1.0",
@@ -11,6 +10,7 @@ setup(
         where="core",
         include=[
             "abstract_gradient_training*",
+            "barrier_tools*",
             "certified_continual_learning*",
             "configs*",
             "provably_safe_policy_optimisation*",

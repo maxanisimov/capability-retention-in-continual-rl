@@ -19,6 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
 from projects.safe_crl.pipelines._shared.multi_seed_launcher import dedupe_preserve_order, resolve_core_pool, run_seed_pool
 from projects.safe_crl.pipelines.trajectory_retention.lunarlander.core.orchestration.run_paths import (
     RL_CHOICES,
+    default_adapt_distillation_settings_file,
     default_adapt_ewc_settings_file,
     default_adapt_ppo_settings_file,
     default_adapt_rashomon_settings_file,
@@ -30,7 +31,7 @@ from projects.safe_crl.pipelines.trajectory_retention.lunarlander.core.orchestra
 )
 
 
-METHOD_CHOICES = ("unconstrained", "ewc", "rashomon", "rashomon_expanded", "rashomon_plus")
+METHOD_CHOICES = ("unconstrained", "ewc", "distillation", "rashomon", "rashomon_expanded", "rashomon_plus")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -46,6 +47,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-settings-file", type=Path, default=default_task_settings_file())
     parser.add_argument("--adapt-settings-file", type=Path, default=default_adapt_ppo_settings_file())
     parser.add_argument("--ewc-settings-file", type=Path, default=default_adapt_ewc_settings_file())
+    parser.add_argument("--distillation-settings-file", type=Path, default=default_adapt_distillation_settings_file())
     parser.add_argument("--rashomon-settings-file", type=Path, default=default_adapt_rashomon_settings_file())
     parser.add_argument("--outputs-root", type=Path, default=default_outputs_root())
     parser.add_argument("--source-run-root", type=Path, default=None)
@@ -58,6 +60,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ewc-lambda-override", type=float, default=None)
     parser.add_argument("--fisher-sample-size", type=int, default=10_000)
     parser.add_argument("--ewc-apply-to-critic", action="store_true")
+    parser.add_argument("--distill-lambda-override", type=float, default=None)
+    parser.add_argument("--distill-batch-size", type=int, default=None)
+    parser.add_argument("--demo-rollouts", type=int, default=None)
     parser.add_argument("--rashomon-n-iters", type=int, default=None)
     parser.add_argument("--second-rashomon-n-iters", type=int, default=None)
     parser.add_argument("--rashomon-min-hard-spec", type=float, default=None)
@@ -91,6 +96,7 @@ def build_cmd(args: argparse.Namespace, seed: int) -> list[str]:
         "--task-settings-file", str(args.task_settings_file),
         "--adapt-settings-file", str(args.adapt_settings_file),
         "--ewc-settings-file", str(args.ewc_settings_file),
+        "--distillation-settings-file", str(args.distillation_settings_file),
         "--rashomon-settings-file", str(args.rashomon_settings_file),
         "--outputs-root", str(args.outputs_root),
         "--resume-policy", args.resume_policy,
@@ -106,6 +112,12 @@ def build_cmd(args: argparse.Namespace, seed: int) -> list[str]:
     cmd.extend(["--fisher-sample-size", str(args.fisher_sample_size)])
     if args.ewc_apply_to_critic:
         cmd.append("--ewc-apply-to-critic")
+    if args.distill_lambda_override is not None:
+        cmd.extend(["--distill-lambda-override", str(args.distill_lambda_override)])
+    if args.distill_batch_size is not None:
+        cmd.extend(["--distill-batch-size", str(args.distill_batch_size)])
+    if args.demo_rollouts is not None:
+        cmd.extend(["--demo-rollouts", str(args.demo_rollouts)])
     if args.rashomon_n_iters is not None:
         cmd.extend(["--rashomon-n-iters", str(args.rashomon_n_iters)])
     if args.second_rashomon_n_iters is not None:

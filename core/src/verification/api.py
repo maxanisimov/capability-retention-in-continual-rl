@@ -172,6 +172,8 @@ def verify_point(
     soft: bool = False,
     tau: float = 0.1,
     context_mask: torch.Tensor | None = None,
+    mode: str = "any",
+    surrogate: verify.SurrogateForm = "auto",
 ) -> VerificationResult:
     """
     Certify that argmax(model(x')) is in the admissible set for every x' in [x_l, x_u]
@@ -204,6 +206,11 @@ def verify_point(
             argmax-style margin; as `tau -> infinity`, it flattens toward uniform.
         context_mask (torch.Tensor, optional): Optional mask applied to the logits
             interval before certification.
+        mode (str, optional): ``"any"`` certifies that at least one admissible
+            action can be the argmax. ``"all"`` certifies every admissible logit
+            above every inadmissible logit.
+        surrogate (str, optional): ``"auto"`` preserves the historical soft
+            margin for the selected mode; ``"logsumexp"`` uses the LSE margin.
 
     Returns:
         VerificationResult: Per-sample certification result.
@@ -221,13 +228,14 @@ def verify_point(
     mask = admissible.as_multi_hot(x_l.shape[0], logits.device).float()
 
     certified = verify.bound_multi_label_accuracy(
-        logits, mask, lower=lower, aggregation="none",
+        logits, mask, lower=lower, aggregation="none", mode=mode,
     ).bool()
 
     margin = None
     if soft:
         margin = verify.bound_multi_label_accuracy_margin(
-            logits, mask, tau=tau, lower=lower, aggregation="none",
+            logits, mask, tau=tau, lower=lower, aggregation="none", mode=mode,
+            surrogate=surrogate,
         )
 
     logits_l, logits_u = logits
@@ -251,6 +259,8 @@ def verify_dataset(
     soft: bool = False,
     tau: float = 0.1,
     context_mask: torch.Tensor | None = None,
+    mode: str = "any",
+    surrogate: verify.SurrogateForm = "auto",
     batch_size: int | None = None,
 ) -> VerificationResult:
     """
@@ -280,6 +290,8 @@ def verify_dataset(
         soft (bool, optional): See `verify_point`.
         tau (float, optional): See `verify_point`.
         context_mask (torch.Tensor, optional): See `verify_point`.
+        mode (str, optional): See `verify_point`.
+        surrogate (str, optional): See `verify_point`.
         batch_size (int, optional): If given, verify in chunks of this size instead of
             all at once, to bound peak memory on large datasets.
 
@@ -299,7 +311,7 @@ def verify_dataset(
         return verify_point(
             bounded_model, admissible,
             x_l=X_l, x_u=X_u, lower=lower, soft=soft,
-            tau=tau, context_mask=context_mask,
+            tau=tau, context_mask=context_mask, mode=mode, surrogate=surrogate,
         )
 
     chunks = []
@@ -315,7 +327,7 @@ def verify_dataset(
                 bounded_model, chunk_admissible,
                 x_l=X_l[start:end], x_u=X_u[start:end],
                 lower=lower, soft=soft, tau=tau,
-                context_mask=context_mask,
+                context_mask=context_mask, mode=mode, surrogate=surrogate,
             )
         )
     return VerificationResult(

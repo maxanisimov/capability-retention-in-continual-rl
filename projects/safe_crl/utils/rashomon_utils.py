@@ -577,8 +577,23 @@ def plot_param_bounds_per_checkpoint(
     num_checkpoints_to_plot: int = 5,
     n_rows: int = 1,
     figsize: tuple[float, float] | None = None,
+    axis_labels: list[str] | None = None,
+    title: str | None = None,
+    region_label: str = "Rashomon set",
 ):
-    """Plot 2D/3D Rashomon sets per checkpoint for 2 or 3 selected parameters."""
+    """Plot 2D/3D Rashomon sets per checkpoint for 2 or 3 selected parameters.
+
+    ``region_label`` sets the legend/box label for the plotted set(s).
+
+    ``axis_labels`` overrides the per-axis labels (one entry per selected
+    parameter); ``title`` overrides the figure suptitle. Both default to labels
+    derived from ``param_indices``.
+    """
+    if axis_labels is not None and len(axis_labels) != len(param_indices):
+        raise ValueError(
+            f"axis_labels must provide one label per parameter index: "
+            f"expected {len(param_indices)}, got {len(axis_labels)}.",
+        )
     n_params = len(param_indices)
     if n_params not in (2, 3):
         raise ValueError("plot_param_bounds_per_checkpoint expects 2 or 3 parameter indices.")
@@ -633,7 +648,8 @@ def plot_param_bounds_per_checkpoint(
         )
 
     fig.suptitle(
-        "Rashomon set across checkpoints\n"
+        title if title is not None
+        else "Rashomon set across checkpoints\n"
         + ", ".join([f"param{i + 1}={param_indices[i]}" for i in range(n_params)]),
         fontsize=13,
         y=1.03,
@@ -671,7 +687,7 @@ def plot_param_bounds_per_checkpoint(
                 facecolor="tab:blue",
                 linewidth=1.5,
                 alpha=0.2,
-                label="Rashomon set" if i == 0 else None,
+                label=region_label if i == 0 else None,
             )
             ax.add_patch(rect)
 
@@ -682,9 +698,9 @@ def plot_param_bounds_per_checkpoint(
             ax.set_title(f"checkpoint #{ckpt_label}", fontsize=9)
 
             if i // n_cols == n_rows - 1:
-                ax.set_xlabel(f"param1 {param_indices[0]}", fontsize=10)
+                ax.set_xlabel(axis_labels[0] if axis_labels else f"param1 {param_indices[0]}", fontsize=10)
             if i % n_cols == 0:
-                ax.set_ylabel(f"param2 {param_indices[1]}", fontsize=10)
+                ax.set_ylabel(axis_labels[1] if axis_labels else f"param2 {param_indices[1]}", fontsize=10)
 
         else:
             xb = param_bounds_to_plot[0][i]
@@ -721,13 +737,13 @@ def plot_param_bounds_per_checkpoint(
             ax.set_ylim(mins[1] - pads[1], maxs[1] + pads[1])
             ax.set_zlim(mins[2] - pads[2], maxs[2] + pads[2])
             ax.set_title(f"checkpoint #{ckpt_label}", fontsize=9)
-            ax.set_xlabel(f"param1 {param_indices[0]}", fontsize=9)
-            ax.set_ylabel(f"param2 {param_indices[1]}", fontsize=9)
-            ax.set_zlabel(f"param3 {param_indices[2]}", fontsize=9, labelpad=4)
+            ax.set_xlabel(axis_labels[0] if axis_labels else f"param1 {param_indices[0]}", fontsize=9)
+            ax.set_ylabel(axis_labels[1] if axis_labels else f"param2 {param_indices[1]}", fontsize=9)
+            ax.set_zlabel(axis_labels[2] if axis_labels else f"param3 {param_indices[2]}", fontsize=9, labelpad=4)
             ax.tick_params(axis="z", pad=1)
             ax.set_box_aspect((1, 1, 1))  # keep 3D box compact and balanced
 
-    legend_handles = [Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label="Rashomon set")]
+    legend_handles = [Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.2, label=region_label)]
     if scatter_points is not None:
         for scatter_point_info in scatter_points:
             if 'label' in scatter_point_info and scatter_point_info['label'] is not None:

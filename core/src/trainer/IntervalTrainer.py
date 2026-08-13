@@ -225,6 +225,8 @@ class IntervalTrainer(BaseTrainer):
         self.bounds = result.bounded_models
         self.certificates = result.certificates
         self.temperatures = result.temperatures
+        self.surrogate = result.surrogate
+        self.resolved_surrogate = result.resolved_surrogate
         # we are now in any of the rashomon sets, but we'll use the last which should be the biggest
         # (but maybe not the best)
         self._last_projection = len(result.bounded_models) - 1

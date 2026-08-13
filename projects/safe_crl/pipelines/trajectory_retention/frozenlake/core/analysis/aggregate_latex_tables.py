@@ -19,6 +19,7 @@ POLICY_ORDER = [
     "source",
     "downstream_unconstrained",
     "downstream_ewc",
+    "downstream_distillation",
     "downstream_rashomon",
 ]
 
@@ -27,6 +28,7 @@ POLICY_RENAME = {
     "source": "Source",
     "downstream_unconstrained": "Unconstrained",
     "downstream_ewc": "EWC",
+    "downstream_distillation": "Distillation",
     "downstream_rashomon": "Rashomon",
 }
 

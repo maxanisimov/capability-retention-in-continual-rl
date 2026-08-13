@@ -1,0 +1,9 @@
+# Task library for the full CustomPacman family pipeline.
+# See CustomBridgeCrossing/settings/tasks/tasks.yaml for the shared schema.
+
+custompacman_paper_2503_07671:
+  env: CustomPacman-v0
+  max_episode_steps: 1000
+  env_kwargs: null
+  stochasticity:
+    ghost_rand_prob: 0.6

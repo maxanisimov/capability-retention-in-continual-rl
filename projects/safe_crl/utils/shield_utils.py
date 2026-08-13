@@ -64,7 +64,6 @@ def synthesise_shield(
     cost_fn: CostFn,
     *,
     shield_type: ShieldType = "deterministic",
-    risk_threshold: float = 0.0,
     theta: float = 1e-10,
     max_vi_steps: int = 1000,
     unsafe_cost_threshold: float = 0.5,
@@ -88,11 +87,11 @@ def synthesise_shield(
         shield_type: ``"deterministic"`` returns the almost-sure shield. An
             action is allowed only if every possible successor remains in the
             winning set. ``"probabilistic"`` estimates eventual unsafe
-            reachability risk by value iteration and allows actions with
-            conservative risk at most ``risk_threshold``.
-        risk_threshold: Maximum eventual unsafe reachability risk allowed for a
-            probabilistic shield.
-        theta: Value-iteration convergence tolerance for probabilistic shields.
+            reachability risk by value iteration and allows only the action(s)
+            achieving the minimum risk in each state (within ``theta``), i.e.
+            the safest-policy shield.
+        theta: Value-iteration convergence tolerance for probabilistic shields;
+            also the tolerance used to break ties among safest actions.
         max_vi_steps: Maximum value-iteration steps for probabilistic shields.
         unsafe_cost_threshold: Cost threshold separating safe and unsafe states.
         use_masa_helper: Prefer MASA's ``build_successor_states_matrix`` when
@@ -111,8 +110,6 @@ def synthesise_shield(
     _require_gymnasium()
     if shield_type not in {"deterministic", "probabilistic"}:
         raise ValueError("shield_type must be either 'deterministic' or 'probabilistic'.")
-    if not 0.0 <= risk_threshold <= 1.0:
-        raise ValueError(f"risk_threshold must be in [0, 1], got {risk_threshold}.")
     if theta <= 0:
         raise ValueError(f"theta must be positive, got {theta}.")
     if max_vi_steps <= 0:
@@ -155,8 +152,7 @@ def synthesise_shield(
             max_steps=max_vi_steps,
             unsafe_cost_threshold=unsafe_cost_threshold,
         )
-        shield = (action_risk <= risk_threshold + theta).astype(int)
-        shield[np.setdiff1d(np.arange(n_states), safe_states), :] = 0
+        shield = _safest_actions_mask(action_risk, safe_states, n_states, theta)
         info = ShieldSynthesisInfo(
             successor_states_matrix=successor_states_matrix,
             probabilities=probabilities,
@@ -197,11 +193,9 @@ def synthesise_probabilistic_shield(
     transition_matrix_fn: TransitionMatrixFn,
     label_fn: LabelFn,
     cost_fn: CostFn,
-    *,
-    risk_threshold: float,
     **kwargs: Any,
 ) -> np.ndarray | tuple[np.ndarray, ShieldSynthesisInfo]:
-    """Convenience wrapper for risk-thresholded probabilistic shield synthesis."""
+    """Convenience wrapper for safest-policy probabilistic shield synthesis."""
 
     return synthesise_shield(
         env,
@@ -209,7 +203,6 @@ def synthesise_probabilistic_shield(
         label_fn,
         cost_fn,
         shield_type="probabilistic",
-        risk_threshold=risk_threshold,
         **kwargs,
     )
 
@@ -220,7 +213,6 @@ def synthesise_shield_from_successor_dict(
     cost_fn: CostFn,
     *,
     shield_type: ShieldType = "deterministic",
-    risk_threshold: float = 0.0,
     theta: float = 1e-10,
     max_vi_steps: int = 1000,
     unsafe_cost_threshold: float = 0.5,
@@ -244,8 +236,6 @@ def synthesise_shield_from_successor_dict(
     _require_gymnasium()
     if shield_type not in {"deterministic", "probabilistic"}:
         raise ValueError("shield_type must be either 'deterministic' or 'probabilistic'.")
-    if not 0.0 <= risk_threshold <= 1.0:
-        raise ValueError(f"risk_threshold must be in [0, 1], got {risk_threshold}.")
 
     unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
     if not isinstance(unwrapped.action_space, spaces.Discrete):
@@ -300,8 +290,7 @@ def synthesise_shield_from_successor_dict(
             max_steps=max_vi_steps,
             unsafe_cost_threshold=unsafe_cost_threshold,
         )
-        shield = (action_risk <= risk_threshold + theta).astype(int)
-        shield[np.setdiff1d(np.arange(n_states), safe_states), :] = 0
+        shield = _safest_actions_mask(action_risk, safe_states, n_states, theta)
         info = ShieldSynthesisInfo(
             successor_states_matrix=successor_states_matrix,
             probabilities=probabilities,
@@ -530,6 +519,20 @@ def _almost_sure_safe_set(
             changed = True
 
     return sorted(winning_set)
+
+
+def _safest_actions_mask(
+    action_risk: np.ndarray,
+    safe_states: np.ndarray,
+    n_states: int,
+    theta: float,
+) -> np.ndarray:
+    """Allow only the action(s) achieving the minimum eventual-unsafe risk in
+    each state (within ``theta``), i.e. the safest-policy shield."""
+    best_risk = action_risk.min(axis=1, keepdims=True)
+    mask = (action_risk <= best_risk + theta).astype(int)
+    mask[np.setdiff1d(np.arange(n_states), safe_states), :] = 0
+    return mask
 
 
 def _deterministic_shield(

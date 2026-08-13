@@ -142,6 +142,34 @@ class VerifyPointTests(unittest.TestCase):
         )
         self.assertTrue(torch.equal(result.margin, expected_margin))
 
+    def test_logsumexp_surrogate_is_forwarded(self):
+        model = _build_model()
+        bounded_model = build_bounded_model(model, "IBP")
+        x = torch.randn(4, 3)
+        admissible = AdmissibleSet(n_classes=4, valid_indices=[0, 1])
+
+        result = verify_point(
+            bounded_model,
+            admissible,
+            x=x,
+            soft=True,
+            tau=0.2,
+            surrogate="logsumexp",
+        )
+
+        logits = IntervalTensor(*bounded_model.bound_forward(x, x))
+        mask = torch.zeros(4, 4)
+        mask[:, [0, 1]] = 1.0
+        expected_margin = verify.bound_multi_label_accuracy_margin(
+            logits,
+            mask,
+            tau=0.2,
+            lower=True,
+            aggregation="none",
+            surrogate="logsumexp",
+        )
+        self.assertTrue(torch.equal(result.margin, expected_margin))
+
     def test_only_one_of_x_l_x_u_raises(self):
         model = _build_model()
         bounded_model = build_bounded_model(model, "IBP")

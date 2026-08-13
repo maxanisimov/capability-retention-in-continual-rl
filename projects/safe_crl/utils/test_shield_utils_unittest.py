@@ -38,7 +38,7 @@ class ShieldUtilsTests(unittest.TestCase):
         )
         self.assertTrue(np.array_equal(shield, expected))
 
-    def test_probabilistic_shield_thresholds_eventual_unsafe_risk(self) -> None:
+    def test_probabilistic_shield_allows_only_safest_actions(self) -> None:
         env = _TinyShieldEnv()
 
         shield, info = synthesise_shield(
@@ -47,14 +47,13 @@ class ShieldUtilsTests(unittest.TestCase):
             _label_fn,
             _cost_fn,
             shield_type="probabilistic",
-            risk_threshold=0.25,
             use_masa_helper=False,
             return_info=True,
         )
 
         expected = np.array(
             [
-                [1, 1, 1],
+                [1, 0, 1],
                 [1, 1, 1],
                 [0, 0, 0],
             ],
@@ -85,7 +84,6 @@ class ShieldUtilsTests(unittest.TestCase):
             _label_fn,
             _cost_fn,
             shield_type="probabilistic",
-            risk_threshold=0.25,
             use_masa_helper=True,
             return_info=True,
         )
@@ -95,7 +93,6 @@ class ShieldUtilsTests(unittest.TestCase):
             _label_fn,
             _cost_fn,
             shield_type="probabilistic",
-            risk_threshold=0.25,
             use_masa_helper=False,
             return_info=True,
         )

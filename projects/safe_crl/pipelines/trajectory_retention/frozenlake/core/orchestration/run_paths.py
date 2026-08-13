@@ -11,13 +11,20 @@ LEGACY_SOURCE_POLICY_SUBDIR = "source"
 RL_CHOICES = ("ppo",)
 
 SOURCE_MODE = "source"
-DOWNSTREAM_MODES = ("downstream_unconstrained", "downstream_ewc", "downstream_rashomon")
+DOWNSTREAM_DISTILLATION_MODE = "downstream_distillation"
+DOWNSTREAM_MODES = (
+    "downstream_unconstrained",
+    "downstream_ewc",
+    DOWNSTREAM_DISTILLATION_MODE,
+    "downstream_rashomon",
+)
 ALL_MODES = (SOURCE_MODE, *DOWNSTREAM_MODES)
 
 MODE_TO_DEFAULT_RUN_SUBDIR = {
     SOURCE_MODE: NOADAPT_POLICY_SUBDIR,
     "downstream_unconstrained": "downstream_unconstrained",
     "downstream_ewc": "downstream_ewc",
+    DOWNSTREAM_DISTILLATION_MODE: "downstream_distillation",
     "downstream_rashomon": "downstream_rashomon",
 }
 
@@ -25,6 +32,13 @@ MODE_TO_REQUIRED_ARTIFACTS = {
     SOURCE_MODE: ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml"),
     "downstream_unconstrained": ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml"),
     "downstream_ewc": ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml", "ewc_state.pt"),
+    DOWNSTREAM_DISTILLATION_MODE: (
+        "actor.pt",
+        "critic.pt",
+        "training_data.pt",
+        "run_summary.yaml",
+        "source_demo_dataset.pt",
+    ),
     "downstream_rashomon": (
         "actor.pt",
         "critic.pt",
@@ -99,6 +113,10 @@ def default_adapt_ppo_settings_file() -> Path:
 
 def default_adapt_ewc_settings_file() -> Path:
     return settings_root() / "adaptation" / "ewc.yaml"
+
+
+def default_adapt_distillation_settings_file() -> Path:
+    return settings_root() / "adaptation" / "distillation.yaml"
 
 
 def default_adapt_rashomon_settings_file() -> Path:

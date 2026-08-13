@@ -10,6 +10,12 @@ Public API
   parameters each step.
 * :class:`ProjectedDQN` / :class:`ProjectedPPO` -- SB3 DQN/PPO subclasses that
   wire ``ProjectedAdam`` in and attach caller-supplied bounds.
+* :class:`AdaptiveSafePPO` -- shielded PPO that verifies each policy update and
+  computes a Rashomon set on demand (around the last safe iterate) only when a
+  candidate update is unsafe.
+* :class:`AdaptiveSafePPOV2` -- shielded PPO that projects each update onto the
+  current certified region and recomputes that region only after active
+  projection.
 * :func:`projection_target_parameter_names` -- resolve the ordered parameter
   names a ``ProjectedPPO`` would project (to align bounds).
 * :func:`project_to_interval_union` / :func:`validate_and_prepare_param_interval_bounds`
@@ -26,6 +32,12 @@ from provably_safe_policy_optimisation.projection import (
     project_to_interval_union,
     validate_and_prepare_param_interval_bounds,
 )
+from provably_safe_policy_optimisation.regions import (
+    OrthotopeRegion,
+    SafeParameterRegion,
+    ZonotopeRegion,
+    project_to_region_union,
+)
 from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
 from provably_safe_policy_optimisation.policy_introspection import (
     extract_feature_actor_parameters_and_network,
@@ -37,6 +49,8 @@ from provably_safe_policy_optimisation.shield import RegionShield, Shield, as_sh
 
 # SB3-dependent training classes (optional: only if stable-baselines3 installed).
 try:
+    from provably_safe_policy_optimisation.adaptive_safe_ppo import AdaptiveSafePPO
+    from provably_safe_policy_optimisation.adaptive_safe_ppo_v2 import AdaptiveSafePPOV2
     from provably_safe_policy_optimisation.projected_dqn import ProjectedDQN
     from provably_safe_policy_optimisation.projected_ppo import (
         ProjectedPPO,
@@ -45,6 +59,8 @@ try:
     from provably_safe_policy_optimisation.provably_safe_dqn import ProvablySafeDQN
     from provably_safe_policy_optimisation.provably_safe_ppo import ProvablySafePPO
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    AdaptiveSafePPO = None
+    AdaptiveSafePPOV2 = None
     ProjectedDQN = None
     ProjectedPPO = None
     projection_target_parameter_names = None
@@ -53,6 +69,8 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
 
 __all__ = [
     "ActorParamBounds",
+    "AdaptiveSafePPO",
+    "AdaptiveSafePPOV2",
     "ProjectedAdam",
     "ProjectedDQN",
     "ProjectedPPO",
@@ -60,11 +78,15 @@ __all__ = [
     "ProvablySafeDQN",
     "ProvablySafePPO",
     "RegionShield",
+    "OrthotopeRegion",
+    "SafeParameterRegion",
     "SafeInitReport",
     "Shield",
+    "ZonotopeRegion",
     "as_shield",
     "extract_feature_actor_parameters_and_network",
     "project_to_interval_union",
+    "project_to_region_union",
     "projection_target_parameter_names",
     "resolve_feature_actor_names_for_policy",
     "resolve_policy",
