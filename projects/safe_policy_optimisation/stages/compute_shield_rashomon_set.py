@@ -13,21 +13,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 import numpy as np
 import torch
 import torch.nn as nn
+from provably_safe_policy_optimisation.regions import zonotope_rank_default
 from torch.utils.data import DataLoader, TensorDataset
 
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
-from projects.safe_policy_optimisation.utils.shield import (  # noqa: E402
+from projects.safe_policy_optimisation.utils.io import write_json
+from projects.safe_policy_optimisation.utils.log import log_info
+from projects.safe_policy_optimisation.utils.shield import (
     load_shield_mask as _load_shield_mask,
 )
-from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT / "projects" / "safe_policy_optimisation" / "artifacts" / "shield_rashomon"
@@ -157,45 +155,164 @@ def safe_action_bc_loss(logits: torch.Tensor, safe_actions: torch.Tensor) -> tor
 
 
 def safe_action_margins(
-    logits: torch.Tensor, safe_actions: torch.Tensor
+    logits: torch.Tensor, safe_actions: torch.Tensor, *, mode: str = "any"
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-state ``best safe logit - best unsafe logit``.
+    """Per-state safe-vs-unsafe logit margin.
 
-    Positive means the greedy action is shield-safe; the magnitude is how much
-    the parameters can move before it stops being so. Returns the margins plus a
-    mask of the rows that actually have an unsafe action to compete with (rows
-    where every action is safe are unconstrained and are excluded).
+    ``mode="any"`` is the historical criterion:
+    ``best safe logit - best unsafe logit``. ``mode="all"`` is stricter:
+    ``worst safe logit - best unsafe logit``. Returns the margins plus a mask of
+    rows that have an unsafe action to compete with; rows where every action is
+    safe are unconstrained and excluded.
     """
 
+    if mode not in {"any", "all"}:
+        raise ValueError(f"Unknown BC margin mode: {mode!r}. Expected 'any' or 'all'.")
     allowed = safe_actions.bool()
     neg = torch.finfo(logits.dtype).min
-    best_safe = logits.masked_fill(~allowed, neg).max(dim=1).values
+    pos = torch.finfo(logits.dtype).max
+    if mode == "any":
+        safe_logit = logits.masked_fill(~allowed, neg).max(dim=1).values
+    else:
+        safe_logit = logits.masked_fill(~allowed, pos).min(dim=1).values
     best_unsafe = logits.masked_fill(allowed, neg).max(dim=1).values
     contested = (~allowed).any(dim=1)
-    return best_safe - best_unsafe, contested
+    return safe_logit - best_unsafe, contested
 
 
 def safe_action_margin_loss(
-    logits: torch.Tensor, safe_actions: torch.Tensor, *, target_margin: float
+    logits: torch.Tensor, safe_actions: torch.Tensor, *, target_margin: float, mode: str = "any"
 ) -> torch.Tensor:
     """Hinge pushing every contested state to at least ``target_margin``."""
 
-    margins, contested = safe_action_margins(logits, safe_actions)
+    margins, contested = safe_action_margins(logits, safe_actions, mode=mode)
     if not bool(contested.any()):
         return logits.new_zeros(())
     return torch.relu(float(target_margin) - margins[contested]).mean()
 
 
+def safe_action_logit_interval_analysis_from_bounds(
+    logits_l: torch.Tensor,
+    logits_u: torch.Tensor,
+    safe_actions: torch.Tensor,
+) -> dict[str, Any]:
+    """Summarise safe-action preservation from output logit intervals.
+
+    Two related but different quantities are reported:
+
+    * ``safe_vs_unsafe_*``: every safe action whose lower logit bound is above
+      every unsafe action's upper logit bound. This is the sound surrogate
+      guarantee used by ``multi_label_mode="all"``. States with no unsafe
+      action make this condition vacuously true for every safe action.
+    * ``possible_argmax_*``: every safe action whose upper logit bound is not
+      below another action's lower bound, meaning interval bounds do not rule
+      out that action being greedy for some member of the Rashomon set.
+    """
+
+    if logits_l.shape != logits_u.shape:
+        raise ValueError("Logit lower/upper bounds must have the same shape.")
+    if logits_l.shape != safe_actions.shape:
+        raise ValueError(
+            f"Logit bounds and safe action mask must have the same shape, got "
+            f"{tuple(logits_l.shape)} and {tuple(safe_actions.shape)}."
+        )
+
+    safe_mask = safe_actions.bool()
+    safe_counts = safe_mask.sum(dim=1)
+    valid_rows = safe_counts > 0
+    if not bool(valid_rows.all().item()):
+        raise ValueError("Safe-action analysis expects every row to have at least one safe action.")
+    n_rows, n_actions = safe_mask.shape
+
+    safe_vs_unsafe = torch.zeros_like(safe_mask)
+    possible_argmax = torch.zeros_like(safe_mask)
+    for action_idx in range(int(n_actions)):
+        other_actions = torch.ones(n_actions, dtype=torch.bool, device=safe_mask.device)
+        other_actions[action_idx] = False
+
+        unsafe_mask = ~safe_mask
+        unsafe_mask[:, action_idx] = False
+        has_unsafe = unsafe_mask.any(dim=1)
+        worst_unsafe_upper = logits_u.masked_fill(~unsafe_mask, float("-inf")).max(dim=1).values
+        safe_vs_unsafe[:, action_idx] = safe_mask[:, action_idx] & (
+            ~has_unsafe | (logits_l[:, action_idx] >= worst_unsafe_upper)
+        )
+
+        best_other_lower = logits_l[:, other_actions].max(dim=1).values
+        possible_argmax[:, action_idx] = safe_mask[:, action_idx] & (
+            logits_u[:, action_idx] >= best_other_lower
+        )
+
+    total_safe_actions = int(safe_counts.sum().item())
+    safe_vs_unsafe_counts = safe_vs_unsafe.sum(dim=1)
+    possible_argmax_counts = possible_argmax.sum(dim=1)
+    safe_vs_unsafe_pct = safe_vs_unsafe_counts.float() / safe_counts.float() * 100.0
+    possible_argmax_pct = possible_argmax_counts.float() / safe_counts.float() * 100.0
+
+    breakdown: dict[str, Any] = {}
+    unique_counts, count_frequencies = torch.unique(safe_counts, return_counts=True)
+    for safe_count, frequency in zip(unique_counts.tolist(), count_frequencies.tolist()):
+        mask = safe_counts == int(safe_count)
+        breakdown[str(int(safe_count))] = {
+            "states": int(frequency),
+            "safe_actions": int(safe_mask[mask].sum().item()),
+            "safe_vs_unsafe_count": int(safe_vs_unsafe[mask].sum().item()),
+            "safe_vs_unsafe_per_state_mean_pct": float(safe_vs_unsafe_pct[mask].mean().item()),
+            "possible_argmax_count": int(possible_argmax[mask].sum().item()),
+            "possible_argmax_per_state_mean_pct": float(possible_argmax_pct[mask].mean().item()),
+        }
+
+    return {
+        "states_with_safe_actions": int(n_rows),
+        "n_actions": int(n_actions),
+        "total_safe_state_actions": total_safe_actions,
+        "safe_action_count_distribution": {
+            str(int(k)): int(v) for k, v in zip(unique_counts.tolist(), count_frequencies.tolist())
+        },
+        "safe_vs_unsafe_count": int(safe_vs_unsafe.sum().item()),
+        "safe_vs_unsafe_micro_pct": float(safe_vs_unsafe.sum().float().item() / total_safe_actions * 100.0),
+        "safe_vs_unsafe_per_state_mean_pct": float(safe_vs_unsafe_pct.mean().item()),
+        "safe_vs_unsafe_per_state_min_pct": float(safe_vs_unsafe_pct.min().item()),
+        "safe_vs_unsafe_per_state_max_pct": float(safe_vs_unsafe_pct.max().item()),
+        "possible_argmax_count": int(possible_argmax.sum().item()),
+        "possible_argmax_micro_pct": float(possible_argmax.sum().float().item() / total_safe_actions * 100.0),
+        "possible_argmax_per_state_mean_pct": float(possible_argmax_pct.mean().item()),
+        "possible_argmax_per_state_min_pct": float(possible_argmax_pct.min().item()),
+        "possible_argmax_per_state_max_pct": float(possible_argmax_pct.max().item()),
+        "breakdown_by_safe_action_count": breakdown,
+    }
+
+
+@torch.no_grad()
+def safe_action_logit_interval_analysis(
+    bounded_model: Any,
+    dataset: dict[str, torch.Tensor],
+    *,
+    device: str | torch.device,
+) -> dict[str, Any]:
+    """Run ``bound_forward`` and summarise safe-action logit interval metrics."""
+
+    device_t = torch.device(device)
+    states = dataset["state"].to(device_t)
+    safe_actions = dataset["actions"].to(device_t)
+    logits_l, logits_u = bounded_model.bound_forward(states, states)
+    return safe_action_logit_interval_analysis_from_bounds(
+        logits_l.detach().cpu(),
+        logits_u.detach().cpu(),
+        safe_actions.detach().cpu(),
+    )
+
+
 @torch.no_grad()
 def minimum_safe_action_margin(
-    model: nn.Module, dataset: dict[str, torch.Tensor], *, device: str | torch.device
+    model: nn.Module, dataset: dict[str, torch.Tensor], *, device: str | torch.device, mode: str = "any"
 ) -> float:
     """Worst-case per-state safety margin over the whole dataset."""
 
     device_t = torch.device(device)
     model.eval()
     logits = model(dataset["state"].to(device_t))
-    margins, contested = safe_action_margins(logits, dataset["actions"].to(device_t))
+    margins, contested = safe_action_margins(logits, dataset["actions"].to(device_t), mode=mode)
     if not bool(contested.any()):
         return float("inf")
     return float(margins[contested].min().item())
@@ -214,6 +331,7 @@ def fit_base_policy(
     linear_init_margin: float = 10.0,
     target_margin: float = 10.0,
     margin_loss_weight: float = 1.0,
+    margin_mode: str = "any",
 ) -> dict[str, Any]:
     """Fit the base policy until every state has a safety margin of ``target_margin``.
 
@@ -227,6 +345,8 @@ def fit_base_policy(
     """
 
     torch.manual_seed(int(seed))
+    if margin_mode not in {"any", "all"}:
+        raise ValueError(f"Unknown BC margin mode: {margin_mode!r}. Expected 'any' or 'all'.")
     device_t = torch.device(device)
     model.to(device_t)
     used_direct_init = False
@@ -238,7 +358,12 @@ def fit_base_policy(
         )
 
     initial_accuracy = allowed_action_accuracy(model, dataset, device=device_t)
-    initial_margin = minimum_safe_action_margin(model, dataset, device=device_t)
+    initial_any_margin = minimum_safe_action_margin(model, dataset, device=device_t, mode="any")
+    initial_all_margin = minimum_safe_action_margin(model, dataset, device=device_t, mode="all")
+    initial_margin = initial_any_margin if margin_mode == "any" else initial_all_margin
+    final_any_margin = initial_any_margin
+    final_all_margin = initial_all_margin
+    final_margin = initial_margin
     if initial_accuracy >= 1.0 and initial_margin >= float(target_margin):
         return {
             "initial_accuracy": initial_accuracy,
@@ -248,7 +373,12 @@ def fit_base_policy(
             "used_direct_linear_init": used_direct_init,
             "initial_min_margin": initial_margin,
             "final_min_margin": initial_margin,
+            "initial_min_any_margin": initial_any_margin,
+            "final_min_any_margin": initial_any_margin,
+            "initial_min_all_margin": initial_all_margin,
+            "final_min_all_margin": initial_all_margin,
             "target_margin": float(target_margin),
+            "bc_margin_mode": margin_mode,
         }
 
     tensor_dataset = TensorDataset(dataset["state"], dataset["actions"])
@@ -270,14 +400,16 @@ def fit_base_policy(
             loss = safe_action_bc_loss(logits, safe_actions)
             if float(margin_loss_weight) > 0.0:
                 loss = loss + float(margin_loss_weight) * safe_action_margin_loss(
-                    logits, safe_actions, target_margin=target_margin
+                    logits, safe_actions, target_margin=target_margin, mode=margin_mode
                 )
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
         epochs_run = epoch
         final_accuracy = allowed_action_accuracy(model, dataset, device=device_t)
-        final_margin = minimum_safe_action_margin(model, dataset, device=device_t)
+        final_any_margin = minimum_safe_action_margin(model, dataset, device=device_t, mode="any")
+        final_all_margin = minimum_safe_action_margin(model, dataset, device=device_t, mode="all")
+        final_margin = final_any_margin if margin_mode == "any" else final_all_margin
         if final_accuracy >= 1.0 and final_margin >= float(target_margin):
             break
 
@@ -291,7 +423,12 @@ def fit_base_policy(
         "used_direct_linear_init": used_direct_init,
         "initial_min_margin": initial_margin,
         "final_min_margin": final_margin,
+        "initial_min_any_margin": initial_any_margin,
+        "final_min_any_margin": final_any_margin,
+        "initial_min_all_margin": initial_all_margin,
+        "final_min_all_margin": final_all_margin,
         "target_margin": float(target_margin),
+        "bc_margin_mode": margin_mode,
     }
 
 
@@ -302,11 +439,21 @@ def calibrate_inverse_temperature(
     inverse_temp_start: int,
     inverse_temp_max: int,
     device: str | torch.device,
+    multi_label_mode: str = "any",
+    surrogate: str = "auto",
 ) -> tuple[int, float, float]:
-    """Find the first inverse temperature whose valid-action mass clears the threshold."""
+    """Find the first inverse temperature whose selected Rashomon surrogate is feasible."""
 
     if inverse_temp_start > inverse_temp_max:
         raise ValueError("--inverse-temp-start must be <= --inverse-temp-max.")
+    if multi_label_mode not in {"any", "all"}:
+        raise ValueError(
+            f"Unknown Rashomon multi-label mode: {multi_label_mode!r}. Expected 'any' or 'all'."
+        )
+    from src.IntervalTensor import IntervalTensor
+    from src.verification import verify
+
+    resolved_surrogate = verify.resolve_surrogate_form(multi_label_mode, surrogate)
     device_t = torch.device(device)
     states = dataset["state"].to(device_t)
     masks = dataset["actions"].to(device_t)
@@ -318,12 +465,33 @@ def calibrate_inverse_temperature(
     with torch.no_grad():
         logits = model(states)
         min_valid_mass = float("-inf")
+        min_margin = float("-inf")
         for inverse_temp in range(int(inverse_temp_start), int(inverse_temp_max) + 1):
-            probs = torch.softmax(logits * inverse_temp, dim=1)
-            valid_mass = (probs * masks).sum(dim=1)
-            min_valid_mass = float(valid_mass.min().item())
-            if min_valid_mass >= threshold:
-                return int(inverse_temp), float(min_valid_mass), float(threshold)
+            if resolved_surrogate == "probability":
+                probs = torch.softmax(logits * inverse_temp, dim=1)
+                valid_mass = (probs * masks).sum(dim=1)
+                min_valid_mass = float(valid_mass.min().item())
+                if min_valid_mass >= threshold:
+                    return int(inverse_temp), float(min_valid_mass), float(threshold)
+            else:
+                tau = 1.0 / float(inverse_temp)
+                margins = verify.bound_multi_label_accuracy_margin(
+                    IntervalTensor(logits, logits),
+                    masks,
+                    tau=tau,
+                    lower=True,
+                    aggregation="none",
+                    mode=multi_label_mode,
+                    surrogate=surrogate,
+                )
+                min_margin = float(margins.min().item())
+                if min_margin > 0.0:
+                    return int(inverse_temp), float(min_margin), 0.0
+    if resolved_surrogate == "logsumexp":
+        raise ValueError(
+            "Could not calibrate inverse temperature for LogSumExp Rashomon surrogate: "
+            f"min_margin={min_margin:.6f}."
+        )
     raise ValueError(
         "Could not calibrate inverse temperature for Rashomon surrogate: "
         f"min_valid_mass={min_valid_mass:.6f}, threshold={threshold:.6f}.",
@@ -343,6 +511,8 @@ def compute_rashomon_bounds(
     growth_method: str = "IBP",
     growth_method_kwargs: dict[str, Any] | None = None,
     certification_method: str = "IBP",
+    multi_label_mode: str = "any",
+    surrogate: str = "auto",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], object, dict[str, Any]]:
     """Run IntervalTrainer and select a 100%-certified Rashomon box.
 
@@ -383,6 +553,8 @@ def compute_rashomon_bounds(
         growth_method=growth_method,
         growth_method_kwargs=growth_method_kwargs,
         certification_method=certification_method,
+        multi_label_mode=multi_label_mode,
+        surrogate=surrogate,
     )
     cert_values = [
         min((certificate.min_hard_acc for certificate in certificates), default=float("-inf"))
@@ -401,8 +573,67 @@ def compute_rashomon_bounds(
         "selected_certificate": float(cert_values[selected_idx]),
         "all_certificates": [float(value) for value in cert_values],
         "temperatures": {str(key): float(value) for key, value in interval_trainer.temperatures.items()},
+        "multi_label_mode": multi_label_mode,
+        "surrogate": interval_trainer.surrogate,
+        "resolved_surrogate": interval_trainer.resolved_surrogate,
     }
     return param_bounds_l, param_bounds_u, bounded_model, metadata
+
+
+def compute_zonotope_region(
+    model: nn.Sequential,
+    dataset: dict[str, torch.Tensor],
+    *,
+    seed: int,
+    n_iters: int,
+    checkpoint: int,
+    batch_size: int,
+    certificate_samples: int,
+    inverse_temp: int,
+    rank: int | None,
+    multi_label_mode: str = "any",
+    surrogate: str = "auto",
+) -> tuple[object, object, dict[str, Any]]:
+    """Run the zonotope safe-region engine and select a certified region."""
+
+    from src.zonotope_rashomon import (
+        compute_zonotope_rashomon_set,
+        select_certified_zonotope,
+    )
+
+    tensor_dataset = TensorDataset(dataset["state"], dataset["actions"])
+    result = compute_zonotope_rashomon_set(
+        model,
+        tensor_dataset,
+        rank=rank,
+        n_iters=int(n_iters),
+        checkpoint=int(checkpoint),
+        batch_size=int(batch_size),
+        certificate_samples=int(certificate_samples),
+        inverse_temp=int(inverse_temp),
+        seed=int(seed),
+        multi_label_mode=multi_label_mode,  # type: ignore[arg-type]
+        surrogate=surrogate,  # type: ignore[arg-type]
+    )
+    selected = select_certified_zonotope(result)
+    cert_values = [
+        min((certificate.min_hard_acc for certificate in certificates), default=float("-inf"))
+        for certificates in result.certificates
+    ]
+    if selected is None:
+        raise ValueError(f"No zonotope Rashomon certificate reached 1.0; certificates={cert_values}.")
+    region, selected_idx = selected
+    metadata = {
+        "selected_certificate_index": int(selected_idx),
+        "selected_certificate": float(cert_values[selected_idx]),
+        "all_certificates": [float(value) for value in cert_values],
+        "temperatures": {str(key): float(value) for key, value in result.temperatures.items()},
+        "multi_label_mode": multi_label_mode,
+        "surrogate": result.surrogate,
+        "resolved_surrogate": result.resolved_surrogate,
+        "zonotope_rank": int(region.generators.shape[0]),
+    }
+    return region, result, metadata
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -465,13 +696,56 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Weight of the margin hinge added to the BC loss. 0 disables it.",
     )
+    parser.add_argument(
+        "--bc-margin-mode",
+        choices=("any", "all"),
+        default="any",
+        help=(
+            "BC safety-margin semantics. 'any' requires the best safe action "
+            "logit to beat the best unsafe action logit. 'all' requires every "
+            "safe action logit to beat the best unsafe action logit."
+        ),
+    )
     parser.add_argument("--no-direct-linear-init", action="store_true")
     parser.add_argument("--rashomon-n-iters", type=int, default=2000)
     parser.add_argument("--rashomon-checkpoint", type=int, default=100)
     parser.add_argument("--rashomon-batch-size", type=int, default=500)
     parser.add_argument("--certificate-samples", type=int, default=1000)
+    parser.add_argument(
+        "--safe-region-shape",
+        choices=("orthotope", "zonotope"),
+        default="orthotope",
+        help="Safe parameter-region geometry to compute for PSPO.",
+    )
+    parser.add_argument(
+        "--zonotope-rank",
+        type=int,
+        default=None,
+        help="Number of learned zonotope generator directions. Defaults to min(16, n_actor_params).",
+    )
     parser.add_argument("--inverse-temp-start", type=int, default=1)
     parser.add_argument("--inverse-temp-max", type=int, default=1000)
+    parser.add_argument(
+        "--rashomon-multi-label-mode",
+        choices=("any", "all"),
+        default="any",
+        help=(
+            "Admissible-set certificate/surrogate used for the Rashomon safe "
+            "parameter set. 'any' requires at least one safe action logit to "
+            "beat every unsafe action logit. 'all' requires every safe action "
+            "logit to beat every unsafe action logit."
+        ),
+    )
+    parser.add_argument(
+        "--rashomon-surrogate",
+        choices=("auto", "logsumexp"),
+        default="auto",
+        help=(
+            "Soft constraint used while growing the Rashomon region. 'auto' "
+            "preserves the historical formula for each multi-label mode; "
+            "'logsumexp' uses the temperature-scaled LSE margin for both modes."
+        ),
+    )
     parser.add_argument(
         "--growth-method",
         choices=("IBP", "CROWN", "alpha-CROWN"),
@@ -514,7 +788,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if not args.env_id:
             raise ValueError("--state-representation features requires --env-id.")
         from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs
-        from projects.safe_policy_optimisation.utils.safe_crl_bridge import make_custom_masa_env
+        from projects.safe_policy_optimisation.utils.safe_crl_bridge import (
+            make_custom_masa_env,
+        )
 
         feature_env = make_custom_masa_env(
             args.env_id,
@@ -544,11 +820,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         linear_init_margin=args.linear_init_margin,
         target_margin=args.bc_target_margin,
         margin_loss_weight=args.bc_margin_loss_weight,
+        margin_mode=args.bc_margin_mode,
     )
     if not bc_metrics["reached_target"]:
         raise RuntimeError(
             "Base policy did not reach 100% allowed-action accuracy at the required "
-            f"safety margin: final_accuracy={bc_metrics['final_accuracy']:.6f}, "
+            f"{bc_metrics['bc_margin_mode']!r} safety margin: "
+            f"final_accuracy={bc_metrics['final_accuracy']:.6f}, "
             f"final_min_margin={bc_metrics['final_min_margin']:.4f} "
             f"(target {bc_metrics['target_margin']:.4f}). Raise --bc-max-epochs or "
             "--bc-lr, or lower --bc-target-margin.",
@@ -560,25 +838,56 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         inverse_temp_start=args.inverse_temp_start,
         inverse_temp_max=args.inverse_temp_max,
         device=args.device,
+        multi_label_mode=args.rashomon_multi_label_mode,
+        surrogate=args.rashomon_surrogate,
     )
-    param_bounds_l, param_bounds_u, bounded_model, rashomon_metadata = compute_rashomon_bounds(
-        model,
-        dataset,
-        seed=args.seed,
-        n_iters=args.rashomon_n_iters,
-        checkpoint=args.rashomon_checkpoint,
-        batch_size=args.rashomon_batch_size,
-        certificate_samples=args.certificate_samples,
-        inverse_temp=inverse_temp,
-        growth_method=args.growth_method,
-        certification_method=args.certification_method,
+    n_params = sum(param.numel() for param in model.parameters())
+    zonotope_rank = (
+        zonotope_rank_default(n_params)
+        if args.zonotope_rank is None
+        else int(args.zonotope_rank)
     )
+    if args.safe_region_shape == "orthotope":
+        param_bounds_l, param_bounds_u, bounded_model, rashomon_metadata = compute_rashomon_bounds(
+            model,
+            dataset,
+            seed=args.seed,
+            n_iters=args.rashomon_n_iters,
+            checkpoint=args.rashomon_checkpoint,
+            batch_size=args.rashomon_batch_size,
+            certificate_samples=args.certificate_samples,
+            inverse_temp=inverse_temp,
+            growth_method=args.growth_method,
+            certification_method=args.certification_method,
+            multi_label_mode=args.rashomon_multi_label_mode,
+            surrogate=args.rashomon_surrogate,
+        )
+        zonotope_region = None
+        zonotope_result = None
+    else:
+        zonotope_region, zonotope_result, rashomon_metadata = compute_zonotope_region(
+            model,
+            dataset,
+            seed=args.seed,
+            n_iters=args.rashomon_n_iters,
+            checkpoint=args.rashomon_checkpoint,
+            batch_size=args.rashomon_batch_size,
+            certificate_samples=args.certificate_samples,
+            inverse_temp=inverse_temp,
+            rank=zonotope_rank,
+            multi_label_mode=args.rashomon_multi_label_mode,
+            surrogate=args.rashomon_surrogate,
+        )
+        param_bounds_l = None
+        param_bounds_u = None
+        bounded_model = None
 
     safe_dataset_path = run_dir / "safe_behaviour_dataset.pt"
     rashomon_dataset_path = run_dir / "rashomon_dataset.pt"
     base_policy_path = run_dir / "base_policy.pt"
     bounded_model_path = run_dir / "rashomon_bounded_model.pt"
     bounds_path = run_dir / "rashomon_param_bounds.pt"
+    zonotope_path = run_dir / "rashomon_zonotope_region.pt"
 
     torch.save(dataset, safe_dataset_path)
     torch.save(dataset, rashomon_dataset_path)
@@ -600,8 +909,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         base_policy_path,
     )
-    torch.save(bounded_model, bounded_model_path)
-    torch.save({"param_bounds_l": param_bounds_l, "param_bounds_u": param_bounds_u}, bounds_path)
+    if args.safe_region_shape == "orthotope":
+        torch.save(bounded_model, bounded_model_path)
+        torch.save({"param_bounds_l": param_bounds_l, "param_bounds_u": param_bounds_u}, bounds_path)
+        safe_action_logit_analysis = safe_action_logit_interval_analysis(
+            bounded_model,
+            dataset,
+            device=args.device,
+        )
+    else:
+        torch.save(zonotope_result, bounded_model_path)
+        torch.save(
+            {
+                "safe_region_shape": "zonotope",
+                "center_params": zonotope_region.center_params,
+                "generators": zonotope_region.generators,
+                "coefficient_l": zonotope_region.coefficient_l,
+                "coefficient_u": zonotope_region.coefficient_u,
+                "param_shapes": zonotope_region.param_shapes,
+                "zonotope_rank": int(zonotope_region.generators.shape[0]),
+            },
+            zonotope_path,
+        )
+        safe_action_logit_analysis = {
+            "status": "not_computed",
+            "reason": "safe-action logit interval analysis is currently implemented for orthotope bounded models.",
+        }
 
     summary = {
         "shield_path": str(args.shield_path),
@@ -611,18 +944,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "base_policy_path": str(base_policy_path),
         "rashomon_bounded_model_path": str(bounded_model_path),
         "rashomon_param_bounds_path": str(bounds_path),
+        "rashomon_zonotope_region_path": str(zonotope_path),
         "dataset": dataset_metadata,
         "base_policy": bc_metrics,
         "rashomon": {
+            "safe_region_shape": args.safe_region_shape,
+            "zonotope_rank": int(zonotope_rank) if args.safe_region_shape == "zonotope" else None,
             "inverse_temperature": int(inverse_temp),
-            "min_valid_mass": float(min_valid_mass),
+            "min_valid_mass": (
+                float(min_valid_mass)
+                if args.rashomon_multi_label_mode == "any" and args.rashomon_surrogate == "auto"
+                else None
+            ),
+            "min_all_safe_margin": float(min_valid_mass) if args.rashomon_multi_label_mode == "all" else None,
+            "min_lse_margin": (
+                float(min_valid_mass) if args.rashomon_surrogate == "logsumexp" else None
+            ),
             "surrogate_threshold": float(surrogate_threshold),
+            "multi_label_mode": args.rashomon_multi_label_mode,
+            "surrogate": args.rashomon_surrogate,
+            "resolved_surrogate": rashomon_metadata["resolved_surrogate"],
             "n_iters": int(args.rashomon_n_iters),
             "checkpoint": int(args.rashomon_checkpoint),
             "batch_size": int(args.rashomon_batch_size),
             "certificate_samples": int(args.certificate_samples),
             "growth_method": args.growth_method,
             "certification_method": args.certification_method,
+            "safe_action_logit_analysis": safe_action_logit_analysis,
             **rashomon_metadata,
         },
     }

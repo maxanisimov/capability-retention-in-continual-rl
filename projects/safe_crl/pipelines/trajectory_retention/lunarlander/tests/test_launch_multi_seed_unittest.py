@@ -28,7 +28,7 @@ class LunarLanderLaunchMultiSeedTests(unittest.TestCase):
             args = launcher._parse_args(
                 [
                     "--pipeline", "deterministic_test",
-                    "--methods", "unconstrained", "rashomon",
+                    "--methods", "unconstrained", "distillation", "rashomon",
                     "--seeds", "0",
                     "--outputs-root", tmp_dir,
                 ],
@@ -36,10 +36,14 @@ class LunarLanderLaunchMultiSeedTests(unittest.TestCase):
             cmd = launcher.build_cmd(args, 0)
 
             self.assertIn("run_seed_pipeline.py", cmd[1])
-            self.assertEqual(cmd[cmd.index("--methods") + 1 : cmd.index("--methods") + 3], ["unconstrained", "rashomon"])
+            self.assertEqual(
+                cmd[cmd.index("--methods") + 1 : cmd.index("--methods") + 4],
+                ["unconstrained", "distillation", "rashomon"],
+            )
             self.assertEqual(cmd[cmd.index("--seed") + 1], "0")
             self.assertIn("--rl", cmd)
             self.assertEqual(cmd[cmd.index("--rl") + 1], "ppo")
+            self.assertIn("--distillation-settings-file", cmd)
 
     def test_dry_run_prints_one_command_per_seed_without_scheduling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

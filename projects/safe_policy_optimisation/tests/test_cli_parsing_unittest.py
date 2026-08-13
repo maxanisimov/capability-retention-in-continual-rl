@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import csv
 import importlib
@@ -21,6 +22,7 @@ from projects.safe_policy_optimisation.run_experiment import (
 from projects.safe_policy_optimisation.run_experiment import (
     build_parser as build_experiment_launcher_parser,
 )
+from projects.safe_policy_optimisation.scripts import run_pspo_hparam_sweep
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     build_parser as build_shield_rashomon_parser,
 )
@@ -48,7 +50,9 @@ from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
 from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
     _baseline_worker_count,
     _pipeline_cpu_allocation,
+    _rashomon_artifacts_reusable,
     _policy_optimisation_method_count,
+    _rashomon_set_argv,
 )
 from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
     build_parser as build_deterministic_pipeline_parser,
@@ -58,6 +62,9 @@ from projects.safe_policy_optimisation.stages.train_ppo import (
 )
 from projects.safe_policy_optimisation.stages.train_pspo_adaptive import (
     build_parser as build_adaptive_safe_ppo_parser,
+)
+from projects.safe_policy_optimisation.stages.train_pspo_adaptive_v2 import (
+    parse_args as parse_adaptive_safe_ppo_v2_args,
 )
 from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (
     build_parser as build_rashomon_shielded_ppo_parser,
@@ -246,6 +253,228 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(worker_thread_count(4, None), 1)
         self.assertEqual(worker_thread_count(1, None), None)
         self.assertEqual(parse_cpu_ids("3,5,3"), [3, 5])
+
+    def test_pspo_hparam_sweep_parser_accepts_two_swept_dimensions(self) -> None:
+        args = run_pspo_hparam_sweep.parse_args(
+            [
+                "--env",
+                "mini_pacman",
+                "--method",
+                "both",
+                "--seeds",
+                "0",
+                "1",
+                "--rashomon-iters",
+                "100",
+                "2000",
+                "--bc-target-margins",
+                "0.5",
+                "1",
+                "--n-hidden",
+                "0",
+                "--state-representation",
+                "one_hot",
+                "--bc-margin-mode",
+                "all",
+                "--rashomon-surrogate",
+                "logsumexp",
+                "--safe-region-shape",
+                "zonotope",
+                "--zonotope-rank",
+                "4",
+                "--dry-run",
+            ]
+        )
+
+        self.assertEqual(args.env, "mini_pacman")
+        self.assertEqual(args.method, "both")
+        self.assertEqual(args.seeds, [0, 1])
+        self.assertEqual(args.rashomon_iters, [100, 2000])
+        self.assertEqual(args.bc_target_margins, [0.5, 1.0])
+        self.assertEqual(args.n_hidden, 0)
+        self.assertEqual(args.state_representation, "one_hot")
+        self.assertEqual(args.bc_margin_mode, "all")
+        self.assertEqual(args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(args.safe_region_shape, "zonotope")
+        self.assertEqual(args.zonotope_rank, 4)
+
+    def test_pspo_hparam_sweep_builds_only_method_iter_margin_grid(self) -> None:
+        settings = run_pspo_hparam_sweep.build_settings(
+            ["precomputed", "adaptive"],
+            [100, 200],
+            [0.5, 1.0],
+        )
+
+        self.assertEqual(len(settings), 8)
+        self.assertEqual(settings[0].tag, "precomputed/iters_100__margin_0p5")
+        self.assertEqual(settings[-1].tag, "adaptive/iters_200__margin_1")
+
+        all_mode_settings = run_pspo_hparam_sweep.build_settings(
+            ["precomputed"],
+            [100],
+            [0.5],
+            bc_margin_mode="all",
+            rashomon_surrogate="logsumexp",
+        )
+
+        self.assertEqual(
+            all_mode_settings[0].tag,
+            "precomputed/iters_100__margin_0p5__bc_all__surrogate_logsumexp",
+        )
+
+    def test_pspo_hparam_sweep_resolves_disjoint_cpu_slots(self) -> None:
+        args = argparse.Namespace(
+            cpu_ids=[2, 4, 6, 8],
+            cores_per_setting=1,
+            max_parallel=3,
+        )
+        slots = run_pspo_hparam_sweep.resolve_slots(args, n_settings=5)
+
+        self.assertEqual(slots, [[2], [4], [6]])
+        self.assertEqual(len({cpu for slot in slots for cpu in slot}), 3)
+
+    def test_pspo_hparam_sweep_command_interprets_iters_by_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = {
+                "sweep_root": tmp,
+                "config": {
+                    "shield_path": "projects/safe_policy_optimisation/artifacts/shield_q.pt",
+                    "env_id": "CustomMiniPacman-v0",
+                    "env_kwargs": {"ghost_rand_prob": 0.6},
+                    "max_episode_steps": 1000,
+                    "cost_limit": 0.01,
+                    "total_timesteps": 500000,
+                    "eval_episodes": 100,
+                    "learning_rate": 3e-4,
+                    "n_steps": 2048,
+                    "batch_size": 64,
+                    "n_epochs": 10,
+                    "gamma": 0.99,
+                    "gae_lambda": 0.95,
+                    "clip_range": 0.2,
+                    "ent_coef": 0.0,
+                    "vf_coef": 0.5,
+                    "max_grad_norm": 0.5,
+                    "early_stop_eval_freq": 0,
+                    "early_stop_eval_episodes": 100,
+                    "early_stop_success_rate": 1.0,
+                    "success_reward_threshold": 0.0,
+                    "curve_eval_freq": 2048,
+                    "curve_eval_episodes": 20,
+                    "rashomon_evaluation_policy": "unshielded",
+                    "rashomon_checkpoint": 100,
+                    "certificate_samples": 1000,
+                },
+                "state_representation": "one_hot",
+                "device": "cpu",
+                "hidden_dim": 64,
+                "n_hidden": 0,
+                "safety_demo_size": 8880,
+                "adaptive_base_set_iters": 2000,
+                "safe_region_shape": "zonotope",
+                "zonotope_rank": 3,
+            }
+            pre = run_pspo_hparam_sweep.Setting(
+                method="precomputed",
+                rashomon_iters=10000,
+                bc_target_margin=1.0,
+            )
+            adaptive = run_pspo_hparam_sweep.Setting(
+                method="adaptive",
+                rashomon_iters=100,
+                bc_target_margin=1.0,
+            )
+            pre_all = run_pspo_hparam_sweep.Setting(
+                method="precomputed",
+                rashomon_iters=10000,
+                bc_target_margin=1.0,
+                bc_margin_mode="all",
+            )
+
+            pre_set_cmd = run_pspo_hparam_sweep.build_set_command(
+                payload,
+                setting=pre,
+                n_iters=pre.rashomon_iters,
+                cpu_ids=[2],
+            )
+            adaptive_set_cmd = run_pspo_hparam_sweep.build_set_command(
+                payload,
+                setting=adaptive,
+                n_iters=payload["adaptive_base_set_iters"],
+                cpu_ids=[4],
+            )
+            pre_train_cmd = run_pspo_hparam_sweep.build_precomputed_train_command(
+                payload,
+                setting=pre,
+                seed=0,
+                cpu_ids=[2],
+            )
+            adaptive_train_cmd = run_pspo_hparam_sweep.build_adaptive_train_command(
+                payload,
+                setting=adaptive,
+                seed=0,
+                cpu_ids=[4],
+            )
+            pre_all_set_cmd = run_pspo_hparam_sweep.build_set_command(
+                payload,
+                setting=pre_all,
+                n_iters=pre_all.rashomon_iters,
+                cpu_ids=[2],
+            )
+
+        self.assertEqual(
+            pre_set_cmd[pre_set_cmd.index("--rashomon-n-iters") + 1],
+            "10000",
+        )
+        self.assertEqual(
+            adaptive_set_cmd[adaptive_set_cmd.index("--rashomon-n-iters") + 1],
+            "2000",
+        )
+        self.assertEqual(
+            adaptive_train_cmd[adaptive_train_cmd.index("--rashomon-n-iters") + 1],
+            "100",
+        )
+        self.assertEqual(
+            adaptive_train_cmd[adaptive_train_cmd.index("--rashomon-surrogate") + 1],
+            "auto",
+        )
+        self.assertEqual(
+            pre_set_cmd[pre_set_cmd.index("--bc-target-margin") + 1],
+            "1.0",
+        )
+        self.assertEqual(
+            pre_all_set_cmd[pre_all_set_cmd.index("--bc-margin-mode") + 1],
+            "all",
+        )
+        self.assertIn("__bc_all", pre_all_set_cmd[pre_all_set_cmd.index("--output-dir") + 1])
+        self.assertEqual(
+            pre_set_cmd[pre_set_cmd.index("--rashomon-batch-size") + 1],
+            "8880",
+        )
+        self.assertEqual(
+            pre_set_cmd[pre_set_cmd.index("--safe-region-shape") + 1],
+            "zonotope",
+        )
+        self.assertEqual(
+            pre_set_cmd[pre_set_cmd.index("--zonotope-rank") + 1],
+            "3",
+        )
+        self.assertEqual(
+            pre_train_cmd[pre_train_cmd.index("--safe-region-shape") + 1],
+            "zonotope",
+        )
+        self.assertEqual(
+            adaptive_train_cmd[adaptive_train_cmd.index("--safe-region-shape") + 1],
+            "zonotope",
+        )
+        self.assertEqual(
+            pre_train_cmd[pre_train_cmd.index("--state-representation") + 1],
+            "one_hot",
+        )
+        self.assertEqual(
+            adaptive_train_cmd[adaptive_train_cmd.index("--state-representation") + 1],
+            "one_hot",
+        )
 
     def test_deterministic_pipeline_parser_accepts_monitoring_settings(self) -> None:
         args = build_deterministic_pipeline_parser().parse_args(
@@ -453,15 +682,187 @@ class CliParsingTests(unittest.TestCase):
                 "shield_q.pt",
                 "--rashomon-n-iters",
                 "0",
+                "--bc-margin-mode",
+                "all",
+                "--rashomon-surrogate",
+                "logsumexp",
+                "--safe-region-shape",
+                "zonotope",
+                "--zonotope-rank",
+                "5",
             ]
         )
 
         self.assertEqual(args.shield_path, Path("shield_q.pt"))
         self.assertEqual(args.rashomon_n_iters, 0)
+        self.assertEqual(args.bc_margin_mode, "all")
+        self.assertEqual(args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(args.safe_region_shape, "zonotope")
+        self.assertEqual(args.zonotope_rank, 5)
         # Default base-policy depth, which also sets the PSPO actor/critic to the
         # [64, 64] MLP the baselines use.
         self.assertEqual(args.n_hidden, 2)
         self.assertEqual(args.hidden_dim, 64)
+
+    def test_pipeline_forwards_bc_margin_mode_to_rashomon_set_stage(self) -> None:
+        args = argparse.Namespace(
+            bc_margin_mode="all",
+            bc_target_margin=0.5,
+            certificate_samples=1000,
+            certification_method="IBP",
+            device="cpu",
+            env_id="CustomMediaStreaming-v0",
+            env_kwargs=None,
+            growth_method="IBP",
+            hidden_dim=64,
+            n_hidden=1,
+            rashomon_batch_size=441,
+            rashomon_checkpoint=100,
+            rashomon_multi_label_mode="all",
+            rashomon_surrogate="logsumexp",
+            rashomon_n_iters=20000,
+            safe_region_shape="zonotope",
+            seed=0,
+            state_representation="one_hot",
+            zonotope_rank=7,
+        )
+
+        argv, _output_dir, _run_id = _rashomon_set_argv(
+            args,
+            Path("run"),
+            Path("shield_q.pt"),
+            Path("rashomon_dir"),
+        )
+
+        self.assertEqual(argv[argv.index("--bc-margin-mode") + 1], "all")
+        self.assertEqual(argv[argv.index("--rashomon-multi-label-mode") + 1], "all")
+        self.assertEqual(argv[argv.index("--rashomon-surrogate") + 1], "logsumexp")
+        self.assertEqual(argv[argv.index("--safe-region-shape") + 1], "zonotope")
+        self.assertEqual(argv[argv.index("--zonotope-rank") + 1], "7")
+
+    def test_pipeline_reuses_rashomon_artifacts_with_matching_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_param_bounds.pt").write_bytes(b"bounds")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "all"}, '
+                    '"rashomon": {"multi_label_mode": "all"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(bc_margin_mode="all", rashomon_multi_label_mode="all")
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertTrue(reusable)
+        self.assertIsNone(reason)
+
+    def test_pipeline_reuses_zonotope_artifacts_with_matching_shape_and_rank(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_zonotope_region.pt").write_bytes(b"zonotope")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "all"}, '
+                    '"rashomon": {"multi_label_mode": "all", '
+                    '"safe_region_shape": "zonotope", "zonotope_rank": 8}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                bc_margin_mode="all",
+                rashomon_multi_label_mode="all",
+                safe_region_shape="zonotope",
+                zonotope_rank=8,
+            )
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertTrue(reusable)
+        self.assertIsNone(reason)
+
+    def test_pipeline_rejects_zonotope_artifacts_with_mismatched_rank(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_zonotope_region.pt").write_bytes(b"zonotope")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "all"}, '
+                    '"rashomon": {"multi_label_mode": "all", '
+                    '"safe_region_shape": "zonotope", "zonotope_rank": 4}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                bc_margin_mode="all",
+                rashomon_multi_label_mode="all",
+                safe_region_shape="zonotope",
+                zonotope_rank=8,
+            )
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertFalse(reusable)
+        self.assertIn("zonotope_rank mismatch", reason)
+
+    def test_pipeline_rejects_rashomon_artifacts_with_mismatched_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_param_bounds.pt").write_bytes(b"bounds")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "any"}, '
+                    '"rashomon": {"multi_label_mode": "any"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(bc_margin_mode="all", rashomon_multi_label_mode="all")
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertFalse(reusable)
+        self.assertIn("bc_margin_mode mismatch", reason)
+
+    def test_pipeline_rejects_rashomon_artifacts_with_mismatched_surrogate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_param_bounds.pt").write_bytes(b"bounds")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "any"}, '
+                    '"rashomon": {"multi_label_mode": "any", '
+                    '"surrogate": "auto"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                bc_margin_mode="any",
+                rashomon_multi_label_mode="any",
+                rashomon_surrogate="logsumexp",
+            )
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertFalse(reusable)
+        self.assertIn("rashomon_surrogate mismatch", reason)
+
+    def test_pipeline_rejects_rashomon_artifacts_without_summary_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_param_bounds.pt").write_bytes(b"bounds")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            args = argparse.Namespace(bc_margin_mode="all", rashomon_multi_label_mode="all")
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertFalse(reusable)
+        self.assertIn("missing Rashomon summary metadata", reason)
 
     def test_rashomon_shielded_ppo_parser_accepts_required_paths(self) -> None:
         args = build_rashomon_shielded_ppo_parser().parse_args(
@@ -472,10 +873,13 @@ class CliParsingTests(unittest.TestCase):
                 "shield_q.pt",
                 "--env-id",
                 "CustomMiniPacman-v0",
+                "--safe-region-shape",
+                "zonotope",
             ]
         )
 
         self.assertEqual(args.rashomon_dir, Path("rashomon_run"))
+        self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.shield_path, Path("shield_q.pt"))
         self.assertEqual(args.env_id, "CustomMiniPacman-v0")
         self.assertEqual(args.shield_action_storage, "proposed")
@@ -491,6 +895,10 @@ class CliParsingTests(unittest.TestCase):
                 "shield_q.pt",
                 "--env-id",
                 "CustomMiniPacman-v0",
+                "--safe-region-shape",
+                "zonotope",
+                "--zonotope-rank",
+                "6",
             ]
         )
 
@@ -499,6 +907,8 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.adaptive_granularity, "gradient_step")
         self.assertEqual(args.unsafe_update_strategy, "rashomon_project")
         self.assertEqual(args.rashomon_n_iters, 100)
+        self.assertEqual(args.safe_region_shape, "zonotope")
+        self.assertEqual(args.zonotope_rank, 6)
         self.assertIsNone(args.rashomon_checkpoint)
         self.assertIsNone(args.certificate_samples)
         self.assertIsNone(args.rashomon_inverse_temp)
@@ -525,6 +935,95 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(overridden.unsafe_update_strategy, "none")
         self.assertEqual(overridden.rashomon_n_iters, 50)
         self.assertEqual(overridden.rashomon_checkpoint, 5)
+
+    def test_adaptive_safe_ppo_v2_parser_accepts_region_and_total_budget(self) -> None:
+        args = parse_adaptive_safe_ppo_v2_args(
+            [
+                "--base-policy-path",
+                "rashomon_run/base_policy.pt",
+                "--shield-path",
+                "shield_q.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+                "--total-timesteps",
+                "64",
+                "--n-steps",
+                "32",
+                "--batch-size",
+                "16",
+                "--n-epochs",
+                "2",
+                "--region-update-mode",
+                "replace",
+                "--rashomon-total-iters",
+                "45",
+            ]
+        )
+
+        self.assertEqual(args.adaptive_version, "v2")
+        self.assertEqual(args.algorithm_name, "adaptive_safe_ppo_v2")
+        self.assertEqual(args.region_update_mode, "replace")
+        self.assertEqual(args.rashomon_budget_mode, "total")
+        # 1 initial region + ceil(64/32) phases * 2 epochs * ceil(32/16) minibatches = 9.
+        self.assertEqual(args.rashomon_max_region_computations, 9)
+        self.assertEqual(args.rashomon_n_iters, 45)
+        self.assertEqual(args.rashomon_initial_n_iters, 45)
+        self.assertEqual(args.rashomon_recompute_n_iters, 45)
+
+    def test_adaptive_safe_ppo_v2_parser_accepts_split_region_budgets(self) -> None:
+        args = parse_adaptive_safe_ppo_v2_args(
+            [
+                "--base-policy-path",
+                "rashomon_run/base_policy.pt",
+                "--shield-path",
+                "shield_q.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+                "--rashomon-total-iters",
+                "2000",
+                "--rashomon-initial-n-iters",
+                "500",
+                "--rashomon-recompute-n-iters",
+                "100",
+            ]
+        )
+
+        self.assertEqual(args.rashomon_budget_mode, "total")
+        self.assertEqual(args.rashomon_total_iters, 2000)
+        self.assertEqual(args.rashomon_initial_n_iters, 500)
+        self.assertEqual(args.rashomon_recompute_n_iters, 100)
+        self.assertEqual(args.rashomon_n_iters, 500)
+
+    def test_adaptive_safe_ppo_v2_parser_rejects_conflicting_budget_modes(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_adaptive_safe_ppo_v2_args(
+                    [
+                        "--base-policy-path",
+                        "base_policy.pt",
+                        "--shield-path",
+                        "shield_q.pt",
+                        "--rashomon-n-iters",
+                        "10",
+                        "--rashomon-total-iters",
+                        "1000",
+                    ]
+                )
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_adaptive_safe_ppo_v2_args(
+                    [
+                        "--base-policy-path",
+                        "base_policy.pt",
+                        "--shield-path",
+                        "shield_q.pt",
+                        "--rashomon-n-iters",
+                        "10",
+                        "--rashomon-initial-n-iters",
+                        "5",
+                    ]
+                )
 
     def test_training_parsers_accept_paper_hyperparameters(self) -> None:
         baseline_args = build_train_parser().parse_args(

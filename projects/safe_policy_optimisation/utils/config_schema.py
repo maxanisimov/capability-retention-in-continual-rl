@@ -58,6 +58,9 @@ class ShieldSynthesisCfg:
     max_vi_steps: int
     granularity: int
     unsafe_cost_threshold: float
+    shield_method: str = "value_iteration"
+    n_rollout_episodes: int | None = None
+    behaviour_policy: str = "uniform"
 
 
 @dataclass
@@ -97,11 +100,15 @@ class RashomonSetCfg:
     rashomon_checkpoint: int
     rashomon_batch_size: int
     certificate_samples: int
+    safe_region_shape: str = "orthotope"
+    zonotope_rank: int | None = None
     # Base-policy architecture. The PSPO actor and critic are built to match it,
     # so these also set PSPO's network: n_hidden=2, hidden_dim=64 reproduces the
     # [64, 64] Tanh MLP used by every baseline.
     n_hidden: int = 2
     hidden_dim: int = 64
+    bc_margin_mode: str = "any"
+    rashomon_surrogate: str = "auto"
 
 
 @dataclass

@@ -36,3 +36,15 @@ custommediastreamingv3_default:
     slow_danger_up_prob: 0.0
     fast_danger_up_prob: 0.0
     fast_danger_down_prob: 0.0
+
+custommediastreamingv2_paper_2503_07671:
+  env: CustomMediaStreamingV2-v0
+  max_episode_steps: 40
+  env_kwargs:
+    buffer_size: 21
+    episode_length: 40
+    c_threshold: 20
+  stochasticity:
+    fast_rate: 0.9
+    slow_rate: 0.1
+    out_rate: 0.7

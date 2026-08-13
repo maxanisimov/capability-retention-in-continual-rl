@@ -1,0 +1,48 @@
+run_id: mountain_car_barrier_default
+seed: 0
+device: cpu
+output_dir: artifacts/barrier_policy_verification
+
+safety:
+  p_safe: -1.0
+  initial_boxes:
+    - [[-0.6, -0.4], [0.0, 0.0]]
+  unsafe_boxes:
+    - [[-1.2, -1.0001], [-0.07, 0.07]]
+  invariant_boxes:
+    - [[-1.0, 0.6], [-0.07, 0.07]]
+
+policy:
+  type: generated
+  seed: 0
+
+learner:
+  degree: 4
+  use_energy_base: true
+  epochs: 500
+  learning_rate: 0.01
+  samples_initial: 512
+  samples_unsafe: 512
+  samples_domain: 2048
+  boundary_noise: 0.02
+  weight_initial: 1.0
+  weight_unsafe: 1.0
+  weight_invariance: 1.0
+  weight_nonempty: 0.1
+
+cegis:
+  iterations: 3
+
+verifier:
+  alpha: 0.1
+  eps_init: 0.00001
+  eps_unsafe: 0.00001
+  eps_inv: 0.000001
+  max_depth: 18
+  max_boxes: 50000
+  min_width: 0.0001
+  timeout_seconds: null
+  sample_counterexamples: true
+
+rollouts:
+  episodes: 10

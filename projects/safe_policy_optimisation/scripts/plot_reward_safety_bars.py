@@ -18,23 +18,19 @@ import matplotlib.pyplot as plt
 
 REPO = "/vol/bitbucket/ma5923/_projects/CertifiedContinualLearning"
 
-# All completed sweeps using the 2-hidden-layer actor-critic architecture and
-# index (one-hot) state encoding, verified consistent (baselines and PSPO
-# stages point at the same n_hidden=2 Rashomon dir) as of 2026-07-24.
+# Latest completed sweeps using the 2-hidden-layer actor-critic architecture and
+# index (one-hot) state encoding. The later 20260724_2325xx reruns have complete
+# curve checkpoints but incomplete final adaptive PSPO metrics, so they are not
+# used for the final-metric bars.
 SWEEPS = {
     "Media Streaming": f"{REPO}/outputs/_sweeps/20260723_204829/paper_2503_07671_media_streaming/aggregate/aggregated_metrics.json",
     "Colour Bomb": f"{REPO}/outputs/_sweeps/20260723_215050/paper_2503_07671_colour_bomb/aggregate/aggregated_metrics.json",
-    "Bridge Crossing": f"{REPO}/outputs/_sweeps/20260723_221110/paper_2503_07671_bridge_crossing/aggregate/aggregated_metrics.json",
-    "Bridge Crossing v2": f"{REPO}/outputs/_sweeps/20260723_231451/paper_2503_07671_bridge_crossing_v2/aggregate/aggregated_metrics.json",
-    "Colour Bomb v2": f"{REPO}/outputs/_sweeps/20260723_233403/paper_2503_07671_colour_bomb_v2/aggregate/aggregated_metrics.json",
+    "Bridge Crossing": f"{REPO}/outputs/_sweeps/20260724_124311/paper_2503_07671_bridge_crossing/aggregate/aggregated_metrics.json",
+    "Bridge Crossing v2": f"{REPO}/outputs/_sweeps/20260724_152054/paper_2503_07671_bridge_crossing_v2/aggregate/aggregated_metrics.json",
+    "Colour Bomb v2": f"{REPO}/outputs/_sweeps/20260724_164416/paper_2503_07671_colour_bomb_v2/aggregate/aggregated_metrics.json",
 }
 
-# Bridge Crossing's screen session was interrupted mid-run: PSPO (adaptive)
-# only completed for 1 of 10 seeds there. Flagged on the bar via the caption
-# below rather than silently shown as a normal n=10 bar.
-LOW_N_CAVEATS = {
-    ("Bridge Crossing", "rashomon_adaptive_policy"): "n=1 (run interrupted)",
-}
+LOW_N_CAVEATS = {}
 
 # (metrics-key, display label, color), in the order bars are drawn.
 # Colormap is a standing user preference for every reward/safety bar chart in
@@ -46,8 +42,7 @@ METHODS = [
     ("cpo/cpo", "CPO", "yellow"),
     ("ppo_shield/shielded", "PPO-Shield", "blue"),
     ("ppo_shield/nominal", "PPO-Shield-Nominal", "lightblue"),
-    ("rashomon_policy", "PSPO (precomputed)", "purple"),
-    ("rashomon_adaptive_policy", "PSPO (adaptive)", "green"),
+    ("rashomon_policy", "PSPO", "green"),
 ]
 COLORS = [color for _key, _label, color in METHODS]
 
@@ -140,7 +135,7 @@ for row, env_name in enumerate(SWEEPS):
 handles_all = [plt.Rectangle((0, 0), 1, 1, facecolor=COLORS[i], edgecolor="black", linewidth=0.5)
                for i in range(len(METHODS))]
 labels_all = [label for _key, label, _color in METHODS]
-row_major_order = [0, 4, 1, 5, 2, 6, 3, 7]
+row_major_order = [0, 4, 1, 5, 2, 6, 3]
 handles = [handles_all[i] for i in row_major_order]
 labels = [labels_all[i] for i in row_major_order]
 fig.legend(handles, labels, loc="lower center", ncol=4, frameon=False,

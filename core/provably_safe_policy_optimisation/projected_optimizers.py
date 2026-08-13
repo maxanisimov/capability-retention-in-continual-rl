@@ -23,15 +23,20 @@ Design notes
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
 from provably_safe_policy_optimisation.projection import (
     ActorParamBounds,
     ProjectionResult,
-    project_to_interval_union,
     validate_and_prepare_param_interval_bounds,
+)
+from provably_safe_policy_optimisation.regions import (
+    OrthotopeRegion,
+    SafeParameterRegion,
+    prepare_region_for_params,
+    project_to_region_union,
 )
 
 
@@ -69,12 +74,18 @@ class ProjectedAdam(torch.optim.Adam):
         self._projected_params: list[torch.nn.Parameter] = list(params)
         super().__init__(self._projected_params, **adam_kwargs)
 
+        # Optional callable invoked at the end of every step() (after any
+        # projection). Used by adaptive trainers to inspect/adjust parameters
+        # per gradient step. NOTE: step() runs under @torch.no_grad(), so hooks
+        # that need autograd must re-enable it with torch.enable_grad().
+        self.post_step_hook: Callable[[], None] | None = None
         self._distance_norm = str(distance_norm)
         # Ordered subset of parameters that projection targets (defaults to all
         # of this optimizer's parameters; PPO uses a subset, see set_bounds).
         self._projection_params: list[torch.nn.Parameter] = self._projected_params
         self._bounds_l_sets: list[list[torch.Tensor]] | None = None
         self._bounds_u_sets: list[list[torch.Tensor]] | None = None
+        self._regions: list[SafeParameterRegion] | None = None
         # Diagnostics (cumulative over all bounded steps; see projection_diagnostics).
         self._step_calls = 0                  # optimizer steps taken while bounds active
         self._projection_active_steps = 0     # steps where >=1 element was clamped
@@ -88,11 +99,18 @@ class ProjectedAdam(torch.optim.Adam):
         # Outcome of the initial feasibility projection done by set_bounds (if any);
         # kept separate from the per-step diagnostics (it is not a gradient update).
         self._init_projection: ProjectionResult | None = None
+        self._last_projection_result: ProjectionResult | None = None
 
     @property
     def has_bounds(self) -> bool:
         """Whether projection is currently active."""
-        return self._bounds_l_sets is not None
+        return self._regions is not None
+
+    @property
+    def has_regions(self) -> bool:
+        """Whether safe-region projection is currently active."""
+
+        return self._regions is not None
 
     def set_bounds(
         self,
@@ -143,6 +161,49 @@ class ProjectedAdam(torch.optim.Adam):
         self._projection_params = target
         self._bounds_l_sets = l_sets
         self._bounds_u_sets = u_sets
+        self._regions = [
+            OrthotopeRegion(lower=set_l, upper=set_u)
+            for set_l, set_u in zip(l_sets, u_sets)
+        ]
+        if project_on_set:
+            self._init_projection = self.project_now()
+
+    def set_regions(
+        self,
+        regions: list[SafeParameterRegion],
+        params: list[torch.nn.Parameter] | None = None,
+        project_on_set: bool = True,
+    ) -> None:
+        """Attach generic safe parameter regions.
+
+        This is the region-shaped equivalent of :meth:`set_bounds`; it accepts
+        orthotopes and zonotopes and normalizes tensor device/dtype against the
+        selected parameter order.
+        """
+
+        target = self._projected_params if params is None else list(params)
+        if not target:
+            raise ValueError("set_regions requires at least one parameter to project.")
+        owned = {id(p) for p in self._projected_params}
+        if any(id(p) not in owned for p in target):
+            raise ValueError(
+                "Every parameter passed to set_regions(params=...) must belong to "
+                "this optimizer.",
+            )
+        if not regions:
+            raise ValueError("set_regions requires at least one safe parameter region.")
+        device = target[0].device
+        self._projection_params = target
+        self._regions = [
+            prepare_region_for_params(region, target, device=device)
+            for region in regions
+        ]
+        if all(isinstance(region, OrthotopeRegion) for region in self._regions):
+            self._bounds_l_sets = [region.lower for region in self._regions]  # type: ignore[union-attr]
+            self._bounds_u_sets = [region.upper for region in self._regions]  # type: ignore[union-attr]
+        else:
+            self._bounds_l_sets = None
+            self._bounds_u_sets = None
         if project_on_set:
             self._init_projection = self.project_now()
 
@@ -151,6 +212,7 @@ class ProjectedAdam(torch.optim.Adam):
         self._projection_params = self._projected_params
         self._bounds_l_sets = None
         self._bounds_u_sets = None
+        self._regions = None
 
     @torch.no_grad()
     def project_now(self) -> ProjectionResult:
@@ -160,14 +222,15 @@ class ProjectedAdam(torch.optim.Adam):
         was built, or re-attaching bounds following ``load``) to re-establish
         feasibility. Does not affect the per-step diagnostics counters.
         """
-        if self._bounds_l_sets is None or self._bounds_u_sets is None:
-            raise RuntimeError("project_now() called before set_bounds().")
-        return project_to_interval_union(
+        if self._regions is None:
+            raise RuntimeError("project_now() called before set_bounds()/set_regions().")
+        result = project_to_region_union(
             self._projection_params,
-            self._bounds_l_sets,
-            self._bounds_u_sets,
+            self._regions,
             distance_norm=self._distance_norm,
         )
+        self._last_projection_result = result
+        return result
 
     @torch.no_grad()
     def max_violation(self) -> float:
@@ -177,20 +240,15 @@ class ProjectedAdam(torch.optim.Adam):
         single-coordinate violation, since the parameters need only lie inside
         one box of the union. ``0.0`` when no bounds are attached.
         """
-        if self._bounds_l_sets is None or self._bounds_u_sets is None:
+        if self._regions is None:
             return 0.0
-        best = float("inf")
-        for set_l, set_u in zip(self._bounds_l_sets, self._bounds_u_sets):
-            worst = 0.0
-            for param, lb, ub in zip(self._projection_params, set_l, set_u):
-                p = param.data
-                over = torch.clamp(p - ub, min=0.0)
-                under = torch.clamp(lb - p, min=0.0)
-                if over.numel():
-                    worst = max(worst, float(torch.max(over).item()))
-                    worst = max(worst, float(torch.max(under).item()))
-            best = min(best, worst)
-        return float(best)
+        result = project_to_region_union(
+            self._projection_params,
+            self._regions,
+            distance_norm=self._distance_norm,
+            apply=False,
+        )
+        return float(result.displacement_linf)
 
     def is_within_bounds(self, atol: float = 0.0) -> bool:
         """Whether the current parameters satisfy the bounds (within ``atol``)."""
@@ -199,15 +257,23 @@ class ProjectedAdam(torch.optim.Adam):
     @torch.no_grad()
     def step(self, closure: Any = None) -> Any:  # type: ignore[override]
         loss = super().step(closure)
-        if self._bounds_l_sets is not None and self._bounds_u_sets is not None:
-            result = project_to_interval_union(
+        if self._regions is not None:
+            result = project_to_region_union(
                 self._projection_params,
-                self._bounds_l_sets,
-                self._bounds_u_sets,
+                self._regions,
                 distance_norm=self._distance_norm,
             )
+            self._last_projection_result = result
             self._record(result)
+        if self.post_step_hook is not None:
+            self.post_step_hook()
         return loss
+
+    @property
+    def last_projection_result(self) -> ProjectionResult | None:
+        """Most recent projection result, including on-demand projections."""
+
+        return self._last_projection_result
 
     def _record(self, result: ProjectionResult) -> None:
         """Fold a single-step :class:`ProjectionResult` into cumulative counters."""
@@ -226,7 +292,7 @@ class ProjectedAdam(torch.optim.Adam):
     @property
     def constrained_element_count(self) -> int:
         """Total number of scalar entries currently under projection."""
-        if self._bounds_l_sets is None:
+        if self._regions is None:
             return 0
         return int(sum(p.numel() for p in self._projection_params))
 

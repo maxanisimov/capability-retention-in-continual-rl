@@ -111,8 +111,88 @@ def _rashomon_bounds_path(rashomon_dir: Path) -> Path:
     return Path(rashomon_dir) / "rashomon_param_bounds.pt"
 
 
+def _rashomon_zonotope_path(rashomon_dir: Path) -> Path:
+    return Path(rashomon_dir) / "rashomon_zonotope_region.pt"
+
+
 def _base_policy_path(rashomon_dir: Path) -> Path:
     return Path(rashomon_dir) / "base_policy.pt"
+
+
+def _rashomon_summary_path(rashomon_dir: Path) -> Path:
+    return Path(rashomon_dir) / "summary.json"
+
+
+def _rashomon_artifacts_reusable(
+    rashomon_dir: Path,
+    args: argparse.Namespace,
+) -> tuple[bool, str | None]:
+    expected_shape = str(getattr(args, "safe_region_shape", "orthotope"))
+    bounds_path = (
+        _rashomon_bounds_path(rashomon_dir)
+        if expected_shape == "orthotope"
+        else _rashomon_zonotope_path(rashomon_dir)
+    )
+    base_policy_path = _base_policy_path(rashomon_dir)
+    summary_path = _rashomon_summary_path(rashomon_dir)
+    if not bounds_path.exists():
+        return False, f"missing Rashomon {expected_shape} region artifact: {bounds_path}"
+    if not base_policy_path.exists():
+        return False, f"missing base policy: {base_policy_path}"
+    if not summary_path.exists():
+        return False, f"missing Rashomon summary metadata: {summary_path}"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return False, f"invalid Rashomon summary metadata: {exc}"
+    if not isinstance(summary, dict):
+        return False, f"invalid Rashomon summary metadata: expected object in {summary_path}"
+
+    expected_bc_mode = str(getattr(args, "bc_margin_mode", "any"))
+    expected_multi_label_mode = str(getattr(args, "rashomon_multi_label_mode", "any"))
+    expected_surrogate = str(getattr(args, "rashomon_surrogate", "auto"))
+    expected_zonotope_rank = getattr(args, "zonotope_rank", None)
+    base_policy_summary = summary.get("base_policy") or {}
+    rashomon_summary = summary.get("rashomon") or {}
+    if not isinstance(base_policy_summary, dict) or not isinstance(rashomon_summary, dict):
+        return False, f"invalid Rashomon summary metadata: expected dict sections in {summary_path}"
+    actual_bc_mode = base_policy_summary.get("bc_margin_mode")
+    actual_multi_label_mode = rashomon_summary.get("multi_label_mode")
+    actual_surrogate = rashomon_summary.get("surrogate", "auto")
+    actual_shape = rashomon_summary.get("safe_region_shape", "orthotope")
+    actual_zonotope_rank = rashomon_summary.get("zonotope_rank")
+    if actual_shape != expected_shape:
+        return (
+            False,
+            "safe_region_shape mismatch: "
+            f"requested {expected_shape!r}, artifact has {actual_shape!r}",
+        )
+    if expected_shape == "zonotope" and expected_zonotope_rank is not None:
+        if actual_zonotope_rank is None or int(actual_zonotope_rank) != int(expected_zonotope_rank):
+            return (
+                False,
+                "zonotope_rank mismatch: "
+                f"requested {int(expected_zonotope_rank)!r}, artifact has {actual_zonotope_rank!r}",
+            )
+    if actual_bc_mode != expected_bc_mode:
+        return (
+            False,
+            "bc_margin_mode mismatch: "
+            f"requested {expected_bc_mode!r}, artifact has {actual_bc_mode!r}",
+        )
+    if actual_multi_label_mode != expected_multi_label_mode:
+        return (
+            False,
+            "rashomon_multi_label_mode mismatch: "
+            f"requested {expected_multi_label_mode!r}, artifact has {actual_multi_label_mode!r}",
+        )
+    if actual_surrogate != expected_surrogate:
+        return (
+            False,
+            "rashomon_surrogate mismatch: "
+            f"requested {expected_surrogate!r}, artifact has {actual_surrogate!r}",
+        )
+    return True, None
 
 
 def _parse_json_dict(value: str | None) -> dict[str, Any]:
@@ -236,6 +316,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-vi-steps", type=int, default=2000)
     parser.add_argument("--granularity", type=int, default=10)
     parser.add_argument("--unsafe-cost-threshold", type=float, default=0.5)
+    # Accepted-but-unused here: shield synthesis happens upstream in run_experiment.
+    # These must exist so apply_settings_to_namespace can apply the flattened
+    # shield_synthesis.* settings without raising on an unknown key.
+    parser.add_argument("--shield-method", default="value_iteration")
+    parser.add_argument("--n-rollout-episodes", type=int, default=None)
+    parser.add_argument("--behaviour-policy", default="uniform")
     parser.add_argument("--max-episode-steps", type=int, default=100)
     parser.add_argument(
         "--ghost-rand-prob",
@@ -316,6 +402,44 @@ def build_parser() -> argparse.ArgumentParser:
             "but can make the Rashomon set uncertifiable for deeper "
             "architectures - see --n-hidden."
         ),
+    )
+    parser.add_argument(
+        "--bc-margin-mode",
+        choices=("any", "all"),
+        default="any",
+        help=(
+            "BC safety-margin semantics for the base policy used to compute the "
+            "Rashomon set. 'any' keeps the historical criterion that at least "
+            "one safe action beats every unsafe action. 'all' requires every "
+            "safe action to beat every unsafe action."
+        ),
+    )
+    parser.add_argument(
+        "--rashomon-multi-label-mode",
+        choices=("any", "all"),
+        default="any",
+        help=(
+            "Admissible-set certificate/surrogate used for the Rashomon safe "
+            "parameter set. 'any' requires at least one safe action logit to "
+            "beat every unsafe action logit. 'all' requires every safe action "
+            "logit to beat every unsafe action logit."
+        ),
+    )
+    parser.add_argument(
+        "--rashomon-surrogate",
+        choices=("auto", "logsumexp"),
+        default="auto",
+        help=(
+            "Soft constraint used for Rashomon-set growth. 'auto' preserves the "
+            "historical per-mode formula; 'logsumexp' uses LSE for both modes."
+        ),
+    )
+    parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
+    parser.add_argument(
+        "--zonotope-rank",
+        type=int,
+        default=None,
+        help="Number of learned zonotope generator directions. Defaults to min(16, n_actor_params).",
     )
     # Base-policy architecture, which also determines the PSPO actor/critic.
     parser.add_argument("--n-hidden", type=int, default=2)
@@ -885,8 +1009,7 @@ def _rashomon_set_argv(
     if rashomon_dir is not None:
         rashomon_output_dir = Path(rashomon_dir).parent
         rashomon_run_id = Path(rashomon_dir).name
-    return (
-        [
+    argv = [
             "--output-dir",
             str(rashomon_output_dir),
             "--run-id",
@@ -905,6 +1028,8 @@ def _rashomon_set_argv(
             str(args.rashomon_batch_size),
             "--certificate-samples",
             str(args.certificate_samples),
+            "--safe-region-shape",
+            str(getattr(args, "safe_region_shape", "orthotope")),
             "--growth-method",
             str(getattr(args, "growth_method", "IBP")),
             "--certification-method",
@@ -916,6 +1041,12 @@ def _rashomon_set_argv(
             str(getattr(args, "bc_target_margin", 10.0)),
             "--linear-init-margin",
             str(getattr(args, "bc_target_margin", 10.0)),
+            "--bc-margin-mode",
+            str(getattr(args, "bc_margin_mode", "any")),
+            "--rashomon-multi-label-mode",
+            str(getattr(args, "rashomon_multi_label_mode", "any")),
+            "--rashomon-surrogate",
+            str(getattr(args, "rashomon_surrogate", "auto")),
             # Also sets the PSPO actor/critic architecture: the trainers build
             # their networks to match the base policy this stage produces.
             "--n-hidden",
@@ -931,10 +1062,9 @@ def _rashomon_set_argv(
             json.dumps(_env_kwargs_from_args(args)),
             "--state-representation",
             str(getattr(args, "state_representation", "one_hot")),
-        ],
-        rashomon_output_dir,
-        str(rashomon_run_id),
-    )
+        ]
+    _append_optional_arg(argv, "--zonotope-rank", getattr(args, "zonotope_rank", None))
+    return (argv, rashomon_output_dir, str(rashomon_run_id))
 
 
 def _rashomon_policy_argv(
@@ -951,6 +1081,8 @@ def _rashomon_policy_argv(
         "rashomon_policy",
         "--rashomon-dir",
         str(rashomon_dir),
+        "--safe-region-shape",
+        str(getattr(args, "safe_region_shape", "orthotope")),
         "--shield-path",
         str(shield_path),
         "--env-id",
@@ -1000,6 +1132,7 @@ def _rashomon_policy_argv(
         "--success-reward-threshold",
         str(args.success_reward_threshold),
     ]
+    _append_optional_arg(rashomon_policy_argv, "--zonotope-rank", getattr(args, "zonotope_rank", None))
     _append_monitoring_args(rashomon_policy_argv, args, run_dir, "rashomon_policy")
     _append_optional_arg(rashomon_policy_argv, "--max-episode-steps", args.max_episode_steps)
     return rashomon_policy_argv
@@ -1077,7 +1210,14 @@ def _rashomon_adaptive_argv(
         str(args.success_reward_threshold),
         "--rashomon-n-iters",
         str(args.adaptive_rashomon_n_iters),
+        "--rashomon-multi-label-mode",
+        str(getattr(args, "rashomon_multi_label_mode", "any")),
+        "--rashomon-surrogate",
+        str(getattr(args, "rashomon_surrogate", "auto")),
+        "--safe-region-shape",
+        str(getattr(args, "safe_region_shape", "orthotope")),
     ]
+    _append_optional_arg(rashomon_adaptive_argv, "--zonotope-rank", getattr(args, "zonotope_rank", None))
     _append_monitoring_args(rashomon_adaptive_argv, args, run_dir, "rashomon_adaptive_policy")
     _append_optional_arg(rashomon_adaptive_argv, "--max-episode-steps", args.max_episode_steps)
     return rashomon_adaptive_argv
@@ -1144,7 +1284,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     requested_device = str(args.device)
     args.device = _resolve_device(args.device)
     rashomon_dir = args.rashomon_dir
-    rashomon_bounds_exist = rashomon_dir is not None and _rashomon_bounds_path(Path(rashomon_dir)).exists()
+    rashomon_artifacts_reusable = False
+    rashomon_artifact_reason: str | None = None
+    rashomon_set_target_dir: Path | None = None
+    if rashomon_dir is not None:
+        requested_rashomon_dir = Path(rashomon_dir)
+        requested_region_path = (
+            _rashomon_bounds_path(requested_rashomon_dir)
+            if str(getattr(args, "safe_region_shape", "orthotope")) == "orthotope"
+            else _rashomon_zonotope_path(requested_rashomon_dir)
+        )
+        if requested_region_path.exists():
+            rashomon_artifacts_reusable, rashomon_artifact_reason = _rashomon_artifacts_reusable(
+                requested_rashomon_dir,
+                args,
+            )
+            if not rashomon_artifacts_reusable:
+                rashomon_set_target_dir = None
+        else:
+            rashomon_artifact_reason = f"missing Rashomon region artifact: {requested_region_path}"
+            rashomon_set_target_dir = requested_rashomon_dir
     requested_jobs = int(args.jobs)
     cpu_ids = normalise_cpu_ids(args.cpu_ids) if args.cpu_ids is not None else available_cpu_ids()
     policy_method_count = _policy_optimisation_method_count(args)
@@ -1216,9 +1375,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "shielded_evaluation_policy": args.shielded_evaluation_policy,
         "rashomon_evaluation_policy": args.rashomon_evaluation_policy,
+        "safe_region_shape": args.safe_region_shape,
+        "rashomon_surrogate": args.rashomon_surrogate,
+        "zonotope_rank": args.zonotope_rank,
         "shield_path": str(shield_path),
         "stages": {},
     }
+    if rashomon_dir is not None:
+        summary["requested_rashomon_dir"] = str(Path(rashomon_dir).resolve())
+        summary["rashomon_artifact_reusable"] = bool(rashomon_artifacts_reusable)
+        if rashomon_artifact_reason is not None:
+            summary["rashomon_artifact_reuse_reason"] = rashomon_artifact_reason
 
     def record_stage(
         stage_result: dict[str, Any],
@@ -1251,10 +1418,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             pending_specs.append({"stage": "cpo", "cpu_count": 1})
         if not _shielded_policy_skipped(args):
             pending_specs.append({"stage": _SHIELDED_STAGE_NAME, "cpu_count": 1})
-        if rashomon_bounds_exist:
+        if rashomon_artifacts_reusable:
             summary["stages"]["rashomon_set"] = {
                 "run_dir": str(Path(rashomon_dir).resolve()),
                 "reused": True,
+                "reuse_reason": "metadata_match",
             }
             if not args.skip_rashomon_policy:
                 pending_specs.append(
@@ -1277,7 +1445,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 args,
                 run_dir,
                 shield_path,
-                rashomon_dir,
+                rashomon_set_target_dir,
             )
             pending_specs.append(
                 {
@@ -1507,12 +1675,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 run_path=run_dir / _SHIELDED_STAGE_NAME,
             )
 
-        if not rashomon_bounds_exist and (not args.skip_rashomon_policy or not args.skip_rashomon_adaptive_policy):
+        if (
+            not rashomon_artifacts_reusable
+            and (not args.skip_rashomon_policy or not args.skip_rashomon_adaptive_policy)
+        ):
             rashomon_argv, _rashomon_output_dir, _rashomon_run_id = _rashomon_set_argv(
                 args,
                 run_dir,
                 shield_path,
-                rashomon_dir,
+                rashomon_set_target_dir,
             )
             rashomon_result = _run_stage_inline(
                 "rashomon_set",
@@ -1522,10 +1693,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             rashomon_dir = Path(rashomon_result["summary"]["run_dir"])
             record_stage(rashomon_result, run_path=Path(rashomon_dir))
-        elif rashomon_bounds_exist:
+        elif rashomon_artifacts_reusable:
             summary["stages"]["rashomon_set"] = {
                 "run_dir": str(Path(rashomon_dir).resolve()),
                 "reused": True,
+                "reuse_reason": "metadata_match",
                 "cpu_ids": list(cpu_ids[:1]),
             }
 

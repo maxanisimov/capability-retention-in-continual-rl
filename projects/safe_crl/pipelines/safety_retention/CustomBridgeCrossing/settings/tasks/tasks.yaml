@@ -31,3 +31,17 @@ custombridgecrossingv2_default:
   env_kwargs: null
   stochasticity:
     slip_prob: 0.0
+
+custombridgecrossing_paper_2503_07671:
+  env: CustomBridgeCrossing-v0
+  max_episode_steps: 600
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.04
+
+custombridgecrossingv2_paper_2503_07671:
+  env: CustomBridgeCrossingV2-v0
+  max_episode_steps: 600
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.04

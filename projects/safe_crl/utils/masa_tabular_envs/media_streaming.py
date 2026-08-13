@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import numpy as np
 from gymnasium import spaces
 
-from projects.safe_crl.utils.masa_tabular_envs.base import TabularEnv
+from projects.safe_crl.utils.masa_tabular_envs.base import ObservationMode, TabularEnv
 from projects.safe_crl.utils.masa_tabular_envs.dynamics import validate_positive_int, validate_probability
 from projects.safe_crl.utils.masa_tabular_envs.renderers.media_streaming import MediaStreamingRenderer
 
@@ -45,6 +46,7 @@ class CustomMediaStreaming(_MediaBase):
         start_state: int | None = None,
         render_mode: RenderMode | None = None,
         render_window_size: int = 640,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         self._fast_rate = validate_probability("fast_rate", fast_rate)
@@ -68,10 +70,12 @@ class CustomMediaStreaming(_MediaBase):
         self._state = None
         self._step_count = 0
         self._last_action = None
+        self._episode_reward = 0.0
         self.render_mode = render_mode
         self.render_window_size = int(render_window_size)
         self._renderer = MediaStreamingRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
@@ -79,9 +83,10 @@ class CustomMediaStreaming(_MediaBase):
         self._state = self._start_state
         self._step_count = 0
         self._last_action = None
+        self._episode_reward = 0.0
         if self.render_mode == "human":
             self.render()
-        return self._state, {}
+        return self._observe(self._state), {}
 
     def step(self, action: int):
         if not self.action_space.contains(action):
@@ -90,9 +95,23 @@ class CustomMediaStreaming(_MediaBase):
         self._last_action = int(action)
         self._step_count += 1
         reward = -1.0 if self._state == 0 else 0.0
+        self._episode_reward += float(reward)
         if self.render_mode == "human":
             self.render()
-        return self._state, reward, False, False, {}
+        return self._observe(self._state), reward, False, False, {
+            "success": False,
+            "is_success": False,
+        }
+
+    # v0: the state id *is* the buffer level.
+    def _state_components(self, state: int) -> tuple[int, ...]:
+        return (int(state),)
+
+    def _components_to_state(self, components: Sequence[int]) -> int:
+        return int(components[0])
+
+    def _component_maxima(self) -> tuple[int, ...]:
+        return (self._buffer_size - 1,)
 
     def _buffer_level_for_render(self) -> int:
         return int(self._start_state if self._state is None else self._state)
@@ -122,6 +141,7 @@ class CustomMediaStreamingV2(CustomMediaStreaming):
         c_threshold: int | None = None,
         render_mode: RenderMode | None = None,
         render_window_size: int = 640,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         _MediaBase.__init__(self)
         self._fast_rate = validate_probability("fast_rate", fast_rate)
@@ -163,16 +183,28 @@ class CustomMediaStreamingV2(CustomMediaStreaming):
         self._state = None
         self._step_count = 0
         self._last_action = None
+        self._episode_reward = 0.0
         self.render_mode = render_mode
         self.render_window_size = int(render_window_size)
         self._renderer = MediaStreamingRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
     def _encode_state(self, buffer_level: int, fast_count: int) -> int:
         return int(fast_count) * self._buffer_size + int(buffer_level)
 
     def _decode_state(self, state: int) -> tuple[int, int]:
         return int(state) % self._buffer_size, int(state) // self._buffer_size
+
+    # V2 state carries (buffer_level, fast_count).
+    def _state_components(self, state: int) -> tuple[int, ...]:
+        return self._decode_state(int(state))
+
+    def _components_to_state(self, components: Sequence[int]) -> int:
+        return self._encode_state(int(components[0]), int(components[1]))
+
+    def _component_maxima(self) -> tuple[int, ...]:
+        return self._buffer_size - 1, self._fast_count_cap
 
     def _buffer_level_for_render(self) -> int:
         return self._decode_state(self._start_state if self._state is None else self._state)[0]
@@ -185,9 +217,15 @@ class CustomMediaStreamingV2(CustomMediaStreaming):
         self._step_count += 1
         buffer_level, _fast_count = self._decode_state(self._state)
         reward = -1.0 if buffer_level == 0 else 0.0
+        self._episode_reward += float(reward)
+        terminated = bool(self._step_count >= self._episode_length)
+        success = bool(terminated and self._episode_reward == 0.0)
         if self.render_mode == "human":
             self.render()
-        return self._state, reward, False, False, {}
+        return self._observe(self._state), reward, terminated, False, {
+            "success": success,
+            "is_success": success,
+        }
 
     def label_fn(self, obs: int) -> set[str]:
         buffer_level, fast_count = self._decode_state(int(obs))
@@ -275,6 +313,7 @@ class CustomMediaStreamingV3(_MediaBase):
         self._buffer_level = self._start_buffer
         self._step_count = 0
         self._last_action = None
+        self._episode_reward = 0.0
         self.render_mode = render_mode
         self.render_window_size = int(render_window_size)
         self._renderer = MediaStreamingRenderer(self)
@@ -319,6 +358,7 @@ class CustomMediaStreamingV3(_MediaBase):
         self._buffer_level = self._start_buffer
         self._step_count = 0
         self._last_action = None
+        self._episode_reward = 0.0
         if self.render_mode == "human":
             self.render()
         return self._obs(), {}
@@ -334,10 +374,15 @@ class CustomMediaStreamingV3(_MediaBase):
         self._step_count += 1
         obs = self._obs()
         reward = -1.0 if obs["buffer"] == 0 else 0.0
+        self._episode_reward += float(reward)
         terminated = bool(obs["time"] >= self._episode_length)
+        success = bool(terminated and self._episode_reward == 0.0)
         if self.render_mode == "human":
             self.render()
-        return obs, reward, terminated, False, {}
+        return obs, reward, terminated, False, {
+            "success": success,
+            "is_success": success,
+        }
 
     def _buffer_level_for_render(self) -> int:
         return int(self._buffer_level)

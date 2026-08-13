@@ -18,16 +18,18 @@ if str(_REPO_ROOT) not in sys.path:
 from projects.safe_crl.pipelines.trajectory_retention.lunarlander.cli import launch_multi_seed
 from projects.safe_crl.pipelines.trajectory_retention.lunarlander.core.orchestration.run_paths import (
     RL_CHOICES,
+    default_adapt_distillation_settings_file,
     default_outputs_root,
     pipeline_root,
     validate_rl,
 )
 
 
-METHOD_CHOICES = ("unconstrained", "ewc", "rashomon", "rashomon_expanded", "rashomon_plus")
+METHOD_CHOICES = ("unconstrained", "ewc", "distillation", "rashomon", "rashomon_expanded", "rashomon_plus")
 METHOD_TO_POLICY = {
     "unconstrained": "downstream_unconstrained",
     "ewc": "downstream_ewc",
+    "distillation": "downstream_distillation",
     "rashomon": "downstream_rashomon",
     "rashomon_expanded": "downstream_rashomon_expanded",
     "rashomon_plus": "downstream_rashomon_plus",
@@ -54,6 +56,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ewc-lambda-override", type=float, default=None)
     parser.add_argument("--fisher-sample-size", type=int, default=10_000)
     parser.add_argument("--ewc-apply-to-critic", action="store_true")
+    parser.add_argument("--distillation-settings-file", type=Path, default=default_adapt_distillation_settings_file())
+    parser.add_argument("--distill-lambda-override", type=float, default=None)
+    parser.add_argument("--distill-batch-size", type=int, default=None)
+    parser.add_argument("--demo-rollouts", type=int, default=None)
     parser.add_argument("--rashomon-n-iters", type=int, default=None)
     parser.add_argument("--second-rashomon-n-iters", type=int, default=None)
     parser.add_argument("--rashomon-min-hard-spec", type=float, default=None)
@@ -77,6 +83,7 @@ def _launch_argv(args: argparse.Namespace) -> list[str]:
         "--resume-policy", args.resume_policy,
         "--poll-seconds", str(args.poll_seconds),
         "--fisher-sample-size", str(args.fisher_sample_size),
+        "--distillation-settings-file", str(args.distillation_settings_file),
     ]
     if args.cores is not None:
         argv.extend(["--cores", *[str(core) for core in args.cores]])
@@ -92,6 +99,12 @@ def _launch_argv(args: argparse.Namespace) -> list[str]:
         argv.extend(["--ewc-lambda-override", str(args.ewc_lambda_override)])
     if args.ewc_apply_to_critic:
         argv.append("--ewc-apply-to-critic")
+    if args.distill_lambda_override is not None:
+        argv.extend(["--distill-lambda-override", str(args.distill_lambda_override)])
+    if args.distill_batch_size is not None:
+        argv.extend(["--distill-batch-size", str(args.distill_batch_size)])
+    if args.demo_rollouts is not None:
+        argv.extend(["--demo-rollouts", str(args.demo_rollouts)])
     if args.rashomon_n_iters is not None:
         argv.extend(["--rashomon-n-iters", str(args.rashomon_n_iters)])
     if args.second_rashomon_n_iters is not None:

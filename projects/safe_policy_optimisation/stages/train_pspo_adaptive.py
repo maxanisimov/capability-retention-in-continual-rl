@@ -19,7 +19,7 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from provably_safe_policy_optimisation import AdaptiveSafePPO, Shield  # noqa: E402
+from provably_safe_policy_optimisation import AdaptiveSafePPO, AdaptiveSafePPOV2, Shield  # noqa: E402
 
 from projects.safe_policy_optimisation.stages.train_ppo_shield import (  # noqa: E402
     _episode_rows,
@@ -37,9 +37,9 @@ from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (  #
     _make_env_factory,
     _resolve_curve_eval_freq,
     _write_csv,
+    env_kwargs_with_state_representation,
     policy_kwargs_from_base_architecture,
 )
-from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
 from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
     success_mode_for_env,
@@ -103,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shield-path", type=Path, required=True)
     parser.add_argument("--env-id", default=None)
     parser.add_argument("--env-kwargs", default=None, help="JSON object passed to gym.make.")
+    parser.add_argument("--state-representation", choices=("one_hot", "features"), default=None)
     parser.add_argument("--max-episode-steps", type=int, default=100)
     parser.add_argument("--shield-key", default="shield")
     parser.add_argument("--shield-source", choices=("shield", "action_risk"), default="shield")
@@ -153,6 +154,33 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Fixed inverse temperature for the Rashomon surrogate. Defaults to per-call calibration.",
+    )
+    parser.add_argument(
+        "--rashomon-multi-label-mode",
+        choices=("any", "all"),
+        default="any",
+        help=(
+            "Admissible-set certificate/surrogate used for adaptive Rashomon boxes. "
+            "'any' requires at least one safe action logit to beat every unsafe "
+            "action logit. 'all' requires every safe action logit to beat every "
+            "unsafe action logit."
+        ),
+    )
+    parser.add_argument(
+        "--rashomon-surrogate",
+        choices=("auto", "logsumexp"),
+        default="auto",
+        help=(
+            "Soft constraint used for adaptive Rashomon boxes. 'auto' preserves "
+            "the historical per-mode formula; 'logsumexp' uses LSE for both modes."
+        ),
+    )
+    parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
+    parser.add_argument(
+        "--zonotope-rank",
+        type=int,
+        default=None,
+        help="Number of learned zonotope generator directions. Defaults to min(16, n_actor_params).",
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--n-steps", type=int, default=512)
@@ -211,9 +239,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    algorithm_name = getattr(args, "algorithm_name", ALGORITHM_NAME)
+    adaptive_version = getattr(args, "adaptive_version", "v1")
+    if adaptive_version not in ("v1", "v2"):
+        raise ValueError(f"adaptive_version must be 'v1' or 'v2', got {adaptive_version!r}.")
     if args.env_id is None:
         raise ValueError("--env-id is required for adaptive safe policy training.")
-    env_kwargs = parse_env_kwargs(args.env_kwargs)
+    env_kwargs = env_kwargs_with_state_representation(args)
     mask = load_shield_mask(
         args.shield_path,
         shield_key=args.shield_key,
@@ -256,7 +288,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 f"architecture={architecture['n_actions']}, env={expected_n_actions}."
             )
 
-        model = AdaptiveSafePPO(
+        model_cls = AdaptiveSafePPO if adaptive_version == "v1" else AdaptiveSafePPOV2
+        adaptive_kwargs: dict[str, Any] = {}
+        if adaptive_version == "v2":
+            adaptive_kwargs.update(
+                {
+                    "region_update_mode": args.region_update_mode,
+                    "rashomon_budget_mode": args.rashomon_budget_mode,
+                    "rashomon_total_iters": args.rashomon_total_iters,
+                    "rashomon_initial_n_iters": args.rashomon_initial_n_iters,
+                    "rashomon_recompute_n_iters": args.rashomon_recompute_n_iters,
+                    "rashomon_max_region_computations": args.rashomon_max_region_computations,
+                }
+            )
+        model = model_cls(
             "MlpPolicy",
             train_env,
             shield=mask,
@@ -272,7 +317,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             rashomon_batch_size=args.rashomon_batch_size,
             rashomon_certificate_samples=args.certificate_samples,
             rashomon_inverse_temperature=args.rashomon_inverse_temp,
+            rashomon_multi_label_mode=args.rashomon_multi_label_mode,
+            rashomon_surrogate=args.rashomon_surrogate,
+            safe_region_shape=args.safe_region_shape,
+            zonotope_rank=args.zonotope_rank,
             rashomon_seed=args.seed,
+            **adaptive_kwargs,
             policy_kwargs=policy_kwargs,
             learning_rate=args.learning_rate,
             n_steps=args.n_steps,
@@ -308,7 +358,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             reward_threshold=args.success_reward_threshold,
             eval_policy=args.early_stop_eval_policy,
         )
-        log_info(f"[{ALGORITHM_NAME}] training for up to {args.total_timesteps} timesteps")
+        log_info(f"[{algorithm_name}] training for up to {args.total_timesteps} timesteps")
         model.learn(total_timesteps=args.total_timesteps, callback=[reward_curve, early_stop])
         final_curve_evaluation = reward_curve.record_final_evaluation()
         training_records = list(train_env.episodes)
@@ -361,7 +411,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         eval_env.close()
 
     config = {
-        "algorithm": ALGORITHM_NAME,
+        "algorithm": algorithm_name,
         "env_id": args.env_id,
         "env_kwargs": env_kwargs,
         "max_episode_steps": args.max_episode_steps,
@@ -378,6 +428,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "activation_fn": "Tanh",
         },
         "adaptive": {
+            "version": adaptive_version,
             "granularity": args.adaptive_granularity,
             "unsafe_update_strategy": args.unsafe_update_strategy,
             "rashomon_n_iters": int(args.rashomon_n_iters),
@@ -385,6 +436,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "rashomon_batch_size": int(args.rashomon_batch_size),
             "certificate_samples": args.certificate_samples,
             "rashomon_inverse_temperature": args.rashomon_inverse_temp,
+            "rashomon_multi_label_mode": args.rashomon_multi_label_mode,
+            "rashomon_surrogate": args.rashomon_surrogate,
+            "rashomon_resolved_surrogate": (
+                "logsumexp"
+                if args.rashomon_surrogate == "logsumexp"
+                or args.rashomon_multi_label_mode == "all"
+                else "probability"
+            ),
+            "safe_region_shape": args.safe_region_shape,
+            "zonotope_rank": args.zonotope_rank,
+            **(
+                {
+                    "region_update_mode": args.region_update_mode,
+                    "rashomon_budget_mode": args.rashomon_budget_mode,
+                    "rashomon_total_iters": args.rashomon_total_iters,
+                    "rashomon_initial_n_iters": args.rashomon_initial_n_iters,
+                    "rashomon_recompute_n_iters": args.rashomon_recompute_n_iters,
+                    "rashomon_max_region_computations": args.rashomon_max_region_computations,
+                }
+                if adaptive_version == "v2"
+                else {}
+            ),
         },
         "cost_limit": float(args.cost_limit),
         "total_timesteps": int(args.total_timesteps),
@@ -456,7 +529,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     summary = {
-        "algorithm": ALGORITHM_NAME,
+        "algorithm": algorithm_name,
         "model_path": str(run_dir / "model.zip"),
         "final_timesteps": int(model.num_timesteps),
         "total_exploration_steps": int(model.num_timesteps),
@@ -496,13 +569,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             eval_records,
             success_reward_threshold=float(args.success_reward_threshold),
             cost_limit=float(args.cost_limit),
-            algorithm=ALGORITHM_NAME,
+            algorithm=algorithm_name,
             success_mode=success_mode_for_env(getattr(args, "env_id", None)),
         ),
     )
     log_info(
         "[{algorithm}] executed unsafe actions: {unsafe}/{checked} ({pct:.2f}%)".format(
-            algorithm=ALGORITHM_NAME,
+            algorithm=algorithm_name,
             unsafe=executed_action_diagnostics["executed_unsafe_action_count"],
             checked=executed_action_diagnostics["executed_action_checks"],
             pct=executed_action_diagnostics["executed_unsafe_action_percentage"],
@@ -511,7 +584,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     log_info(
         "[{algorithm}] adaptive updates: {accepted}/{checked} accepted without Rashomon, "
         "{rashomon} Rashomon computations, {projections} projections, {reverts} reverts".format(
-            algorithm=ALGORITHM_NAME,
+            algorithm=algorithm_name,
             accepted=adaptive_diagnostics["accepted_without_rashomon"],
             checked=adaptive_diagnostics["verifications_run"],
             rashomon=adaptive_diagnostics["rashomon_computations"],

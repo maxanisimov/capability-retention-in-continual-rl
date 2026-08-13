@@ -1,6 +1,7 @@
 """Tests for the Rashomon-set computation API: the order-statistic aggregation,
 temperature calibration, `_get_min_acc`, `_certify_groups`, and `compute_rashomon_set`."""
 
+import copy
 import unittest
 
 import torch
@@ -11,12 +12,16 @@ import src.verification.verify as verify
 from src.interval_utils import (
     _calibrate_temperature,
     _certify_groups,
+    _create_hook,
     _get_min_acc,
     _order_statistic_k,
     _order_statistic_select,
+    _project_bounded_model,
+    _resolve_param_masks,
     compute_rashomon_set,
 )
 from src.rashomon_spec import resolve_accuracy
+from src.zonotope_rashomon import compute_zonotope_rashomon_set
 
 
 def _build_model_and_bounds():
@@ -66,6 +71,190 @@ def _train_to_fit(model, x, y, steps=200, lr=0.05):
         loss.backward()
         opt.step()
     return model
+
+
+class ParameterMaskTests(unittest.TestCase):
+    def setUp(self):
+        self.model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        self.bounded_model = IntervalBoundedModel(self.model)
+
+    def _empty_masks(self):
+        return [
+            torch.zeros_like(param, dtype=torch.bool)
+            for param in self.bounded_model.param_l
+        ]
+
+    def test_shared_and_side_specific_masks_are_combined(self):
+        shared = self._empty_masks()
+        lower = self._empty_masks()
+        upper = self._empty_masks()
+        shared[0][0, 0] = True
+        lower[0][0, 1] = True
+        upper[0][1, 0] = True
+
+        effective_l, effective_u = _resolve_param_masks(
+            self.bounded_model, shared, lower, upper
+        )
+
+        self.assertTrue(effective_l[0][0, 0])
+        self.assertTrue(effective_u[0][0, 0])
+        self.assertTrue(effective_l[0][0, 1])
+        self.assertFalse(effective_u[0][0, 1])
+        self.assertFalse(effective_l[0][1, 0])
+        self.assertTrue(effective_u[0][1, 0])
+
+    def test_separate_hooks_zero_only_the_selected_bound_gradients(self):
+        lower = self._empty_masks()
+        upper = self._empty_masks()
+        lower[0][0, 0] = True
+        upper[0][0, 1] = True
+        pl = self.bounded_model.param_l[0]
+        pu = self.bounded_model.param_u[0]
+        pl.requires_grad_(True)
+        pu.requires_grad_(True)
+        lower_handle = pl.register_hook(_create_hook(lower[0]))
+        upper_handle = pu.register_hook(_create_hook(upper[0]))
+
+        (pl.sum() + pu.sum()).backward()
+
+        self.assertEqual(pl.grad[0, 0].item(), 0.0)
+        self.assertEqual(pl.grad[0, 1].item(), 1.0)
+        self.assertEqual(pu.grad[0, 0].item(), 1.0)
+        self.assertEqual(pu.grad[0, 1].item(), 0.0)
+        lower_handle.remove()
+        upper_handle.remove()
+
+    def test_projection_restores_only_masked_sides_to_nominal(self):
+        lower = self._empty_masks()
+        upper = self._empty_masks()
+        lower[0][0, 0] = True
+        upper[0][0, 1] = True
+        with torch.no_grad():
+            for pl, pu in zip(
+                self.bounded_model.param_l, self.bounded_model.param_u
+            ):
+                pl.sub_(1.0)
+                pu.add_(1.0)
+
+        _project_bounded_model(
+            self.bounded_model, param_l_mask=lower, param_u_mask=upper
+        )
+
+        pn = self.bounded_model.param_n[0]
+        pl = self.bounded_model.param_l[0]
+        pu = self.bounded_model.param_u[0]
+        self.assertEqual(pl[0, 0].item(), pn[0, 0].item())
+        self.assertEqual(pu[0, 1].item(), pn[0, 1].item())
+        self.assertAlmostEqual(pl[0, 1].item(), pn[0, 1].item() - 1.0, places=6)
+        self.assertAlmostEqual(pu[0, 0].item(), pn[0, 0].item() + 1.0, places=6)
+
+    def test_invalid_masks_are_rejected(self):
+        masks = self._empty_masks()
+        with self.assertRaisesRegex(ValueError, "one tensor per model parameter"):
+            _resolve_param_masks(self.bounded_model, masks[:-1], None, None)
+
+        wrong_shape = self._empty_masks()
+        wrong_shape[0] = torch.zeros(1, dtype=torch.bool)
+        with self.assertRaisesRegex(ValueError, "must have shape"):
+            _resolve_param_masks(self.bounded_model, None, wrong_shape, None)
+
+        wrong_dtype = self._empty_masks()
+        wrong_dtype[0] = wrong_dtype[0].float()
+        with self.assertRaisesRegex(TypeError, "dtype torch.bool"):
+            _resolve_param_masks(self.bounded_model, None, None, wrong_dtype)
+
+    def test_public_api_enforces_masks_on_early_return(self):
+        inputs = torch.zeros(2, 2)
+        targets = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+        dataset = torch.utils.data.TensorDataset(inputs, targets)
+        lower = self._empty_masks()
+        upper = self._empty_masks()
+        lower[0][0, 0] = True
+        upper[0][0, 1] = True
+
+        result = compute_rashomon_set(
+            self.model,
+            dataset,
+            accuracy=0.0,
+            param_l_mask=lower,
+            param_u_mask=upper,
+        )
+
+        bounded_model = result.bounded_models[0]
+        pn = bounded_model.param_n[0]
+        self.assertEqual(bounded_model.param_l[0][0, 0].item(), pn[0, 0].item())
+        self.assertEqual(bounded_model.param_u[0][0, 1].item(), pn[0, 1].item())
+        self.assertLess(bounded_model.param_l[0][0, 1].item(), pn[0, 1].item())
+        self.assertGreater(bounded_model.param_u[0][0, 0].item(), pn[0, 0].item())
+
+    def test_outer_box_is_not_mutated_and_masks_use_current_nominal_parameters(self):
+        outer_model = copy.deepcopy(self.model)
+        with torch.no_grad():
+            for param in outer_model.parameters():
+                param.add_(0.25)
+        outer_bbox = IntervalBoundedModel(outer_model)
+        with torch.no_grad():
+            for pl, pu in zip(outer_bbox.param_l, outer_bbox.param_u):
+                pl.sub_(1.0)
+                pu.add_(1.0)
+        outer_l_before = [pl.detach().clone() for pl in outer_bbox.param_l]
+        outer_u_before = [pu.detach().clone() for pu in outer_bbox.param_u]
+        lower = self._empty_masks()
+        lower[0][0, 0] = True
+        inputs = torch.zeros(2, 2)
+        targets = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+
+        result = compute_rashomon_set(
+            self.model,
+            torch.utils.data.TensorDataset(inputs, targets),
+            accuracy=0.0,
+            outer_bbox=outer_bbox,
+            param_l_mask=lower,
+        )
+
+        bounded_model = result.bounded_models[0]
+        current_nominal = next(self.model.parameters())
+        self.assertEqual(
+            bounded_model.param_l[0][0, 0].item(), current_nominal[0, 0].item()
+        )
+        for actual, expected in zip(outer_bbox.param_l, outer_l_before):
+            self.assertTrue(torch.equal(actual, expected))
+        for actual, expected in zip(outer_bbox.param_u, outer_u_before):
+            self.assertTrue(torch.equal(actual, expected))
+
+    def test_masks_remain_enforced_during_optimization_and_at_checkpoints(self):
+        with torch.no_grad():
+            self.model[0].weight.zero_()
+            self.model[0].bias.copy_(torch.tensor([2.0, 0.0]))
+        lower = self._empty_masks()
+        upper = self._empty_masks()
+        lower[0][0, 0] = True
+        upper[0][0, 1] = True
+        inputs = torch.zeros(4, 2)
+        targets = torch.tensor([[1.0, 0.0]]).expand(4, -1).clone()
+
+        result = compute_rashomon_set(
+            self.model,
+            torch.utils.data.TensorDataset(inputs, targets),
+            accuracy=0.5,
+            batch_size=4,
+            certificate_samples=4,
+            n_iters=3,
+            checkpoint=1,
+            temperatures={None: 0.1},
+            param_l_mask=lower,
+            param_u_mask=upper,
+        )
+
+        self.assertGreater(len(result.bounded_models), 1)
+        for bounded_model in result.bounded_models:
+            pn = bounded_model.param_n[0]
+            self.assertEqual(
+                bounded_model.param_l[0][0, 0].item(), pn[0, 0].item()
+            )
+            self.assertEqual(
+                bounded_model.param_u[0][0, 1].item(), pn[0, 1].item()
+            )
 
 
 class OrderStatisticTests(unittest.TestCase):
@@ -133,6 +322,60 @@ class GetMinAccTests(unittest.TestCase):
             )
             expected = _order_statistic_select(per_sample, target_accuracy)
             self.assertTrue(torch.allclose(acc, expected), msg=f"target_accuracy={target_accuracy}")
+
+    def test_logsumexp_surrogate_matches_independently_computed_order_statistic(self):
+        bounded_model, X, y = _build_model_and_bounds()
+        tau = 0.7
+        per_sample = verify.bound_multi_label_accuracy_margin(
+            _raw_logits(bounded_model, X, X),
+            y,
+            tau=tau,
+            lower=True,
+            aggregation="none",
+            surrogate="logsumexp",
+        )
+        for target_accuracy in (1.0, 0.8, 0.6, 0.4, 0.2):
+            actual = _get_min_acc(
+                bounded_model,
+                X,
+                X,
+                y,
+                target_accuracy,
+                group=None,
+                tau=tau,
+                soft=True,
+                surrogate="logsumexp",
+            )
+            expected = _order_statistic_select(per_sample, target_accuracy)
+            self.assertTrue(torch.allclose(actual, expected), msg=f"target_accuracy={target_accuracy}")
+
+    def test_all_mode_matches_independently_computed_order_statistic(self):
+        bounded_model, X, y = _build_model_and_bounds()
+        tau = 0.5
+        logits = _raw_logits(bounded_model, X, X)
+        per_sample_hard = verify.bound_multi_label_accuracy(
+            logits, y, lower=True, aggregation="none", mode="all",
+        )
+        per_sample_soft = verify.bound_multi_label_accuracy_margin(
+            logits, y, tau=tau, lower=True, aggregation="none", mode="all",
+        )
+        for target_accuracy in (1.0, 0.8, 0.6, 0.4, 0.2):
+            hard = _get_min_acc(
+                bounded_model, X, X, y, target_accuracy, group=None, tau=tau,
+                soft=False, multi_label_mode="all",
+            )
+            soft = _get_min_acc(
+                bounded_model, X, X, y, target_accuracy, group=None, tau=tau,
+                soft=True, multi_label_mode="all",
+            )
+            self.assertTrue(
+                torch.allclose(hard, _order_statistic_select(per_sample_hard, target_accuracy)),
+                msg=f"hard target_accuracy={target_accuracy}",
+            )
+            self.assertTrue(
+                torch.allclose(soft, _order_statistic_select(per_sample_soft, target_accuracy)),
+                msg=f"soft target_accuracy={target_accuracy}",
+            )
 
     def test_target_accuracy_one_matches_old_strict_min_behavior(self):
         # target_accuracy=1.0 -> k=1 -> the literal minimum, i.e. the old aggregation="min".
@@ -221,6 +464,29 @@ class ResolveAccuracyTests(unittest.TestCase):
 
 
 class CalibrateTemperatureTests(unittest.TestCase):
+    def test_logsumexp_calibration_uses_logsumexp_margin(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        with torch.no_grad():
+            model[0].weight.zero_()
+            model[0].bias.copy_(torch.tensor([1.0, 0.0]))
+        bounded_model = IntervalBoundedModel(model)
+        X = torch.zeros(3, 2)
+        y = torch.tensor([[1.0, 0.0]]).expand(3, -1).clone()
+
+        temperatures = _calibrate_temperature(
+            bounded_model,
+            X,
+            X,
+            y,
+            accuracy=1.0,
+            groups=[None],
+            group_by=None,
+            context_mask=None,
+            surrogate="logsumexp",
+        )
+
+        self.assertEqual(temperatures, {None: 0.1})
+
     def test_calibrates_a_temperature_from_the_doubling_ladder(self):
         bounded_model, X, y = _build_model_and_bounds()
         accuracy = 0.6
@@ -345,8 +611,35 @@ class ComputeRashomonSetSmokeTests(unittest.TestCase):
             model, dataset, accuracy,
             batch_size=n, certificate_samples=n, n_iters=2,
             temperatures={None: forced_temperature},
+            surrogate="logsumexp",
         )
         self.assertEqual(result.temperatures, {None: forced_temperature})
+        self.assertEqual(result.surrogate, "logsumexp")
+        self.assertEqual(result.resolved_surrogate, "logsumexp")
+
+    def test_zonotope_engine_records_and_uses_logsumexp_surrogate(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        with torch.no_grad():
+            model[0].weight.zero_()
+            model[0].bias.copy_(torch.tensor([2.0, 0.0]))
+        inputs = torch.zeros(4, 2)
+        targets = torch.tensor([[1.0, 0.0]]).expand(4, -1).clone()
+        dataset = torch.utils.data.TensorDataset(inputs, targets)
+
+        result = compute_zonotope_rashomon_set(
+            model,
+            dataset,
+            rank=1,
+            n_iters=1,
+            checkpoint=1,
+            batch_size=4,
+            certificate_samples=4,
+            surrogate="logsumexp",
+        )
+
+        self.assertEqual(result.surrogate, "logsumexp")
+        self.assertEqual(result.resolved_surrogate, "logsumexp")
+        self.assertGreater(result.certificates[-1][0].min_surrogate, 0.0)
 
     def test_infeasible_hard_accuracy_terminates_without_calibration(self):
         torch.manual_seed(0)

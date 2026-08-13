@@ -12,6 +12,7 @@ import gymnasium as gym
 import torch as th
 from torch import nn
 
+from provably_safe_policy_optimisation import ZonotopeRegion
 from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
 from provably_safe_policy_optimisation.projected_dqn import ProjectedDQN
 
@@ -117,6 +118,43 @@ class ProjectedAdamTests(unittest.TestCase):
         bad_upper = [th.ones(99) for _ in params]
         with self.assertRaises(ValueError):
             opt.set_bounds(bad_lower, bad_upper)
+
+    def test_zonotope_region_projects_to_segment(self) -> None:
+        module = _tiny_module((2,))
+        region = ZonotopeRegion(
+            center_params=[th.zeros(2)],
+            generators=th.tensor([[1.0, 1.0]]),
+            coefficient_l=th.tensor([-1.0]),
+            coefficient_u=th.tensor([1.0]),
+            param_shapes=[(2,)],
+        )
+        with th.no_grad():
+            module[0].copy_(th.tensor([2.0, 0.0]))
+        opt = ProjectedAdam(module.parameters(), lr=1e-3)
+        opt.set_regions([region], project_on_set=False)
+
+        result = opt.project_now()
+
+        self.assertTrue(th.allclose(module[0].data, th.tensor([1.0, 1.0]), atol=1e-6))
+        self.assertGreater(result.displacement_l2, 0.0)
+        self.assertEqual(result.selected_set_index, 0)
+
+    def test_zonotope_region_recognises_feasible_point(self) -> None:
+        module = _tiny_module((2,))
+        region = ZonotopeRegion(
+            center_params=[th.zeros(2)],
+            generators=th.tensor([[1.0, 1.0]]),
+            coefficient_l=th.tensor([-1.0]),
+            coefficient_u=th.tensor([1.0]),
+            param_shapes=[(2,)],
+        )
+        with th.no_grad():
+            module[0].copy_(th.tensor([0.25, 0.25]))
+        opt = ProjectedAdam(module.parameters(), lr=1e-3)
+        opt.set_regions([region], project_on_set=False)
+
+        self.assertLessEqual(opt.max_violation(), 1e-6)
+        self.assertTrue(opt.is_within_bounds(atol=1e-6))
 
 
 class ProjectedDQNTests(unittest.TestCase):

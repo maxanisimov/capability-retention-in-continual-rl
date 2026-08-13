@@ -2,8 +2,9 @@
 
 For each sweep in SWEEPS, reads every seed's per-stage
 learning_curves/evaluation_*_summary.csv, aggregates mean_total_reward and
-safety_rate across seeds at each eval checkpoint (mean line + shaded ± stderr
-band vs. timestep), and plots all 8 methods overlaid per environment.
+safety_rate across seeds at each eval checkpoint (mean line + shaded +/- stderr
+band vs. timestep), and plots all non-adaptive methods overlaid per
+environment.
 
 To reuse for another environment or architecture: edit SWEEPS (env label ->
 path to that sweep's run directory, i.e. the dir containing seed0, seed1, ...),
@@ -21,15 +22,14 @@ import pandas as pd
 
 REPO = "/vol/bitbucket/ma5923/_projects/CertifiedContinualLearning"
 
-# Completed sweeps using the 2-hidden-layer actor-critic architecture and
-# index (one-hot) state encoding, verified consistent (baselines and PSPO
-# stages point at the same n_hidden=2 Rashomon dir) as of 2026-07-24.
+# Latest completed sweeps using the 2-hidden-layer actor-critic architecture and
+# index (one-hot) state encoding.
 SWEEPS = {
     "Media Streaming": f"{REPO}/outputs/_sweeps/20260723_204829/paper_2503_07671_media_streaming",
     "Colour Bomb": f"{REPO}/outputs/_sweeps/20260723_215050/paper_2503_07671_colour_bomb",
-    "Bridge Crossing": f"{REPO}/outputs/_sweeps/20260723_221110/paper_2503_07671_bridge_crossing",
-    "Bridge Crossing v2": f"{REPO}/outputs/_sweeps/20260723_231451/paper_2503_07671_bridge_crossing_v2",
-    "Colour Bomb v2": f"{REPO}/outputs/_sweeps/20260723_233403/paper_2503_07671_colour_bomb_v2",
+    "Bridge Crossing": f"{REPO}/outputs/_sweeps/20260724_124311/paper_2503_07671_bridge_crossing",
+    "Bridge Crossing v2": f"{REPO}/outputs/_sweeps/20260724_152054/paper_2503_07671_bridge_crossing_v2",
+    "Colour Bomb v2": f"{REPO}/outputs/_sweeps/20260724_164416/paper_2503_07671_colour_bomb_v2",
 }
 
 # (metrics-key, display label, color) - keep in sync with plot_reward_safety_bars.py
@@ -40,8 +40,7 @@ METHODS = [
     ("cpo/cpo", "CPO", "yellow"),
     ("ppo_shield/shielded", "PPO-Shield", "blue"),
     ("ppo_shield/nominal", "PPO-Shield-Nominal", "lightblue"),
-    ("rashomon_policy", "PSPO (precomputed)", "purple"),
-    ("rashomon_adaptive_policy", "PSPO (adaptive)", "green"),
+    ("rashomon_policy", "PSPO", "green"),
 ]
 COLORS = [color for _key, _label, color in METHODS]
 
@@ -56,7 +55,6 @@ CURVE_FILES = {
     "ppo_shield/shielded": "ppo_shield/learning_curves/evaluation_shielded_summary.csv",
     "ppo_shield/nominal": "ppo_shield/learning_curves/evaluation_unshielded_summary.csv",
     "rashomon_policy": "rashomon_policy/learning_curves/evaluation_unshielded_summary.csv",
-    "rashomon_adaptive_policy": "rashomon_adaptive_policy/learning_curves/evaluation_unshielded_summary.csv",
 }
 
 plt.rcParams.update({
@@ -131,16 +129,16 @@ for row, (env_name, run_dir_str) in enumerate(SWEEPS.items()):
     ax_s.set_xlabel("Timestep")
 
 handles, labels = axes[0, 0].get_legend_handles_labels()
-# fall back to a row with a full 8-method legend in case row 0 is missing a method
+# fall back to a row with a full-method legend in case row 0 is missing a method
 for r in range(n_envs):
     h, l = axes[r, 0].get_legend_handles_labels()
     if len(l) >= len(METHODS):
         handles, labels = h, l
         break
 # matplotlib fills multi-column legends column-major; reorder to row-major so a
-# 2x4 legend reads left-to-right, top-to-bottom - matches plot_reward_safety_bars.py.
+# 2-row legend reads left-to-right, top-to-bottom - matches plot_reward_safety_bars.py.
 if len(labels) == len(METHODS):
-    row_major_order = [0, 4, 1, 5, 2, 6, 3, 7]
+    row_major_order = [0, 4, 1, 5, 2, 6, 3]
     handles = [handles[i] for i in row_major_order]
     labels = [labels[i] for i in row_major_order]
 fig.legend(handles, labels, loc="lower center", ncol=4, frameon=False,

@@ -38,6 +38,7 @@ class SafeInitReport:
     bc_epochs: int
     sampled_greedy_safe_rate: float
     refine_epochs: int = 0
+    final_ibp_margin: float | None = None
     certified_fraction: float | None = None  # None when certification was not run
     all_certified: bool | None = None
 
@@ -132,11 +133,11 @@ def certified_refine(
     max_epochs: int,
     target_margin: float = 0.1,
 ) -> int:
-    """Train the worst-case IBP margin over region boxes until certified or budget spent."""
+    """Train the worst-case IBP margin over region boxes until target margin or budget spent."""
     optimizer = th.optim.Adam(params, lr=lr)
     for epoch in range(1, max_epochs + 1):
         margin = _worst_case_margin(seq, x_l, x_u, safe_mask)
-        if float(margin.min().item()) > 0:
+        if float(margin.min().item()) >= target_margin:
             return epoch - 1
         loss = F.relu(target_margin - margin).sum()
         optimizer.zero_grad()
@@ -262,6 +263,9 @@ def run_safe_init(
     report.refine_epochs = certified_refine(
         certify_seq, x_l, x_u, cert_mask, list(params),
         lr=lr, max_epochs=refine_max_epochs, target_margin=target_margin,
+    )
+    report.final_ibp_margin = float(
+        _worst_case_margin(certify_seq, x_l, x_u, cert_mask).min().detach().cpu().item()
     )
     frac, all_certified = certify_with_verifier(certify_seq, x_l, x_u, cert_mask)
     report.certified_fraction = frac

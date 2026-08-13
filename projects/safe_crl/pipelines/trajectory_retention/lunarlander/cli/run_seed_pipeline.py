@@ -19,6 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
 from projects.safe_crl.pipelines.trajectory_retention.lunarlander.core.orchestration.run_paths import (
     RL_CHOICES,
     SOURCE_MODE,
+    default_adapt_distillation_settings_file,
     default_adapt_ewc_settings_file,
     default_adapt_ppo_settings_file,
     default_adapt_rashomon_settings_file,
@@ -34,16 +35,18 @@ from projects.safe_crl.pipelines.trajectory_retention.lunarlander.core.orchestra
 METHOD_TO_MODE = {
     "unconstrained": "downstream_unconstrained",
     "ewc": "downstream_ewc",
+    "distillation": "downstream_distillation",
     "rashomon": "downstream_rashomon",
     "rashomon_expanded": "downstream_rashomon_expanded",
     "rashomon_plus": "downstream_rashomon_plus",
 }
-METHOD_ORDER = ("unconstrained", "ewc", "rashomon", "rashomon_expanded", "rashomon_plus")
+METHOD_ORDER = ("unconstrained", "ewc", "distillation", "rashomon", "rashomon_expanded", "rashomon_plus")
 
 MODE_TO_CLI = {
     SOURCE_MODE: "train_source.py",
     "downstream_unconstrained": "adapt_unconstrained.py",
     "downstream_ewc": "adapt_ewc.py",
+    "downstream_distillation": "adapt_distillation.py",
     "downstream_rashomon": "adapt_rashomon.py",
     "downstream_rashomon_expanded": "adapt_rashomon_expanded.py",
     "downstream_rashomon_plus": "adapt_rashomon_plus.py",
@@ -51,6 +54,7 @@ MODE_TO_CLI = {
 MODE_TO_RUN_SUBDIR = {
     "downstream_unconstrained": "downstream_unconstrained",
     "downstream_ewc": "downstream_ewc",
+    "downstream_distillation": "downstream_distillation",
     "downstream_rashomon": "downstream_rashomon",
     "downstream_rashomon_expanded": "downstream_rashomon_expanded",
     "downstream_rashomon_plus": "downstream_rashomon_plus",
@@ -69,6 +73,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-settings-file", type=Path, default=default_task_settings_file())
     parser.add_argument("--adapt-settings-file", type=Path, default=default_adapt_ppo_settings_file())
     parser.add_argument("--ewc-settings-file", type=Path, default=default_adapt_ewc_settings_file())
+    parser.add_argument("--distillation-settings-file", type=Path, default=default_adapt_distillation_settings_file())
     parser.add_argument("--rashomon-settings-file", type=Path, default=default_adapt_rashomon_settings_file())
     parser.add_argument("--outputs-root", type=Path, default=default_outputs_root())
     parser.add_argument("--source-run-root", type=Path, default=None)
@@ -78,6 +83,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ewc-lambda-override", type=float, default=None)
     parser.add_argument("--fisher-sample-size", type=int, default=10_000)
     parser.add_argument("--ewc-apply-to-critic", action="store_true")
+    parser.add_argument("--distill-lambda-override", type=float, default=None)
+    parser.add_argument("--distill-batch-size", type=int, default=None)
+    parser.add_argument("--demo-rollouts", type=int, default=None)
     parser.add_argument("--rashomon-n-iters", type=int, default=None)
     parser.add_argument("--second-rashomon-n-iters", type=int, default=None)
     parser.add_argument("--rashomon-min-hard-spec", type=float, default=None)
@@ -149,6 +157,24 @@ def _build_ewc_cmd(args: argparse.Namespace) -> list[str]:
     return cmd
 
 
+def _build_distillation_cmd(args: argparse.Namespace) -> list[str]:
+    cmd = [sys.executable, str(_worker_script("downstream_distillation"))]
+    cmd.extend(_common_downstream_args(args, "downstream_distillation"))
+    cmd.extend(["--adapt-settings-file", str(args.adapt_settings_file)])
+    cmd.extend(["--distillation-settings-file", str(args.distillation_settings_file)])
+    if args.disable_task_neutralization:
+        cmd.append("--disable-task-neutralization")
+    if args.total_timesteps_override is not None:
+        cmd.extend(["--total-timesteps-override", str(args.total_timesteps_override)])
+    if args.distill_lambda_override is not None:
+        cmd.extend(["--distill-lambda-override", str(args.distill_lambda_override)])
+    if args.distill_batch_size is not None:
+        cmd.extend(["--distill-batch-size", str(args.distill_batch_size)])
+    if args.demo_rollouts is not None:
+        cmd.extend(["--demo-rollouts", str(args.demo_rollouts)])
+    return cmd
+
+
 def _add_rashomon_overrides(cmd: list[str], args: argparse.Namespace) -> None:
     if args.rashomon_n_iters is not None:
         cmd.extend(["--rashomon-n-iters", str(args.rashomon_n_iters)])
@@ -204,6 +230,7 @@ def _build_rashomon_plus_cmd(args: argparse.Namespace) -> list[str]:
 METHOD_TO_CMD_BUILDER = {
     "unconstrained": _build_unconstrained_cmd,
     "ewc": _build_ewc_cmd,
+    "distillation": _build_distillation_cmd,
     "rashomon": _build_rashomon_cmd,
     "rashomon_expanded": _build_rashomon_expanded_cmd,
     "rashomon_plus": _build_rashomon_plus_cmd,

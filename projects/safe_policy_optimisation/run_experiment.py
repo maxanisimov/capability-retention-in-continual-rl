@@ -108,6 +108,35 @@ def _pipeline_argv(
     return argv
 
 
+def _passthrough_value(passthrough: list[str], flag: str) -> str | None:
+    for i, tok in enumerate(passthrough):
+        if tok == flag and i + 1 < len(passthrough):
+            return passthrough[i + 1]
+        if tok.startswith(flag + "="):
+            return tok.split("=", 1)[1]
+    return None
+
+
+def _apply_shield_method_override(settings: dict[str, Any], passthrough: list[str]) -> None:
+    """Let a CLI ``--shield-method``/``--n-rollout-episodes``/``--behaviour-policy``
+    (forwarded after ``--`` by the sweep) override the YAML shield-synthesis
+    settings, and route an estimated-critic shield to a method-tagged path so it
+    never collides with the exact-VI ``shield_q.pt``."""
+    method = _passthrough_value(passthrough, "--shield-method")
+    if method is not None:
+        settings["shield_method"] = method
+    n_ep = _passthrough_value(passthrough, "--n-rollout-episodes")
+    if n_ep is not None:
+        settings["n_rollout_episodes"] = int(n_ep)
+    bp = _passthrough_value(passthrough, "--behaviour-policy")
+    if bp is not None:
+        settings["behaviour_policy"] = bp
+    if str(settings.get("shield_method", "value_iteration")) == "estimated_critic":
+        base = Path(settings["shield_path"])
+        n = settings.get("n_rollout_episodes") or 5000
+        settings["shield_path"] = str(base.parent / f"estimated_ep{int(n)}" / base.name)
+
+
 def _synthesise_shield_if_needed(
     settings: dict[str, Any],
     *,
@@ -152,8 +181,22 @@ def _synthesise_shield_if_needed(
     if settings.get("max_episode_steps") is not None:
         argv.extend(["--max-episode-steps", str(settings["max_episode_steps"])])
 
-    log_info(f"Synthesising shield before training: {shield_path}")
-    result_path = synthesise_shield.run(synthesise_shield.build_parser().parse_args(argv))
+    method = str(settings.get("shield_method", "value_iteration"))
+    if method == "estimated_critic":
+        from projects.safe_policy_optimisation.stages import synthesise_shield_estimated
+        argv.extend([
+            "--n-rollout-episodes",
+            str(settings.get("n_rollout_episodes") or 5000),
+            "--behaviour-policy",
+            str(settings.get("behaviour_policy", "uniform")),
+        ])
+        log_info(f"Synthesising ESTIMATED-critic shield before training: {shield_path}")
+        result_path = synthesise_shield_estimated.run(
+            synthesise_shield_estimated.build_parser().parse_args(argv)
+        )
+    else:
+        log_info(f"Synthesising shield before training: {shield_path}")
+        result_path = synthesise_shield.run(synthesise_shield.build_parser().parse_args(argv))
     if Path(result_path) != shield_path:
         raise RuntimeError(f"Shield synthesis wrote {result_path}, expected {shield_path}")
     return shield_path
@@ -197,6 +240,7 @@ def run_pipeline(
             tasks_file=tasks_file,
             pipelines_file=pipelines_file,
         )
+        _apply_shield_method_override(settings, list(passthrough or []))
         selected_task = str(settings["task"])
         pipeline_source = registry_source_file(
             pipelines_file,

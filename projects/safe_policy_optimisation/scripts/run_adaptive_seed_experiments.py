@@ -1,6 +1,7 @@
 """AdaptiveSafePPO multi-seed launcher (paper_2503_07671 MASA environments).
 
-Runs the adaptive verify-then-project method (``train_pspo_adaptive``)
+Runs the adaptive verify-then-project method (``train_pspo_adaptive`` or
+``train_pspo_adaptive_v2``)
 for every (env, seed) pair, fully in parallel, with **each job pinned to its
 own CPU core** via ``taskset`` (plus single-threaded BLAS) to maximise
 parallelism without cross-job contention.
@@ -22,6 +23,10 @@ Env vars:
     SEEDS             comma list (default 0..9)
     ENVS              comma list of short env names (default all 6)
     ADAPTIVE_N_ITERS  per-computation Rashomon budget (default 100)
+    ADAPTIVE_TOTAL_ITERS  v2-only total Rashomon budget across all possible
+                       safe-region computations.
+    ADAPTIVE_VERSION  v1 (default) or v2.
+    ADAPTIVE_REGION_MODE  v2-only: union (default) or replace.
     ADAPTIVE_GRANULARITY  gradient_step (default) or train_phase
     ADAPTIVE_STRATEGY  rashomon_project (default) or none.
                        'none' is the BC-init-without-projection ablation: the
@@ -44,7 +49,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 PY = str(REPO / ".venv/bin/python")
-STAGE = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive.py")
+STAGE_V1 = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive.py")
+STAGE_V2 = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive_v2.py")
 
 OUT_BASE = os.environ.get(
     "ADAPTIVE_OUT_BASE",
@@ -64,6 +70,9 @@ ENV_PIPELINE = {
 SEEDS = [int(s) for s in os.environ.get("SEEDS", ",".join(map(str, range(10)))).split(",")]
 ENVS = os.environ.get("ENVS", ",".join(ENV_PIPELINE)).split(",")
 ADAPTIVE_N_ITERS = os.environ.get("ADAPTIVE_N_ITERS", "100")
+ADAPTIVE_TOTAL_ITERS = os.environ.get("ADAPTIVE_TOTAL_ITERS")
+ADAPTIVE_VERSION = os.environ.get("ADAPTIVE_VERSION", "v1")
+ADAPTIVE_REGION_MODE = os.environ.get("ADAPTIVE_REGION_MODE", "union")
 ADAPTIVE_GRANULARITY = os.environ.get("ADAPTIVE_GRANULARITY", "gradient_step")
 ADAPTIVE_STRATEGY = os.environ.get("ADAPTIVE_STRATEGY", "rashomon_project")
 SMOKE = os.environ.get("SMOKE_TIMESTEPS")
@@ -79,6 +88,10 @@ def _resolve_env_settings(pipeline_name: str) -> dict:
 
 
 def build_jobs() -> list[dict]:
+    if ADAPTIVE_VERSION not in {"v1", "v2"}:
+        raise SystemExit(f"ADAPTIVE_VERSION must be v1 or v2, got {ADAPTIVE_VERSION!r}")
+    if ADAPTIVE_VERSION == "v1" and ADAPTIVE_TOTAL_ITERS is not None:
+        raise SystemExit("ADAPTIVE_TOTAL_ITERS is only supported with ADAPTIVE_VERSION=v2")
     jobs: list[dict] = []
     for env in ENVS:
         cfg = _resolve_env_settings(ENV_PIPELINE[env])
@@ -89,7 +102,7 @@ def build_jobs() -> list[dict]:
         for seed in SEEDS:
             run_dir = f"{OUT_BASE}/{env}"
             cmd = [
-                PY, STAGE,
+                PY, STAGE_V2 if ADAPTIVE_VERSION == "v2" else STAGE_V1,
                 "--base-policy-path", str(base_policy),
                 "--shield-path", str(cfg["shield_path"]),
                 "--env-id", cfg["env_id"],
@@ -99,9 +112,6 @@ def build_jobs() -> list[dict]:
                 "--total-timesteps", str(total_timesteps),
                 "--eval-episodes", str(cfg["eval_episodes"]),
                 "--seed", str(seed),
-                "--adaptive-granularity", ADAPTIVE_GRANULARITY,
-                "--unsafe-update-strategy", ADAPTIVE_STRATEGY,
-                "--rashomon-n-iters", ADAPTIVE_N_ITERS,
                 "--learning-rate", str(cfg["learning_rate"]),
                 "--n-steps", str(cfg["n_steps"]),
                 "--batch-size", str(cfg["batch_size"]),
@@ -124,6 +134,20 @@ def build_jobs() -> list[dict]:
                 "--output-dir", run_dir,
                 "--run-id", f"seed{seed}",
             ]
+            if ADAPTIVE_VERSION == "v2":
+                cmd.extend(["--region-update-mode", ADAPTIVE_REGION_MODE])
+                if ADAPTIVE_TOTAL_ITERS is not None:
+                    cmd.extend(["--rashomon-total-iters", ADAPTIVE_TOTAL_ITERS])
+                else:
+                    cmd.extend(["--rashomon-n-iters", ADAPTIVE_N_ITERS])
+            else:
+                cmd.extend(
+                    [
+                        "--adaptive-granularity", ADAPTIVE_GRANULARITY,
+                        "--unsafe-update-strategy", ADAPTIVE_STRATEGY,
+                        "--rashomon-n-iters", ADAPTIVE_N_ITERS,
+                    ]
+                )
             jobs.append({"tag": f"{env}/seed{seed}", "cmd": cmd})
     return jobs
 
@@ -170,7 +194,9 @@ def main() -> int:
         job["core"] = core
     print(
         f"launching {len(jobs)} AdaptiveSafePPO jobs (envs={len(ENVS)} x seeds={len(SEEDS)}), "
-        f"strategy={ADAPTIVE_STRATEGY}, n_iters={ADAPTIVE_N_ITERS}, granularity={ADAPTIVE_GRANULARITY}, "
+        f"version={ADAPTIVE_VERSION}, strategy={ADAPTIVE_STRATEGY}, "
+        f"n_iters={ADAPTIVE_N_ITERS}, total_iters={ADAPTIVE_TOTAL_ITERS or 'off'}, "
+        f"granularity={ADAPTIVE_GRANULARITY}, region_mode={ADAPTIVE_REGION_MODE}, "
         f"pinning={'off' if NO_PIN else 'one core per job'}, smoke={SMOKE or 'off'}",
         flush=True,
     )

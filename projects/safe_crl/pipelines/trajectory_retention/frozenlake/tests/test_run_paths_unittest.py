@@ -71,6 +71,19 @@ class FrozenLakeRunPathsTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             run_paths.validate_rl("dqn")
 
+    def test_distillation_mode_completion_requires_demo_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            run_dir = run_paths.mode_run_dir(root, "layout_a", 0, "downstream_distillation")
+            run_dir.mkdir(parents=True)
+            for artifact in ("actor.pt", "critic.pt", "training_data.pt", "run_summary.yaml"):
+                (run_dir / artifact).write_text("", encoding="utf-8")
+
+            self.assertFalse(run_paths.is_mode_complete(root, "layout_a", 0, "downstream_distillation"))
+
+            (run_dir / "source_demo_dataset.pt").write_text("", encoding="utf-8")
+            self.assertTrue(run_paths.is_mode_complete(root, "layout_a", 0, "downstream_distillation"))
+
 
 if __name__ == "__main__":
     unittest.main()

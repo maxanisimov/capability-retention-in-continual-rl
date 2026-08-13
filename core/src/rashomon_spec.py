@@ -43,3 +43,5 @@ class RashomonResult:
     bounded_models: list[IntervalBoundedModel]  # optimization-time boxes, one per checkpoint
     certificates: list[list[RashomonCertificate]]  # per checkpoint, per group
     temperatures: dict[int | None, float]  # per-group calibrated (or caller-supplied) softmax temperature
+    surrogate: str = "auto"  # requested public surrogate form
+    resolved_surrogate: str = "probability"  # concrete formula used by the optimizer

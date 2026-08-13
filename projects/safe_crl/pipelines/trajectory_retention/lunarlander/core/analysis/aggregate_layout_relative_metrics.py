@@ -22,6 +22,7 @@ from projects.safe_crl.pipelines.trajectory_retention.lunarlander.core.orchestra
 POLICY_ORDER = [
     "downstream_unconstrained",
     "downstream_ewc",
+    "downstream_distillation",
     "downstream_rashomon",
 ]
 
@@ -30,6 +31,7 @@ POLICY_RENAME = {
     "source": "NoAdapt",
     "downstream_unconstrained": "Unconstrained",
     "downstream_ewc": "EWC",
+    "downstream_distillation": "Distillation",
     "downstream_rashomon": "Rashomon",
 }
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import numpy as np
 from gymnasium import spaces
 from gymnasium.envs.toy_text.frozen_lake import MAPS, generate_random_map
 
-from projects.safe_crl.utils.masa_tabular_envs.base import TabularEnv
+from projects.safe_crl.utils.masa_tabular_envs.base import ObservationMode, TabularEnv
 from projects.safe_crl.utils.masa_tabular_envs.dynamics import validate_probability
 from projects.safe_crl.utils.masa_tabular_envs.renderers.frozen_lake import (
     FrozenLakeRenderer,
@@ -38,6 +39,7 @@ class CustomFrozenLake(TabularEnv):
         success_rate: float = 1.0 / 3.0,
         reward_schedule: tuple[float, float, float] = (1, 0, 0),
         render_window_size: int | None = None,
+        observation_mode: ObservationMode = "features",
     ) -> None:
         super().__init__()
         validate_renderer_options(render_mode, render_window_size)
@@ -101,6 +103,7 @@ class CustomFrozenLake(TabularEnv):
         self.lastaction = None
         self._renderer = FrozenLakeRenderer(self)
         self._validate_tabular_spaces()
+        self._init_observation_mode(observation_mode)
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
@@ -109,7 +112,18 @@ class CustomFrozenLake(TabularEnv):
 
         if self.render_mode == "human":
             self.render()
-        return int(self.s), {"prob": 1}
+        return self._observe(self.s), {"prob": 1}
+
+    # State id <-> (row, col).
+    def _state_components(self, state: int) -> tuple[int, ...]:
+        row, col = divmod(int(state), self.ncol)
+        return row, col
+
+    def _components_to_state(self, components: Sequence[int]) -> int:
+        return int(components[0]) * self.ncol + int(components[1])
+
+    def _component_maxima(self) -> tuple[int, ...]:
+        return int(self.nrow) - 1, int(self.ncol) - 1
 
     def step(self, action: int):
         if not self.action_space.contains(action):
@@ -119,10 +133,15 @@ class CustomFrozenLake(TabularEnv):
         prob, state, reward, terminated = transitions[idx]
         self.s = int(state)
         self.lastaction = int(action)
+        success = bool(terminated and "goal" in self.label_fn(int(state)))
 
         if self.render_mode == "human":
             self.render()
-        return int(state), reward, bool(terminated), False, {"prob": prob}
+        return self._observe(int(state)), reward, bool(terminated), False, {
+            "prob": prob,
+            "success": success,
+            "is_success": success,
+        }
 
     def render(self):
         return self._renderer.render()

@@ -90,6 +90,21 @@ class ProjectedAdamDiagnosticsTests(unittest.TestCase):
         opt.step()  # no bounds -> not counted
         self.assertEqual(opt.projection_diagnostics()["bounded_steps"], 0)
 
+    def test_last_projection_result_tracks_step_and_project_now(self) -> None:
+        x = nn.Parameter(th.tensor([5.0]))
+        opt = ProjectedAdam([x], lr=1e-3)
+        opt.set_bounds([th.tensor([-1.0])], [th.tensor([1.0])], project_on_set=False)
+
+        x.grad = th.zeros_like(x)
+        opt.step()
+        self.assertIsNotNone(opt.last_projection_result)
+        self.assertEqual(opt.last_projection_result.n_projected, 1)
+
+        x.data = th.tensor([0.5])
+        result = opt.project_now()
+        self.assertIs(opt.last_projection_result, result)
+        self.assertEqual(opt.last_projection_result.n_projected, 0)
+
 
 class _FakeLogger:
     def __init__(self) -> None:

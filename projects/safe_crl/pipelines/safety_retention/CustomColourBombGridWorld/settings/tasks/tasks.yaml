@@ -22,3 +22,18 @@ customcolourgridworldv3_default:
   env_kwargs: null
   stochasticity:
     slip_prob: 0.0
+
+customcolourgridworld_paper_2503_07671:
+  env: CustomColourBombGridWorld-v0
+  max_episode_steps: 100
+  env_kwargs: null
+  stochasticity:
+    slip_prob: 0.1
+
+customcolourgridworldv3_paper_2503_07671:
+  env: CustomColourBombGridWorldV3-v0
+  max_episode_steps: 250
+  env_kwargs:
+    n_coloured_zones: 4
+  stochasticity:
+    slip_prob: 0.1

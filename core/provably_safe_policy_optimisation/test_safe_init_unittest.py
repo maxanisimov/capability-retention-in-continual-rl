@@ -9,7 +9,11 @@ import numpy as np
 import torch as th
 from torch import nn
 
-from provably_safe_policy_optimisation import ProvablySafeDQN, ProvablySafePPO, RegionShield
+from provably_safe_policy_optimisation import (
+    ProvablySafeDQN,
+    ProvablySafePPO,
+    RegionShield,
+)
 from provably_safe_policy_optimisation.safe_init import certify_with_verifier
 
 
@@ -31,7 +35,8 @@ class CertifyHelperTests(unittest.TestCase):
         with th.no_grad():
             seq[0].weight.zero_()
             seq[0].bias.copy_(th.tensor([5.0, 0.0, 0.0]))
-        x_l = th.tensor([[-0.1, -0.1]]); x_u = th.tensor([[0.1, 0.1]])
+        x_l = th.tensor([[-0.1, -0.1]])
+        x_u = th.tensor([[0.1, 0.1]])
         frac_ok, all_ok = certify_with_verifier(seq, x_l, x_u, th.tensor([[1, 0, 0]]))
         self.assertTrue(all_ok)                       # action 0 certified safe
         frac_bad, all_bad = certify_with_verifier(seq, x_l, x_u, th.tensor([[0, 1, 0]]))
@@ -88,7 +93,24 @@ class ContinuousSafeInitTests(unittest.TestCase):
                                           refine_max_epochs=500, require_certified=True)
         self.assertTrue(report.all_certified)
         self.assertEqual(report.certified_fraction, 1.0)
+        self.assertIsNotNone(report.final_ibp_margin)
+        self.assertGreaterEqual(report.final_ibp_margin, 0.1)
         self.assertGreaterEqual(report.sampled_greedy_safe_rate, 0.99)
+
+    def test_dqn_box_shield_refines_until_requested_margin(self) -> None:
+        model = self._make_dqn(_mc_box_shield())
+        report = model.pretrain_on_shield(
+            n_samples=1024,
+            lr=5e-2,
+            bc_max_epochs=300,
+            refine_max_epochs=50,
+            require_certified=True,
+            target_margin=0.5,
+        )
+        self.assertTrue(report.all_certified)
+        self.assertGreater(report.refine_epochs, 0)
+        self.assertIsNotNone(report.final_ibp_margin)
+        self.assertGreaterEqual(report.final_ibp_margin, 0.5)
 
     def test_ppo_box_shield_certifies(self) -> None:
         model = ProvablySafePPO(

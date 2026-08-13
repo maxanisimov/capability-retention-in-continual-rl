@@ -162,6 +162,8 @@ class IntervalTrainer(BaseTrainer):
         use_outer_bbox: bool = True,
         context_id: int | None = None,
         param_mask: Iterable | None = None,
+        param_l_mask: Iterable | None = None,
+        param_u_mask: Iterable | None = None,
         has_input_intervals: bool = False,
         group_by: Callable | None = None,
         certification_method: str = "IBP",
@@ -211,6 +213,8 @@ class IntervalTrainer(BaseTrainer):
             else None,
             outer_bbox=self.get_current_bbox() if use_outer_bbox else None,
             param_mask=param_mask,
+            param_l_mask=param_l_mask,
+            param_u_mask=param_u_mask,
             has_input_intervals=has_input_intervals,
             group_by=group_by,
             certification_method=certification_method,
@@ -221,6 +225,8 @@ class IntervalTrainer(BaseTrainer):
         self.bounds = result.bounded_models
         self.certificates = result.certificates
         self.temperatures = result.temperatures
+        self.surrogate = result.surrogate
+        self.resolved_surrogate = result.resolved_surrogate
         # we are now in any of the rashomon sets, but we'll use the last which should be the biggest
         # (but maybe not the best)
         self._last_projection = len(result.bounded_models) - 1

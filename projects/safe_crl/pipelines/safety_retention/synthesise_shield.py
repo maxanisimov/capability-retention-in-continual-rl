@@ -213,10 +213,20 @@ def run_masa_env(args: argparse.Namespace, output_path: Path) -> float:
     task_block = load_masa_task(args.env, args.task)
     env_kwargs = masa_env_kwargs(task_block, cli_override) or None
 
-    env = make_custom_masa_env(args.env, env_kwargs=env_kwargs)
+    max_episode_steps = getattr(args, "max_episode_steps", None)
+    env = make_custom_masa_env(
+        args.env,
+        max_episode_steps=max_episode_steps,
+        env_kwargs=env_kwargs,
+    )
     env.reset(seed=args.seed)
     try:
         unwrapped = env.unwrapped
+        theta = float(getattr(args, "theta", 1e-10))
+        max_vi_steps = int(getattr(args, "max_vi_steps", 1000))
+        init_safety_bound = float(getattr(args, "init_safety_bound", 0.5))
+        granularity = int(getattr(args, "granularity", 20))
+        unsafe_cost_threshold = float(getattr(args, "unsafe_cost_threshold", 0.5))
         transition_matrix = unwrapped.get_transition_matrix()
         if transition_matrix is not None:
             # Small envs expose a dense transition matrix.
@@ -225,7 +235,9 @@ def run_masa_env(args: argparse.Namespace, output_path: Path) -> float:
                 transition_matrix_fn=lambda e: e.get_transition_matrix(),
                 label_fn=unwrapped.label_fn,
                 cost_fn=unwrapped.cost_fn,
-                risk_threshold=args.risk_threshold,
+                theta=theta,
+                max_vi_steps=max_vi_steps,
+                unsafe_cost_threshold=unsafe_cost_threshold,
                 use_masa_helper=False,
                 return_info=True,
             )
@@ -237,7 +249,9 @@ def run_masa_env(args: argparse.Namespace, output_path: Path) -> float:
                 label_fn=unwrapped.label_fn,
                 cost_fn=unwrapped.cost_fn,
                 shield_type="probabilistic",
-                risk_threshold=args.risk_threshold,
+                theta=theta,
+                max_vi_steps=max_vi_steps,
+                unsafe_cost_threshold=unsafe_cost_threshold,
                 return_info=True,
             )
         else:
@@ -256,11 +270,16 @@ def run_masa_env(args: argparse.Namespace, output_path: Path) -> float:
         payload = {
             "env": args.env,
             "env_kwargs": env_kwargs,
+            "max_episode_steps": None if max_episode_steps is None else int(max_episode_steps),
             "task": args.task,
             "semantics": "avoid_unsafe_forever",  # value = P(eventually never enter an unsafe state)
             "n_states": int(n_states),
             "n_actions": int(n_actions),
-            "risk_threshold": float(args.risk_threshold),
+            "theta": theta,
+            "max_vi_steps": max_vi_steps,
+            "init_safety_bound": init_safety_bound,
+            "granularity": granularity,
+            "unsafe_cost_threshold": unsafe_cost_threshold,
             "q_safety": torch.from_numpy(np.ascontiguousarray(q_safety, dtype=np.float64)),
             "action_risk": torch.from_numpy(np.ascontiguousarray(action_risk, dtype=np.float64)),
             "state_safety": torch.from_numpy(np.ascontiguousarray(state_safety, dtype=np.float64)),
@@ -309,10 +328,40 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Seed passed to env.reset() during synthesis (MASA envs).",
     )
     parser.add_argument(
-        "--risk-threshold",
+        "--theta",
         type=float,
-        default=0.0,
-        help="MASA shield: allow actions whose eventual unsafe risk is at most this. Default 0.0.",
+        default=1e-10,
+        help="MASA shield: value-iteration convergence tolerance. Default 1e-10.",
+    )
+    parser.add_argument(
+        "--max-vi-steps",
+        type=int,
+        default=1000,
+        help="MASA shield: maximum value-iteration steps. Default 1000.",
+    )
+    parser.add_argument(
+        "--max-episode-steps",
+        type=int,
+        default=None,
+        help="MASA env: optional maximum episode length passed to the environment constructor.",
+    )
+    parser.add_argument(
+        "--init-safety-bound",
+        type=float,
+        default=0.5,
+        help="MASA ProbShieldWrapperDisc initial safety bound recorded in metadata. Default 0.5.",
+    )
+    parser.add_argument(
+        "--granularity",
+        type=int,
+        default=20,
+        help="MASA ProbShieldWrapperDisc safety-bound granularity recorded in metadata. Default 20.",
+    )
+    parser.add_argument(
+        "--unsafe-cost-threshold",
+        type=float,
+        default=0.5,
+        help="MASA shield: cost threshold used to classify unsafe states. Default 0.5.",
     )
     parser.add_argument(
         "--env-kwargs",

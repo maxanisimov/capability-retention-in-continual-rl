@@ -23,6 +23,7 @@ POLICY_ORDER = [
     "noadapt",
     "downstream_unconstrained",
     "downstream_ewc",
+    "downstream_distillation",
     "downstream_rashomon",
 ]
 
@@ -31,6 +32,7 @@ POLICY_RENAME = {
     "source": "NoAdapt",
     "downstream_unconstrained": "Unconstrained",
     "downstream_ewc": "EWC",
+    "downstream_distillation": "Distillation",
     "downstream_rashomon": "Rashomon",
 }
 
@@ -50,6 +52,11 @@ RAW_TO_AGG_METRIC = {
         "source_failure_rate": "source_failure_rate",
         "downstream_failure_rate": "downstream_failure_rate",
     },
+    "demo_retention": {
+        "source_demo_accuracy": "source_demo_accuracy",
+        "source_demo_mean_action_probability": "source_demo_mean_action_probability",
+        "source_demo_cross_entropy": "source_demo_cross_entropy",
+    },
 }
 
 DEFAULT_METRIC_GROUPS = ["total_reward", "success_rate"]
@@ -62,6 +69,9 @@ PREFERRED_METRIC_ORDER = [
     "downstream_minus_source_total_reward",
     "source_failure_rate",
     "downstream_failure_rate",
+    "source_demo_accuracy",
+    "source_demo_mean_action_probability",
+    "source_demo_cross_entropy",
 ]
 
 

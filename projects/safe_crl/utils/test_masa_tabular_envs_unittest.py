@@ -12,8 +12,18 @@ try:
     import projects.safe_crl.utils.masa_tabular_envs  # noqa: F401
     from projects.safe_crl.utils.masa_tabular_envs.factory import make_custom_masa_env
     from projects.safe_crl.utils.masa_tabular_envs.frozen_lake import CustomFrozenLake
-    from projects.safe_crl.utils.masa_tabular_envs.gridworlds import CustomColourBombGridWorld, CustomColourGridWorld
-    from projects.safe_crl.utils.masa_tabular_envs.media_streaming import CustomMediaStreaming
+    from projects.safe_crl.utils.masa_tabular_envs.gridworlds import (
+        CustomBridgeCrossing,
+        CustomColourBombGridWorld,
+        CustomColourBombGridWorldV2,
+        CustomColourBombGridWorldV3,
+        CustomColourGridWorld,
+    )
+    from projects.safe_crl.utils.masa_tabular_envs.media_streaming import (
+        CustomMediaStreaming,
+        CustomMediaStreamingV2,
+        CustomMediaStreamingV3,
+    )
     from projects.safe_crl.utils.masa_tabular_envs.pacman import CustomMiniPacman, CustomPacman
     from projects.safe_crl.utils.masa_tabular_envs.renderers.colour_bomb_grid_world import ColourBombGridWorldRenderer
 except ModuleNotFoundError:  # pragma: no cover - exercised only without RL extras
@@ -50,8 +60,58 @@ class CustomMasaTabularEnvTests(unittest.TestCase):
                     self.assertIsInstance(float(reward), float)
                     self.assertIsInstance(terminated, bool)
                     self.assertIsInstance(truncated, bool)
+                    self.assertIn("success", info)
+                    self.assertIn("is_success", info)
+                    self.assertIsInstance(info["success"], bool)
+                    self.assertIsInstance(info["is_success"], bool)
+                    self.assertEqual(info["success"], info["is_success"])
                 finally:
                     env.close()
+
+    def test_default_observation_is_normalised_features(self) -> None:
+        import numpy as np
+
+        for env_id in self.ENV_IDS:
+            env = gym.make(env_id)
+            u = env.unwrapped
+            try:
+                if env_id == "CustomMediaStreamingV3-v0":
+                    continue  # documented exception: keeps its structured Dict obs
+                self.assertIsInstance(u.observation_space, gym.spaces.Box, env_id)
+                obs, _ = env.reset(seed=0)
+                self.assertEqual(obs.dtype, np.float32, env_id)
+                self.assertTrue((obs >= 0).all() and (obs <= 1).all(), env_id)
+                # the observation inverts exactly back to the internal state id
+                # (FrozenLake keeps it in .s, the others in ._state)
+                internal_state = getattr(u, "_state", None)
+                if internal_state is None:
+                    internal_state = u.s  # noqa: SLF001
+                self.assertEqual(u.features_to_state(obs), internal_state, env_id)
+            finally:
+                env.close()
+
+    def test_feature_encoding_is_exactly_invertible(self) -> None:
+        # A single non-invertible state would make the shield mask the wrong one.
+        import random
+
+        for env_id in self.ENV_IDS:
+            if env_id == "CustomMediaStreamingV3-v0":
+                continue
+            u = gym.make(env_id).unwrapped
+            n = u._n_states  # noqa: SLF001
+            ids = range(n) if n <= 4000 else random.Random(0).sample(range(n), 4000)
+            for s in ids:
+                self.assertEqual(u.features_to_state(u.state_to_features(s)), s, (env_id, s))
+
+    def test_index_observation_mode_restores_discrete(self) -> None:
+        env = gym.make("CustomColourBombGridWorld-v0", observation_mode="index")
+        u = env.unwrapped
+        try:
+            self.assertIsInstance(u.observation_space, gym.spaces.Discrete)
+            obs, _ = env.reset(seed=0)
+            self.assertEqual(int(obs), u._state)  # noqa: SLF001
+        finally:
+            env.close()
 
     def test_factory_passes_env_kwargs_and_time_limit(self) -> None:
         env = make_custom_masa_env(
@@ -139,11 +199,206 @@ class CustomMasaTabularEnvTests(unittest.TestCase):
             slow.close()
             fast.close()
 
+    def test_goal_terminal_steps_report_success(self) -> None:
+        cases = [
+            (CustomFrozenLake(desc=["SG"], is_slippery=False), 2),
+            (
+                CustomColourGridWorld(
+                    slip_prob=0.0,
+                    grid_size=3,
+                    start_state=0,
+                    goal_state=1,
+                    blue_state=2,
+                    green_state=3,
+                    purple_state=4,
+                ),
+                1,
+            ),
+        ]
+        for env, action in cases:
+            with self.subTest(env=type(env).__name__):
+                try:
+                    env.reset(seed=1)
+                    _obs, _reward, terminated, _truncated, info = env.step(action)
+                    self.assertTrue(terminated)
+                    self.assertTrue(info["success"])
+                    self.assertTrue(info["is_success"])
+                finally:
+                    env.close()
+
+    def test_non_goal_terminal_steps_report_failure(self) -> None:
+        cases = [
+            (CustomFrozenLake(desc=["SH", "FG"], is_slippery=False), 2),
+            (
+                CustomBridgeCrossing(
+                    slip_prob=0.0,
+                    grid_size=3,
+                    start_state=0,
+                    goal_states=[2],
+                    lava_states=[1],
+                ),
+                1,
+            ),
+        ]
+        for env, action in cases:
+            with self.subTest(env=type(env).__name__):
+                try:
+                    env.reset(seed=1)
+                    _obs, _reward, terminated, _truncated, info = env.step(action)
+                    self.assertTrue(terminated)
+                    self.assertFalse(info["success"])
+                    self.assertFalse(info["is_success"])
+                finally:
+                    env.close()
+
+    def test_colour_bomb_restart_variants_success_requires_goal_once_and_always_safe(self) -> None:
+        def predecessor_for(env, target: int) -> tuple[int, int]:
+            for state in range(env._n_states):  # noqa: SLF001
+                for action in range(env._n_actions):  # noqa: SLF001
+                    if env._transition_matrix[target, state, action] == 1.0:  # noqa: SLF001
+                        return state, action
+            raise AssertionError(f"No deterministic predecessor found for {target}.")
+
+        for env in (CustomColourBombGridWorldV2(slip_prob=0.0), CustomColourBombGridWorldV3(slip_prob=0.0)):
+            with self.subTest(env=type(env).__name__):
+                try:
+                    safe_goal = next(
+                        state for state in env._goal_states if env.cost_fn(env.label_fn(state)) == 0.0  # noqa: SLF001
+                    )
+                    unsafe_goal = next(
+                        state for state in env._goal_states if env.cost_fn(env.label_fn(state)) > 0.0  # noqa: SLF001
+                    )
+                    safe_predecessor, safe_action = predecessor_for(env, safe_goal)
+                    unsafe_predecessor, unsafe_action = predecessor_for(env, unsafe_goal)
+
+                    env.reset(seed=1)
+                    env._state = safe_predecessor  # noqa: SLF001
+                    _obs, _reward, terminated, _truncated, info = env.step(safe_action)
+                    self.assertFalse(terminated)
+                    self.assertTrue(info["success"])
+                    self.assertTrue(info["is_success"])
+
+                    env.reset(seed=1)
+                    env._unsafe_seen = True  # noqa: SLF001
+                    env._state = safe_predecessor  # noqa: SLF001
+                    _obs, _reward, terminated, _truncated, info = env.step(safe_action)
+                    self.assertFalse(terminated)
+                    self.assertFalse(info["success"])
+                    self.assertFalse(info["is_success"])
+
+                    env.reset(seed=1)
+                    env._state = unsafe_predecessor  # noqa: SLF001
+                    _obs, _reward, terminated, _truncated, info = env.step(unsafe_action)
+                    self.assertFalse(terminated)
+                    self.assertFalse(info["success"])
+                    self.assertFalse(info["is_success"])
+                finally:
+                    env.close()
+
+    def test_pacman_success_requires_food_and_no_ghost_collision(self) -> None:
+        env = CustomMiniPacman(
+            food=(8, 6),
+            agent_start=(8, 5),
+            agent_term=(8, 6),
+            agent_direction=2,
+            ghost_start=(4, 1),
+            ghost_rand_prob=0.0,
+        )
+        try:
+            env.reset(seed=1)
+            _obs, reward, terminated, _truncated, info = env.step(2)
+            self.assertEqual(reward, 1.0)
+            self.assertTrue(terminated)
+            self.assertTrue(info["success"])
+
+            env.reset(seed=1)
+            env._ghost_collision_seen = True  # noqa: SLF001
+            _obs, reward, terminated, _truncated, info = env.step(2)
+            self.assertEqual(reward, 1.0)
+            self.assertTrue(terminated)
+            self.assertFalse(info["success"])
+        finally:
+            env.close()
+
+    def test_pacman_success_does_not_require_reaching_the_terminal_cell(self) -> None:
+        """Food + no collision is enough, even when the episode never terminates."""
+        env = CustomMiniPacman(
+            food=(8, 6),
+            agent_start=(8, 5),
+            agent_term=(1, 1),  # far from the food: stepping onto food does not terminate
+            agent_direction=2,
+            ghost_start=(4, 1),
+            ghost_rand_prob=0.0,
+        )
+        try:
+            env.reset(seed=1)
+            _obs, reward, terminated, _truncated, info = env.step(2)
+            self.assertEqual(reward, 1.0)
+            self.assertFalse(terminated)
+            self.assertTrue(info["success"])
+
+            # The flag is sticky: it survives later steps away from the food.
+            _obs, reward, terminated, _truncated, info = env.step(2)
+            self.assertFalse(terminated)
+            self.assertTrue(info["success"])
+        finally:
+            env.close()
+
+    def test_media_streaming_success_requires_terminal_zero_reward_episode(self) -> None:
+        zero_reward = CustomMediaStreamingV2(
+            fast_rate=0.0,
+            slow_rate=0.0,
+            out_rate=0.0,
+            buffer_size=3,
+            episode_length=1,
+        )
+        negative_reward = CustomMediaStreamingV2(
+            fast_rate=0.0,
+            slow_rate=0.0,
+            out_rate=1.0,
+            buffer_size=3,
+            episode_length=1,
+        )
+        zero_reward_v3 = CustomMediaStreamingV3(buffer_size=3, episode_length=1, start_buffer=1)
+        negative_reward_v3 = CustomMediaStreamingV3(buffer_size=3, episode_length=1, start_buffer=1)
+        try:
+            zero_reward.reset(seed=1)
+            _obs, reward, terminated, _truncated, info = zero_reward.step(0)
+            self.assertEqual(reward, 0.0)
+            self.assertTrue(terminated)
+            self.assertTrue(info["success"])
+
+            negative_reward.reset(seed=1)
+            _obs, reward, terminated, _truncated, info = negative_reward.step(0)
+            self.assertEqual(reward, -1.0)
+            self.assertTrue(terminated)
+            self.assertFalse(info["success"])
+
+            zero_reward_v3.reset(seed=1)
+            _obs, reward, terminated, _truncated, info = zero_reward_v3.step(1)
+            self.assertEqual(reward, 0.0)
+            self.assertTrue(terminated)
+            self.assertTrue(info["success"])
+
+            negative_reward_v3.reset(seed=1)
+            _obs, reward, terminated, _truncated, info = negative_reward_v3.step(0)
+            self.assertEqual(reward, -1.0)
+            self.assertTrue(terminated)
+            self.assertFalse(info["success"])
+        finally:
+            zero_reward.close()
+            negative_reward.close()
+            zero_reward_v3.close()
+            negative_reward_v3.close()
+
     def test_pacman_ghost_randomness_changes_distribution(self) -> None:
         deterministic = CustomPacman(ghost_rand_prob=0.0)
         randomised = CustomPacman(ghost_rand_prob=0.8)
         try:
-            state, _ = deterministic.reset(seed=1)
+            deterministic.reset(seed=1)
+            # _lazy_successor_distribution is keyed by integer state id, which is
+            # self._state; the observation is now a feature vector.
+            state = deterministic._state  # noqa: SLF001
             successors_a, probs_a = deterministic._lazy_successor_distribution(state, 1)  # noqa: SLF001
             successors_b, probs_b = randomised._lazy_successor_distribution(state, 1)  # noqa: SLF001
             self.assertAlmostEqual(float(probs_a.sum()), 1.0)

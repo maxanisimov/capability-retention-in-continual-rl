@@ -18,8 +18,11 @@ from stable_baselines3.common.callbacks import BaseCallback
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 from provably_safe_policy_optimisation import (  # noqa: E402
+    OrthotopeRegion,
     ProvablySafePPO,
+    SafeParameterRegion,
     Shield,
+    ZonotopeRegion,
     projection_target_parameter_names,
 )
 
@@ -75,19 +78,79 @@ def load_rashomon_bounds(rashomon_dir: Path) -> tuple[list[torch.Tensor], list[t
     return list(payload["param_bounds_l"]), list(payload["param_bounds_u"])
 
 
-def load_base_policy_architecture(rashomon_dir: Path) -> dict[str, Any]:
-    """Load the saved base-policy architecture metadata."""
+def load_zonotope_region(rashomon_dir: Path) -> ZonotopeRegion:
+    """Load a zonotope safe-region artifact saved by the Rashomon stage."""
 
-    path = rashomon_dir / "base_policy.pt"
+    path = rashomon_dir / "rashomon_zonotope_region.pt"
     payload = _torch_load(path)
+    required = {"center_params", "generators", "coefficient_l", "coefficient_u", "param_shapes"}
+    missing = sorted(required - set(payload))
+    if missing:
+        raise KeyError(f"Zonotope region file must contain {sorted(required)}; missing={missing}.")
+    return ZonotopeRegion(
+        center_params=list(payload["center_params"]),
+        generators=payload["generators"],
+        coefficient_l=payload["coefficient_l"],
+        coefficient_u=payload["coefficient_u"],
+        param_shapes=[tuple(shape) for shape in payload["param_shapes"]],
+    )
+
+
+def load_safe_parameter_region(rashomon_dir: Path, *, safe_region_shape: str) -> SafeParameterRegion:
+    """Load a PSPO safe parameter region by requested shape."""
+
+    if safe_region_shape == "orthotope":
+        lower, upper = load_rashomon_bounds(rashomon_dir)
+        return OrthotopeRegion(lower=lower, upper=upper)
+    if safe_region_shape == "zonotope":
+        return load_zonotope_region(rashomon_dir)
+    raise ValueError(
+        f"safe_region_shape must be 'orthotope' or 'zonotope', got {safe_region_shape!r}."
+    )
+
+
+def _base_policy_architecture_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if "architecture" not in payload:
-        raise KeyError(f"Base policy file must contain 'architecture'; keys={sorted(payload.keys())}.")
+        raise KeyError(
+            f"Base policy file must contain 'architecture'; keys={sorted(payload.keys())}."
+        )
     architecture = dict(payload["architecture"])
     required = {"input_dim", "n_actions", "hidden_dim", "n_hidden", "activation"}
     missing = sorted(required.difference(architecture))
     if missing:
         raise KeyError(f"Base policy architecture is missing keys: {missing}")
     return architecture
+
+
+def load_base_policy_architecture(rashomon_dir: Path) -> dict[str, Any]:
+    """Load the saved base-policy architecture metadata."""
+
+    payload = _torch_load(rashomon_dir / "base_policy.pt")
+    return _base_policy_architecture_from_payload(payload)
+
+
+def load_base_policy_payload(
+    rashomon_dir: Path,
+) -> tuple[dict[str, Any], dict[str, torch.Tensor]]:
+    """Load the architecture and exact BC parameters used to build the safe set."""
+
+    path = rashomon_dir / "base_policy.pt"
+    payload = _torch_load(path)
+    if "state_dict" not in payload:
+        raise KeyError(
+            f"Base policy file must contain 'state_dict'; keys={sorted(payload.keys())}."
+        )
+    architecture = _base_policy_architecture_from_payload(payload)
+    state_dict = dict(payload["state_dict"])
+    non_tensor_parameters = sorted(
+        name for name, parameter in state_dict.items() if not isinstance(parameter, torch.Tensor)
+    )
+    if non_tensor_parameters:
+        raise TypeError(
+            "Base policy state_dict entries must be tensors; "
+            f"invalid parameters={non_tensor_parameters}."
+        )
+    return architecture, state_dict
 
 
 def policy_kwargs_from_base_architecture(architecture: dict[str, Any]) -> dict[str, Any]:
@@ -122,6 +185,83 @@ def _base_to_ppo_actor_name_map(architecture: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
+def _base_parameter_names(architecture: dict[str, Any]) -> list[str]:
+    """Sequential base-policy parameter names in model.parameters() order."""
+
+    base_names: list[str] = []
+    for hidden_idx in range(int(architecture["n_hidden"])):
+        layer_idx = hidden_idx * 2
+        base_names.extend([f"{layer_idx}.weight", f"{layer_idx}.bias"])
+    final_idx = int(architecture["n_hidden"]) * 2
+    base_names.extend([f"{final_idx}.weight", f"{final_idx}.bias"])
+    return base_names
+
+
+def base_state_dict_to_ppo_actor(
+    architecture: dict[str, Any],
+    state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Rename saved Sequential BC parameters to SB3 PPO actor parameter names."""
+
+    name_map = _base_to_ppo_actor_name_map(architecture)
+    missing = sorted(set(name_map) - set(state_dict))
+    if missing:
+        raise KeyError(f"Base policy state_dict is missing parameters: {missing}")
+    return {ppo_name: state_dict[base_name] for base_name, ppo_name in name_map.items()}
+
+
+@torch.no_grad()
+def initialise_ppo_actor_from_base_policy(
+    model: ProvablySafePPO,
+    architecture: dict[str, Any],
+    state_dict: dict[str, torch.Tensor],
+) -> dict[str, Any]:
+    """Copy the exact saved BC policy into PPO's actor and verify the copy."""
+
+    actor_state_dict = base_state_dict_to_ppo_actor(architecture, state_dict)
+    target_names = projection_target_parameter_names(model)
+    missing = sorted(set(target_names) - set(actor_state_dict))
+    extra = sorted(set(actor_state_dict) - set(target_names))
+    if missing or extra:
+        raise ValueError(
+            "Saved BC policy must cover exactly the PPO actor projection target. "
+            f"Missing: {missing}. Unexpected: {extra}."
+        )
+
+    named_params = dict(model.policy.named_parameters())
+    max_abs_parameter_error = 0.0
+    scalar_count = 0
+    for name in target_names:
+        target = named_params[name]
+        source = actor_state_dict[name]
+        if tuple(source.shape) != tuple(target.shape):
+            raise ValueError(
+                f"Base policy shape mismatch for PPO actor parameter {name!r}: "
+                f"expected={tuple(target.shape)}, got={tuple(source.shape)}."
+            )
+        source_for_target = source.to(device=target.device, dtype=target.dtype)
+        target.copy_(source_for_target)
+        scalar_count += int(target.numel())
+        if target.numel():
+            max_abs_parameter_error = max(
+                max_abs_parameter_error,
+                float((target - source_for_target).abs().max().item()),
+            )
+
+    if max_abs_parameter_error != 0.0:
+        raise RuntimeError(
+            "Failed to copy the saved BC policy exactly into the PPO actor: "
+            f"max_abs_parameter_error={max_abs_parameter_error}."
+        )
+    return {
+        "method": "saved_bc_policy",
+        "parameter_count": len(target_names),
+        "parameter_scalar_count": scalar_count,
+        "parameter_names": target_names,
+        "max_abs_parameter_error": max_abs_parameter_error,
+    }
+
+
 def align_rashomon_bounds_to_ppo_actor(
     architecture: dict[str, Any],
     param_bounds_l: list[torch.Tensor],
@@ -130,12 +270,7 @@ def align_rashomon_bounds_to_ppo_actor(
     """Reorder Sequential Rashomon bounds to PPO's canonical actor target order."""
 
     name_map = _base_to_ppo_actor_name_map(architecture)
-    base_names: list[str] = []
-    for hidden_idx in range(int(architecture["n_hidden"])):
-        layer_idx = hidden_idx * 2
-        base_names.extend([f"{layer_idx}.weight", f"{layer_idx}.bias"])
-    final_idx = int(architecture["n_hidden"]) * 2
-    base_names.extend([f"{final_idx}.weight", f"{final_idx}.bias"])
+    base_names = _base_parameter_names(architecture)
 
     if len(param_bounds_l) != len(base_names) or len(param_bounds_u) != len(base_names):
         raise ValueError(
@@ -151,6 +286,48 @@ def align_rashomon_bounds_to_ppo_actor(
     }
     target_order = sorted(lower_by_target)
     return [lower_by_target[name] for name in target_order], [upper_by_target[name] for name in target_order]
+
+
+def align_zonotope_region_to_ppo_actor(
+    architecture: dict[str, Any],
+    region: ZonotopeRegion,
+) -> ZonotopeRegion:
+    """Reorder a saved Sequential zonotope to PPO's actor target order."""
+
+    name_map = _base_to_ppo_actor_name_map(architecture)
+    base_names = _base_parameter_names(architecture)
+    if len(region.center_params) != len(base_names):
+        raise ValueError(
+            "Zonotope center count does not match saved base-policy architecture: "
+            f"center={len(region.center_params)}, expected={len(base_names)}."
+        )
+    slices: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for base_name, center in zip(base_names, region.center_params):
+        n = int(center.numel())
+        slices[name_map[base_name]] = (offset, offset + n)
+        offset += n
+    if int(region.generators.shape[1]) != offset:
+        raise ValueError(
+            "Zonotope generator width does not match flattened center size: "
+            f"generators={tuple(region.generators.shape)}, center_size={offset}."
+        )
+    center_by_target = {
+        name_map[base_name]: center
+        for base_name, center in zip(base_names, region.center_params)
+    }
+    target_order = sorted(center_by_target)
+    generator_columns = [
+        region.generators[:, slices[name][0] : slices[name][1]]
+        for name in target_order
+    ]
+    return ZonotopeRegion(
+        center_params=[center_by_target[name] for name in target_order],
+        generators=torch.cat(generator_columns, dim=1),
+        coefficient_l=region.coefficient_l,
+        coefficient_u=region.coefficient_u,
+        param_shapes=[tuple(center_by_target[name].shape) for name in target_order],
+    )
 
 
 def validate_rashomon_shapes(
@@ -404,6 +581,17 @@ def _make_env_factory(args: argparse.Namespace, env_kwargs: dict[str, Any], mask
     return factory
 
 
+def env_kwargs_with_state_representation(args: argparse.Namespace) -> dict[str, Any]:
+    env_kwargs = parse_env_kwargs(args.env_kwargs)
+    state_representation = getattr(args, "state_representation", None)
+    if state_representation is not None:
+        env_kwargs.setdefault(
+            "observation_mode",
+            "index" if state_representation == "one_hot" else "features",
+        )
+    return env_kwargs
+
+
 def _resolve_curve_eval_freq(args: argparse.Namespace) -> int:
     if args.curve_eval_freq is not None:
         return int(args.curve_eval_freq)
@@ -417,9 +605,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Train ProvablySafePPO with a saved shield and Rashomon set.",
     )
     parser.add_argument("--rashomon-dir", type=Path, required=True)
+    parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
+    parser.add_argument("--zonotope-rank", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--shield-path", type=Path, required=True)
     parser.add_argument("--env-id", default=None)
     parser.add_argument("--env-kwargs", default=None, help="JSON object passed to gym.make.")
+    parser.add_argument("--state-representation", choices=("one_hot", "features"), default=None)
     parser.add_argument("--max-episode-steps", type=int, default=100)
     parser.add_argument("--shield-key", default="shield")
     parser.add_argument("--shield-source", choices=("shield", "action_risk"), default="shield")
@@ -488,20 +679,29 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.env_id is None:
         raise ValueError("--env-id is required for Rashomon-shielded policy training.")
-    env_kwargs = parse_env_kwargs(args.env_kwargs)
+    env_kwargs = env_kwargs_with_state_representation(args)
     mask = load_shield_mask(
         args.shield_path,
         shield_key=args.shield_key,
         source=args.shield_source,
         risk_threshold=args.risk_threshold,
     )
-    raw_param_bounds_l, raw_param_bounds_u = load_rashomon_bounds(args.rashomon_dir)
-    architecture = load_base_policy_architecture(args.rashomon_dir)
-    param_bounds_l, param_bounds_u = align_rashomon_bounds_to_ppo_actor(
-        architecture,
-        raw_param_bounds_l,
-        raw_param_bounds_u,
+    safe_region = load_safe_parameter_region(
+        args.rashomon_dir,
+        safe_region_shape=args.safe_region_shape,
     )
+    architecture, base_state_dict = load_base_policy_payload(args.rashomon_dir)
+    if isinstance(safe_region, OrthotopeRegion):
+        param_bounds_l, param_bounds_u = align_rashomon_bounds_to_ppo_actor(
+            architecture,
+            safe_region.lower,
+            safe_region.upper,
+        )
+        safe_region = OrthotopeRegion(lower=param_bounds_l, upper=param_bounds_u)
+    else:
+        safe_region = align_zonotope_region_to_ppo_actor(architecture, safe_region)
+        param_bounds_l = None
+        param_bounds_u = None
     policy_kwargs = policy_kwargs_from_base_architecture(architecture)
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -542,8 +742,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             obs_to_state=train_env.unwrapped.make_obs_to_state(),
             shield_seed=args.seed,
             shield_action_storage=args.shield_action_storage,
-            param_bounds_l=param_bounds_l,
-            param_bounds_u=param_bounds_u,
             policy_kwargs=policy_kwargs,
             learning_rate=args.learning_rate,
             n_steps=args.n_steps,
@@ -560,7 +758,82 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             verbose=1,
         )
         model.set_exploration_unsafe_action_callback(curve_logger.log_exploration_unsafe)
-        projection_targets = validate_rashomon_shapes(model, param_bounds_l, param_bounds_u)
+        if isinstance(safe_region, OrthotopeRegion):
+            projection_targets = validate_rashomon_shapes(model, safe_region.lower, safe_region.upper)
+        else:
+            target_names = projection_target_parameter_names(model)
+            named_params_for_targets = dict(model.policy.named_parameters())
+            if len(safe_region.center_params) != len(target_names):
+                raise ValueError(
+                    "Zonotope center count does not match PPO actor parameter count: "
+                    f"center={len(safe_region.center_params)}, target={len(target_names)}."
+                )
+            projection_targets = []
+            for index, name in enumerate(target_names):
+                param = named_params_for_targets[name]
+                center = safe_region.center_params[index]
+                if tuple(center.shape) != tuple(param.shape):
+                    raise ValueError(
+                        "Zonotope center shape mismatch at actor parameter "
+                        f"{index} ({name}): expected={tuple(param.shape)}, center={tuple(center.shape)}."
+                    )
+                projection_targets.append(
+                    {"index": index, "parameter": name, "shape": list(param.shape)}
+                )
+        actor_initialization = initialise_ppo_actor_from_base_policy(
+            model,
+            architecture,
+            base_state_dict,
+        )
+        target_names = projection_target_parameter_names(model)
+        named_params = dict(model.policy.named_parameters())
+        actor_before_bounds = {
+            name: named_params[name].detach().clone() for name in target_names
+        }
+        if isinstance(safe_region, OrthotopeRegion):
+            model.set_projection_bounds(
+                safe_region.lower,
+                safe_region.upper,
+                project_on_set=False,
+            )
+        else:
+            model.set_projection_regions([safe_region], project_on_set=False)
+        max_bounds_attachment_change = max(
+            (
+                float((named_params[name].detach() - actor_before_bounds[name]).abs().max().item())
+                for name in target_names
+                if named_params[name].numel()
+            ),
+            default=0.0,
+        )
+        if max_bounds_attachment_change != 0.0:
+            raise RuntimeError(
+                "Attaching PSPO bounds changed the BC-initialized actor despite "
+                "project_on_set=False: "
+                f"max_abs_parameter_change={max_bounds_attachment_change}."
+            )
+        initial_bound_violation = model.max_violation()
+        if not model.is_within_bounds():
+            raise ValueError(
+                "The saved BC policy is outside its certified parameter-space bounds; "
+                "refusing to project it because PSPO must start exactly from the BC policy. "
+                f"max_violation={initial_bound_violation:.9g}."
+            )
+        actor_initialization.update(
+            {
+                "bounds_attached_after_copy": True,
+                "projection_applied_on_initialization": False,
+                "max_abs_parameter_change_when_attaching_bounds": (
+                    max_bounds_attachment_change
+                ),
+                "within_projection_bounds": True,
+                "max_initial_bound_violation": float(initial_bound_violation),
+            }
+        )
+        log_info(
+            f"[{ALGORITHM_NAME}] initialized PPO actor exactly from saved BC policy "
+            "before attaching projection bounds"
+        )
         reward_curve = UnshieldedRewardCurveCallback(
             env_factory=lambda: env_factory(False),
             curve_logger=curve_logger,
@@ -646,7 +919,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "shield_action_storage": args.shield_action_storage,
         "shield_shape": list(mask.shape),
         "rashomon_dir": str(args.rashomon_dir),
+        "safe_region_shape": args.safe_region_shape,
         "base_policy_architecture": architecture,
+        "actor_initialization": actor_initialization,
         "policy_kwargs": {
             "net_arch": policy_kwargs["net_arch"],
             "activation_fn": "Tanh",
@@ -680,6 +955,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     write_json(run_dir / "config.json", config)
     write_json(run_dir / "projection_targets.json", projection_targets)
+    write_json(run_dir / "actor_initialization.json", actor_initialization)
 
     _write_csv(
         run_dir / "training_episodes.csv",
@@ -748,6 +1024,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "executed_action_safety": executed_action_diagnostics,
         "training_shield_diagnostics": training_shield_diagnostics,
         "evaluation_shield_diagnostics": eval_shield_diagnostics,
+        "actor_initialization": actor_initialization,
         "projection_diagnostics": projection_diagnostics,
         "learning_curves": {
             "curve_dir": str(curve_logger.curve_dir),

@@ -226,6 +226,30 @@ MARGINS=0.1,10 ENVS=colour_bomb \
   python projects/safe_policy_optimisation/scripts/run_masa_bc_margin_sweep.py
 ```
 
+### 5.4 PSPO hyperparameter sweep
+
+`run_pspo_hparam_sweep.py` sweeps only PSPO-specific hyperparameters:
+Rashomon optimisation iterations and the BC base-policy logit margin. Each
+hyperparameter setting gets a disjoint CPU-core slot; seeds for that setting run
+sequentially within the slot, so concurrent settings do not share cores.
+
+```bash
+python projects/safe_policy_optimisation/scripts/run_pspo_hparam_sweep.py \
+  --env mini_pacman \
+  --method precomputed \
+  --seeds 0 1 2 3 4 5 6 7 8 9 \
+  --rashomon-iters 100 500 2000 10000 \
+  --bc-target-margins 0.1 0.5 1 2 5 \
+  --n-hidden 0 \
+  --state-representation one_hot \
+  --sweep-root outputs/_pspo_hparam/minipacman_tabular
+```
+
+Use `--method adaptive` to sweep adaptive PSPO. For precomputed PSPO,
+`--rashomon-iters` builds the fixed offline Rashomon box; for adaptive PSPO, it
+is the per-update/on-demand Rashomon budget. `rashomon_batch_size` is not swept:
+the launcher fixes it to the full safety-demonstration dataset size.
+
 ## 6. Plotting / analysis
 
 `plot_unshielded_learning_curves.py` aggregates the per-seed
@@ -253,4 +277,5 @@ Use `--env NAME` for one environment or `--envs a b c` for several; `--method`
 | `scripts/run_adaptive_seed_experiments.py` | adaptive PSPO (`AdaptiveSafePPO`), all envs/seeds | env vars |
 | `scripts/run_rashomon_iter_sweep.py` | Rashomon-set-size ablation | env vars |
 | `scripts/run_masa_bc_margin_sweep.py` | BC-margin ablation (masa_other envs) | env vars |
+| `scripts/run_pspo_hparam_sweep.py` | PSPO-only iteration × BC-margin sweep with core-isolated settings | argparse |
 | `scripts/plot_unshielded_learning_curves.py` | learning-curve figures from run outputs | argparse |

@@ -122,6 +122,8 @@ def _get_min_acc(
     soft: bool = False,
     lower: bool = True,
     context_mask: torch.Tensor | None = None,
+    multi_label_mode: str = "any",
+    surrogate: verify.SurrogateForm = "auto",
 ) -> torch.Tensor:
     """
     Compute the order-statistic-aggregated accuracy of the model on the given data using
@@ -144,6 +146,9 @@ def _get_min_acc(
             certification (False)
         lower: Whether to compute lower bound (True) or upper bound (False)
         context_mask: Optional context mask
+        multi_label_mode: ``"any"`` certifies at least one admissible argmax winner;
+            ``"all"`` certifies every admissible logit above every inadmissible logit.
+        surrogate: Soft-margin formula selected for Rashomon optimization.
 
     Returns:
         Order-statistic-aggregated accuracy bound tensor
@@ -156,11 +161,12 @@ def _get_min_acc(
 
     if soft:
         per_sample = verify.bound_multi_label_accuracy_margin(
-            logits, mask, tau=tau, lower=lower, aggregation="none",
+            logits, mask, tau=tau, lower=lower, aggregation="none", mode=multi_label_mode,
+            surrogate=surrogate,
         )
     else:
         per_sample = verify.bound_multi_label_accuracy(
-            logits, mask, lower=lower, aggregation="none",
+            logits, mask, lower=lower, aggregation="none", mode=multi_label_mode,
         )
     return _order_statistic_select(per_sample, resolve_accuracy(accuracy, group))
 
@@ -175,6 +181,8 @@ def _certify_groups(
     group_by: Callable[[torch.Tensor], torch.Tensor] | None,
     context_mask: torch.Tensor | None,
     temperatures: dict[int | None, float],
+    multi_label_mode: str = "any",
+    surrogate: verify.SurrogateForm = "auto",
 ) -> list[RashomonCertificate]:
     """Certify a bounded model against a certificate batch, once per group."""
     group_ids = group_by(y) if group_by is not None else None
@@ -189,11 +197,12 @@ def _certify_groups(
             continue
         hard_acc = _get_min_acc(
             bounded_model, X_l[mask], X_u[mask], y[mask], accuracy, group, temperatures[group],
-            soft=False, context_mask=context_mask,
+            soft=False, context_mask=context_mask, multi_label_mode=multi_label_mode,
         ).item()
         surrogate_acc = _get_min_acc(
             bounded_model, X_l[mask], X_u[mask], y[mask], accuracy, group, temperatures[group],
-            soft=True, context_mask=context_mask,
+            soft=True, context_mask=context_mask, multi_label_mode=multi_label_mode,
+            surrogate=surrogate,
         ).item()
         certs.append(RashomonCertificate(group=group, min_surrogate=surrogate_acc, min_hard_acc=hard_acc))
     return certs
@@ -210,6 +219,8 @@ def _calibrate_temperature(
     context_mask: torch.Tensor | None,
     start: float = 0.1,
     cap: float = 100.0,
+    multi_label_mode: str = "any",
+    surrogate: verify.SurrogateForm = "auto",
 ) -> dict[int | None, float]:
     """
     Calibrate a softmax temperature per group: the smallest (sharpest) `tau` (searched via
@@ -253,6 +264,8 @@ def _calibrate_temperature(
             margin = _order_statistic_select(
                 verify.bound_multi_label_accuracy_margin(
                     logits, multi_hot, tau=candidate, lower=True, aggregation="none",
+                    mode=multi_label_mode,
+                    surrogate=surrogate,
                 ),
                 target_accuracy,
             ).item()
@@ -279,6 +292,7 @@ def _check_hard_feasibility(
     groups: list[int | None],
     group_by: Callable[[torch.Tensor], torch.Tensor] | None,
     context_mask: torch.Tensor | None,
+    multi_label_mode: str = "any",
 ) -> tuple[dict[int | None, float], dict[int | None, bool]]:
     """
     Compute, per group, the literal (mean) hard accuracy of `bounded_model` on the given
@@ -301,7 +315,9 @@ def _check_hard_feasibility(
         if context_mask is not None:
             logits = logits * context_mask
         multi_hot = _to_multi_hot(y[mask])
-        per_sample = verify.bound_multi_label_accuracy(logits, multi_hot, lower=True, aggregation="none")
+        per_sample = verify.bound_multi_label_accuracy(
+            logits, multi_hot, lower=True, aggregation="none", mode=multi_label_mode,
+        )
         achieved_accuracy[group] = per_sample.mean().item()
         feasible[group] = _order_statistic_select(per_sample, resolve_accuracy(accuracy, group)).item() > 0.0
     return achieved_accuracy, feasible
@@ -312,8 +328,10 @@ def _project_bounded_model(
     bounded_model: IntervalBoundedModel,
     outer_bbox: IntervalBoundedModel | list[IntervalBoundedModel] | None = None,
     context_mask: torch.Tensor | None = None,
+    param_l_mask: list[torch.Tensor] | None = None,
+    param_u_mask: list[torch.Tensor] | None = None,
 ) -> IntervalBoundedModel:
-    """Project the bounded model to be valid with respect to its center and the outer bounding box."""
+    """Project bounds into their valid range and restore frozen entries to the center."""
     for pl, pn, pu in zip(
         bounded_model.param_l, bounded_model.param_n, bounded_model.param_u
     ):
@@ -337,6 +355,17 @@ def _project_bounded_model(
             pl.data.clamp_(min=ol.data, max=ou.data)
             pu.data.clamp_(min=ol.data, max=ou.data)
 
+    if param_l_mask is not None:
+        for pl, pn, mask in zip(
+            bounded_model.param_l, bounded_model.param_n, param_l_mask
+        ):
+            pl.copy_(torch.where(mask, pn, pl))
+    if param_u_mask is not None:
+        for pu, pn, mask in zip(
+            bounded_model.param_u, bounded_model.param_n, param_u_mask
+        ):
+            pu.copy_(torch.where(mask, pn, pu))
+
     return bounded_model
 
 
@@ -356,6 +385,10 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
         has_input_intervals: bool = False,
         temperatures: dict[int | None, float] | None = None,
+        multi_label_mode: str = "any",
+        surrogate: verify.SurrogateForm = "auto",
+        param_l_mask: list[torch.Tensor] | None = None,
+        param_u_mask: list[torch.Tensor] | None = None,
     ):
         super().__init__()
         self.bounded_model = bounded_model
@@ -366,6 +399,10 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         self.group_by = group_by
         self.has_input_intervals = has_input_intervals
         self.temperatures = temperatures
+        self.multi_label_mode = multi_label_mode
+        self.surrogate = surrogate
+        self.param_l_mask = param_l_mask
+        self.param_u_mask = param_u_mask
 
         full_batch = next(iter(torch.utils.data.DataLoader(
             dataloader.dataset, batch_size=len(dataloader.dataset), shuffle=False,
@@ -417,7 +454,12 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
         y = y.to(self.bounded_model.device)
 
         # apply projection
-        _project_bounded_model(self.bounded_model, context_mask=self.context_mask)
+        _project_bounded_model(
+            self.bounded_model,
+            context_mask=self.context_mask,
+            param_l_mask=self.param_l_mask,
+            param_u_mask=self.param_u_mask,
+        )
         loss = -self.objective_fn(self.bounded_model, self.obj_alpha)
 
         misc_info = {}
@@ -448,6 +490,8 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 tau,
                 soft=True,
                 context_mask=self.context_mask,
+                multi_label_mode=self.multi_label_mode,
+                surrogate=self.surrogate,
             )
             min_acc = _get_min_acc(
                 self.bounded_model,
@@ -459,6 +503,7 @@ class BboxOptimizationCMP(cooper.ConstrainedMinimizationProblem):
                 tau,
                 soft=False,
                 context_mask=self.context_mask,
+                multi_label_mode=self.multi_label_mode,
             )
 
             # the target accuracy was already consumed picking the order-statistic rank
@@ -549,12 +594,82 @@ def get_lr_schedulers(
 
 
 def _create_hook(mask: torch.Tensor):
-    final_mask = mask.float()
+    final_mask = mask
 
     def hook_fn(grad: torch.Tensor):
-        return grad * (1 - final_mask)
+        return grad.masked_fill(final_mask, 0)
 
     return hook_fn
+
+
+def _validate_param_mask(
+    mask: Iterable | None,
+    bounds: Iterable[torch.Tensor],
+    name: str,
+) -> list[torch.Tensor] | None:
+    """Validate and place a per-parameter freeze mask on the bounds' devices."""
+    if mask is None:
+        return None
+
+    masks = list(mask)
+    bound_tensors = list(bounds)
+    if len(masks) != len(bound_tensors):
+        raise ValueError(
+            f"`{name}` must contain one tensor per model parameter "
+            f"({len(bound_tensors)} tensors), got {len(masks)}."
+        )
+
+    validated = []
+    for index, (entry, bound) in enumerate(zip(masks, bound_tensors)):
+        if not isinstance(entry, torch.Tensor):
+            raise TypeError(
+                f"`{name}[{index}]` must be a torch.Tensor, got "
+                f"{type(entry).__name__}."
+            )
+        if entry.dtype != torch.bool:
+            raise TypeError(
+                f"`{name}[{index}]` must have dtype torch.bool, got {entry.dtype}."
+            )
+        if entry.shape != bound.shape:
+            raise ValueError(
+                f"`{name}[{index}]` must have shape {tuple(bound.shape)}, got "
+                f"{tuple(entry.shape)}."
+            )
+        validated.append(entry.to(device=bound.device))
+    return validated
+
+
+def _resolve_param_masks(
+    bounded_model: IntervalBoundedModel,
+    param_mask: Iterable | None,
+    param_l_mask: Iterable | None,
+    param_u_mask: Iterable | None,
+) -> tuple[list[torch.Tensor] | None, list[torch.Tensor] | None]:
+    """Combine the shared freeze mask with independent lower and upper masks."""
+    shared = _validate_param_mask(param_mask, bounded_model.param_l, "param_mask")
+    lower = _validate_param_mask(param_l_mask, bounded_model.param_l, "param_l_mask")
+    upper = _validate_param_mask(param_u_mask, bounded_model.param_u, "param_u_mask")
+
+    if shared is None and lower is None and upper is None:
+        return None, None
+
+    effective_l = []
+    effective_u = []
+    for index, (pl, pu) in enumerate(
+        zip(bounded_model.param_l, bounded_model.param_u)
+    ):
+        shared_entry = (
+            shared[index] if shared is not None else torch.zeros_like(pl, dtype=torch.bool)
+        )
+        lower_entry = (
+            lower[index] if lower is not None else torch.zeros_like(pl, dtype=torch.bool)
+        )
+        upper_entry = (
+            upper[index] if upper is not None else torch.zeros_like(pu, dtype=torch.bool)
+        )
+        effective_l.append(shared_entry | lower_entry)
+        effective_u.append(shared_entry | upper_entry)
+    return effective_l, effective_u
 
 
 def compute_rashomon_set(
@@ -579,14 +694,20 @@ def compute_rashomon_set(
     param_select_fn: Callable | None = None,
     domain_map_fn: Callable | None = None,
     param_mask: Iterable | None = None,
+    param_l_mask: Iterable | None = None,
+    param_u_mask: Iterable | None = None,
     group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
     has_input_intervals: bool = False,
+    growth_method: str = "IBP",
+    growth_method_kwargs: dict | None = None,
     certification_method: str = "IBP",
     certification_method_kwargs: dict | None = None,
     temperatures: dict[int | None, float] | None = None,
     tau_min: float = 0.1,
     tau_max: float = 100.0,
     seed: int = 42,
+    multi_label_mode: str = "any",
+    surrogate: verify.SurrogateForm = "auto",
 ) -> RashomonResult:
     """
     Computes the Rashomon set using Lagrangian optimization with the Cooper library.
@@ -625,16 +746,36 @@ def compute_rashomon_set(
         custom_objective (Callable, optional): Custom objective function to use instead of the default one.
         param_select_fn (Callable, optional): Function to select parameters that we wish to compute rashomon sets over.
             If None, all parameters are used.
+        param_mask (Iterable, optional): Boolean tensors marking parameters whose lower and
+            upper bounds must both remain fixed at the nominal parameter values. Combined
+            with `param_l_mask` and `param_u_mask` using boolean OR.
+        param_l_mask (Iterable, optional): Boolean tensors marking lower-bound entries that
+            must remain fixed at the nominal parameter values.
+        param_u_mask (Iterable, optional): Boolean tensors marking upper-bound entries that
+            must remain fixed at the nominal parameter values.
         group_by (Callable, optional): Function applied to each minibatch's `y` (the per-row multi-hot
             admissible-set tensor) producing an integer group-id tensor. Each unique group gets its own
             Lagrangian constraint with its own target accuracy and calibrated temperature, resolved via
             `resolve_accuracy(accuracy, group)`. If None, all samples form a single global group (group id None).
         has_input_intervals (bool): If True, `dataset` yields (x_l, x_u, y) batches (input-region
             certification) instead of (x, y) point batches.
+        growth_method (str): Verification method (see `src.verification.registry`) whose BoundedModel
+            actually drives box growth: it computes both the differentiable soft-margin surrogate (the
+            primal objective's gradient signal) and the hard per-iteration accuracy check (the Lagrangian
+            dual's violation signal) at every iteration. Defaults to "IBP" (interval propagation), which
+            is cheap but grows conservative fast with depth - once IBP's own bound says the accuracy
+            constraint is violated, the box gets pushed back regardless of whether a tighter method would
+            still certify it, so the box shape by construction can never exceed what this method's bound
+            allows. A tighter method (e.g. "CROWN") lets the optimizer keep growing into regions IBP would
+            have prematurely rejected, at the cost of a more expensive bound per iteration (backward-mode
+            linear relaxation vs. forward-only interval arithmetic).
+        growth_method_kwargs (dict, optional): Extra kwargs forwarded to the growth backend (e.g.
+            `tanh_relaxation`/`relu_relaxation` for CROWN).
         certification_method (str): Verification method (see `src.verification.registry`) used to compute
-            the *reported* certificates. The optimization loop itself always uses IBP for speed; this only
-            affects the checkpoint/final certificates, which are computed by rebuilding a BoundedModel of
-            this method from each checkpoint's (param_l, param_u).
+            the *reported* certificates by rebuilding a BoundedModel of this method from each checkpoint's
+            (param_l, param_u) - independent of `growth_method`, which shapes the box during optimization.
+            A tighter method here can still only relabel checkpoints the `growth_method`-driven trajectory
+            actually visited; it cannot recover a bigger box than that trajectory explored.
         certification_method_kwargs (dict, optional): Extra kwargs forwarded to the certification backend.
         temperatures (dict, optional): Per-group softmax temperature `tau` (standard
             convention: `softmax(logits / tau)`), keyed by the same group ids as `groups`
@@ -654,6 +795,12 @@ def compute_rashomon_set(
             see that error and the model otherwise passes the hard-accuracy precondition.
         seed (int): Seed for the dataloaders' shuffling (the optimization minibatches and the
             certificate batch draw).
+        multi_label_mode (str): ``"any"`` preserves the historical admissible-set
+            condition that at least one valid action beats all invalid actions.
+            ``"all"`` requires every valid action logit to beat every invalid action logit.
+        surrogate (str): ``"auto"`` preserves the historical formula for the
+            selected multi-label mode; ``"logsumexp"`` uses the temperature-scaled
+            LSE margin for either mode.
 
     Returns:
         RashomonResult: The optimized bounded models (one per checkpoint, IBP-parameterized),
@@ -661,20 +808,36 @@ def compute_rashomon_set(
             the per-group softmax temperature used (calibrated, or as given via `temperatures`).
     """
     device = next(model.parameters()).device
+    if multi_label_mode not in {"any", "all"}:
+        raise ValueError(
+            f"Unsupported multi_label_mode={multi_label_mode!r}. Expected 'any' or 'all'."
+        )
+    resolved_surrogate = verify.resolve_surrogate_form(multi_label_mode, surrogate)
     objective_fn = custom_objective if custom_objective is not None else _objective_fn
 
-    bounded_model = IntervalBoundedModel(model)
+    from src.verification.registry import get_method
+    from src.verification.compatibility import check_model_compatibility
+
+    growth_spec = get_method(growth_method)
+    check_model_compatibility(model, growth_spec.supported_modules, method_name=growth_method)
+    growth_kwargs = {**growth_spec.default_kwargs, **(growth_method_kwargs or {})}
+    bounded_model = growth_spec.bounded_model_cls(model, trainable=True, **growth_kwargs)
     for pl, pu in zip(bounded_model.param_l, bounded_model.param_u):
         pl.data -= init_bbox
         pu.data += init_bbox
         pl.requires_grad = True
         pu.requires_grad = True
 
+    effective_param_l_mask, effective_param_u_mask = _resolve_param_masks(
+        bounded_model, param_mask, param_l_mask, param_u_mask
+    )
     hooks = []
-    if param_mask:
-        for pl, pu, m in zip(bounded_model.param_l, bounded_model.param_u, param_mask):
-            hooks.append(pl.register_hook(_create_hook(m)))
-            hooks.append(pu.register_hook(_create_hook(m)))
+    if effective_param_l_mask is not None:
+        for pl, mask in zip(bounded_model.param_l, effective_param_l_mask):
+            hooks.append(pl.register_hook(_create_hook(mask)))
+    if effective_param_u_mask is not None:
+        for pu, mask in zip(bounded_model.param_u, effective_param_u_mask):
+            hooks.append(pu.register_hook(_create_hook(mask)))
 
     # Create the dataloader for the optimization, and get sample the batch we use for our final certificates
     dataloader = torch.utils.data.DataLoader(
@@ -714,6 +877,11 @@ def compute_rashomon_set(
         bounded_model.param_u[-2].data += (
             (1 - context_mask) * MAX_PARAMETER_WIDTH
         ).unsqueeze(1)
+    _project_bounded_model(
+        bounded_model,
+        param_l_mask=effective_param_l_mask,
+        param_u_mask=effective_param_u_mask,
+    )
     dl_cert = torch.utils.data.DataLoader(
         dataset,
         batch_size=certificate_samples * encountered_groups,
@@ -736,17 +904,30 @@ def compute_rashomon_set(
             "Warning: target accuracy <= 0.0 for every group; returning without computing Rashomon set."
         )
         if outer_bbox is not None:
-            bounded_model = copy.deepcopy(outer_bbox)
+            for pl, pu, ol, ou in zip(
+                bounded_model.param_l,
+                bounded_model.param_u,
+                outer_bbox.param_l,
+                outer_bbox.param_u,
+            ):
+                pl.data.copy_(ol.data)
+                pu.data.copy_(ou.data)
         else:
             for pl, p, pu in zip(
                 bounded_model.param_l, model.parameters(), bounded_model.param_u
             ):
                 pl.data = p - MAX_PARAMETER_WIDTH
                 pu.data = p + MAX_PARAMETER_WIDTH
+        _project_bounded_model(
+            bounded_model,
+            param_l_mask=effective_param_l_mask,
+            param_u_mask=effective_param_u_mask,
+        )
         zero_certs = [RashomonCertificate(group=g, min_surrogate=0.0, min_hard_acc=0.0) for g in groups]
         return RashomonResult(
             bounded_models=[bounded_model], certificates=[zero_certs],
             temperatures=temperatures or {g: 0.0 for g in groups},
+            surrogate=surrogate, resolved_surrogate=resolved_surrogate,
         )
 
     # Before calibrating a temperature, check that the nominal model already satisfies the
@@ -756,7 +937,7 @@ def compute_rashomon_set(
     # Rashomon set optimization entirely and report the achieved accuracy instead.
     achieved_accuracy, hard_feasible = _check_hard_feasibility(
         bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-        context_mask,
+        context_mask, multi_label_mode=multi_label_mode,
     )
     if not all(hard_feasible.values()):
         print(
@@ -776,6 +957,7 @@ def compute_rashomon_set(
         return RashomonResult(
             bounded_models=[bounded_model], certificates=[infeasible_certs],
             temperatures={g: 0.0 for g in groups},
+            surrogate=surrogate, resolved_surrogate=resolved_surrogate,
         )
 
     # Calibrate (or validate caller-supplied) per-group softmax temperatures against the
@@ -783,7 +965,8 @@ def compute_rashomon_set(
     if temperatures is None:
         temperatures = _calibrate_temperature(
             bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-            context_mask, start=tau_min, cap=tau_max,
+            context_mask, start=tau_min, cap=tau_max, multi_label_mode=multi_label_mode,
+            surrogate=surrogate,
         )
     elif set(temperatures) != set(groups):
         raise ValueError(
@@ -795,7 +978,7 @@ def compute_rashomon_set(
     with torch.no_grad():
         initial_certs = _certify_groups(
             bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-            context_mask, temperatures,
+            context_mask, temperatures, multi_label_mode=multi_label_mode, surrogate=surrogate,
         )
     for cert in initial_certs:
         defect = -cert.min_surrogate
@@ -809,9 +992,23 @@ def compute_rashomon_set(
         print(
             f"Computing Rashomon set within outer box of size: {_bounded_model_width(outer_bbox).item():.2f}"
         )
+        outer_candidate = copy.deepcopy(bounded_model)
+        for pl, pu, ol, ou in zip(
+            outer_candidate.param_l,
+            outer_candidate.param_u,
+            outer_bbox.param_l,
+            outer_bbox.param_u,
+        ):
+            pl.data.copy_(ol.data)
+            pu.data.copy_(ou.data)
+        _project_bounded_model(
+            outer_candidate,
+            param_l_mask=effective_param_l_mask,
+            param_u_mask=effective_param_u_mask,
+        )
         outer_certs = _certify_groups(
-            outer_bbox, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-            context_mask, temperatures,
+            outer_candidate, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
+            context_mask, temperatures, multi_label_mode=multi_label_mode, surrogate=surrogate,
         )
         if all(
             cert.min_surrogate > 0.0 and cert.min_hard_acc > 0.0
@@ -822,7 +1019,8 @@ def compute_rashomon_set(
                 "No need to compute Rashomon set."
             )
             return RashomonResult(
-                bounded_models=[outer_bbox], certificates=[outer_certs], temperatures=temperatures,
+                bounded_models=[outer_candidate], certificates=[outer_certs], temperatures=temperatures,
+                surrogate=surrogate, resolved_surrogate=resolved_surrogate,
             )
 
     # Instantiate the Constrained Minimization Problem (CMP)
@@ -838,6 +1036,10 @@ def compute_rashomon_set(
         group_by=group_by,
         has_input_intervals=has_input_intervals,
         temperatures=temperatures,
+        multi_label_mode=multi_label_mode,
+        surrogate=surrogate,
+        param_l_mask=effective_param_l_mask,
+        param_u_mask=effective_param_u_mask,
     )
     n_params = sum(p.numel() for p in bounded_model.param_l)
     print(f"Number of model parameters: {n_params}")
@@ -864,10 +1066,12 @@ def compute_rashomon_set(
 
     # --- Optimization Loop ---
     print(f"Computing Rashomon set with target accuracies: {target_accuracies}")
+    print(f"Multi-label certificate mode: {multi_label_mode}")
+    print(f"Surrogate: {surrogate} (resolved: {resolved_surrogate})")
     obj = objective_fn(bounded_model, obj_alpha)
     initial_certs = _certify_groups(
         bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-        context_mask, temperatures,
+        context_mask, temperatures, multi_label_mode=multi_label_mode, surrogate=surrogate,
     )
     print(
         "Initial bbox: ",
@@ -893,7 +1097,13 @@ def compute_rashomon_set(
             dual_lr_scheduler.step()
 
         # apply projection
-        _project_bounded_model(bounded_model, outer_bbox, context_mask)
+        _project_bounded_model(
+            bounded_model,
+            outer_bbox,
+            context_mask,
+            param_l_mask=effective_param_l_mask,
+            param_u_mask=effective_param_u_mask,
+        )
 
         # Logging
         losses.append(roll_out.cmp_state.loss.item())
@@ -914,7 +1124,7 @@ def compute_rashomon_set(
     obj = objective_fn(bounded_model, obj_alpha)
     final_certs = _certify_groups(
         bounded_model, X_l_cert, X_u_cert, y_cert, accuracy, groups, group_by,
-        context_mask, temperatures,
+        context_mask, temperatures, multi_label_mode=multi_label_mode, surrogate=surrogate,
     )
     print(
         "Final bbox: ",
@@ -944,7 +1154,7 @@ def compute_rashomon_set(
         checkpoint_certs.append(
             _certify_groups(
                 cert_model, X_l_cert, X_u_cert, og_y_cert, accuracy, groups, group_by,
-                context_mask, temperatures,
+                context_mask, temperatures, multi_label_mode=multi_label_mode, surrogate=surrogate,
             )
         )
 
@@ -959,6 +1169,7 @@ def compute_rashomon_set(
     print(f"{' Finished Computing Rashomon set ':-^80}")
     return RashomonResult(
         bounded_models=checkpoint_models, certificates=checkpoint_certs, temperatures=temperatures,
+        surrogate=surrogate, resolved_surrogate=resolved_surrogate,
     )
 
 
