@@ -136,13 +136,13 @@ def calibrate_inverse_temperature(
     multi_label_mode: Literal["any", "all"] = "any",
     surrogate: Literal["auto", "logsumexp"] = "auto",
 ) -> int:
-    """First integer inverse temperature whose valid-action mass clears the threshold.
+    """First integer inverse temperature whose per-state surrogate is feasible.
 
     Same calibration rule as the offline ``compute_shield_rashomon_set`` stage:
-    in ``"any"`` mode, the softmax mass on safe actions must reach
-    ``max_valid / (1 + max_valid)`` in every state. In ``"all"`` mode, the
-    smooth all-safe margin must be positive in every state. Raises
-    ``ValueError`` if no inverse temperature in ``[start, cap]`` works.
+    evaluate the selected Rashomon surrogate independently for every state. In
+    probability-based ``"any"`` mode, each state's threshold is
+    ``n_valid / (1 + n_valid)`` using that state's own number of valid actions.
+    Raises ``ValueError`` if no inverse temperature in ``[start, cap]`` works.
     """
     if start > cap:
         raise ValueError(f"start must be <= cap; got start={start}, cap={cap}.")
@@ -156,41 +156,32 @@ def calibrate_inverse_temperature(
 
     resolved_surrogate = verify.resolve_surrogate_form(multi_label_mode, surrogate)
     masks = masks.to(dtype=logits.dtype)
-    max_valid = float(masks.sum(dim=1).max().item())
-    if max_valid <= 0:
+    if not bool(masks.bool().any(dim=1).all().item()):
         raise ValueError("Safe-action masks contain no valid actions.")
-    threshold = max_valid / (1.0 + max_valid)
-    min_valid_mass = float("-inf")
     min_margin = float("-inf")
+    point_logits = IntervalTensor(logits, logits)
     with th.no_grad():
         for inverse_temp in range(int(start), int(cap) + 1):
-            if resolved_surrogate == "probability":
-                probs = th.softmax(logits * inverse_temp, dim=1)
-                min_valid_mass = float((probs * masks).sum(dim=1).min().item())
-                if min_valid_mass >= threshold:
-                    return int(inverse_temp)
-            else:
-                tau = 1.0 / float(inverse_temp)
-                margins = verify.bound_multi_label_accuracy_margin(
-                    IntervalTensor(logits, logits),
-                    masks,
-                    tau=tau,
-                    lower=True,
-                    aggregation="none",
-                    mode=multi_label_mode,
-                    surrogate=surrogate,
-                )
-                min_margin = float(margins.min().item())
-                if min_margin > 0.0:
-                    return int(inverse_temp)
-    if resolved_surrogate == "logsumexp":
-        raise ValueError(
-            "Could not calibrate inverse temperature for the LogSumExp Rashomon surrogate: "
-            f"min_margin={min_margin:.6f}."
-        )
+            margins = verify.bound_multi_label_accuracy_margin(
+                point_logits,
+                masks,
+                tau=1.0 / float(inverse_temp),
+                lower=True,
+                aggregation="none",
+                mode=multi_label_mode,
+                surrogate=surrogate,
+            )
+            min_margin = float(margins.min().item())
+            feasible = (
+                min_margin >= 0.0
+                if resolved_surrogate == "probability"
+                else min_margin > 0.0
+            )
+            if feasible:
+                return int(inverse_temp)
     raise ValueError(
-        "Could not calibrate inverse temperature for the Rashomon surrogate: "
-        f"min_valid_mass={min_valid_mass:.6f}, threshold={threshold:.6f}.",
+        "Could not calibrate inverse temperature for the Rashomon surrogate "
+        f"({resolved_surrogate}): min_state_specific_margin={min_margin:.6f}."
     )
 
 

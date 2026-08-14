@@ -132,30 +132,40 @@ def calibrate_inverse_temperature(
     start: int = 1,
     cap: int = 1000,
 ) -> int:
-    """First integer inverse temperature whose valid-action mass clears the threshold.
+    """First integer inverse temperature whose per-state surrogate is feasible.
 
     Same calibration rule as the offline ``compute_shield_rashomon_set`` stage:
-    the softmax mass on safe actions must reach ``max_valid / (1 + max_valid)``
-    in every state. Raises ``ValueError`` if no inverse temperature in
-    ``[start, cap]`` works.
+    each state's valid-action mass must reach ``n_valid / (1 + n_valid)``
+    using that state's own number of valid actions. Raises ``ValueError`` if no
+    inverse temperature in ``[start, cap]`` works.
     """
     if start > cap:
         raise ValueError(f"start must be <= cap; got start={start}, cap={cap}.")
+    from src.IntervalTensor import IntervalTensor
+    from src.verification import verify
+
     masks = masks.to(dtype=logits.dtype)
-    max_valid = float(masks.sum(dim=1).max().item())
-    if max_valid <= 0:
+    if not bool(masks.bool().any(dim=1).all().item()):
         raise ValueError("Safe-action masks contain no valid actions.")
-    threshold = max_valid / (1.0 + max_valid)
-    min_valid_mass = float("-inf")
+    min_margin = float("-inf")
+    point_logits = IntervalTensor(logits, logits)
     with th.no_grad():
         for inverse_temp in range(int(start), int(cap) + 1):
-            probs = th.softmax(logits * inverse_temp, dim=1)
-            min_valid_mass = float((probs * masks).sum(dim=1).min().item())
-            if min_valid_mass >= threshold:
+            margins = verify.bound_multi_label_accuracy_margin(
+                point_logits,
+                masks,
+                tau=1.0 / float(inverse_temp),
+                lower=True,
+                aggregation="none",
+                mode="any",
+                surrogate="auto",
+            )
+            min_margin = float(margins.min().item())
+            if min_margin >= 0.0:
                 return int(inverse_temp)
     raise ValueError(
         "Could not calibrate inverse temperature for the Rashomon surrogate: "
-        f"min_valid_mass={min_valid_mass:.6f}, threshold={threshold:.6f}.",
+        f"min_state_specific_margin={min_margin:.6f}.",
     )
 
 

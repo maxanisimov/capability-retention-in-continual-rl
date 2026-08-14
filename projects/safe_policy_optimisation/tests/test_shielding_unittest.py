@@ -86,6 +86,26 @@ class MasaShieldedWrapperTests(unittest.TestCase):
 
 
 class RashomonSurrogateCalibrationTests(unittest.TestCase):
+    def test_probability_calibration_uses_each_states_safe_action_cardinality(self) -> None:
+        dataset = {
+            "state": torch.tensor([[0.8, 0.0, 0.0], [0.4, 0.4, 0.0]]),
+            "actions": torch.tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]),
+        }
+
+        inverse_temp, min_valid_mass, corresponding_threshold = (
+            calibrate_rashomon_inverse_temperature(
+                torch.nn.Identity(),
+                dataset,
+                inverse_temp_start=1,
+                inverse_temp_max=1,
+                device="cpu",
+            )
+        )
+
+        self.assertEqual(inverse_temp, 1)
+        self.assertGreaterEqual(min_valid_mass, corresponding_threshold)
+        self.assertAlmostEqual(corresponding_threshold, 0.5)
+
     def test_logsumexp_calibration_uses_selected_surrogate(self) -> None:
         dataset = {
             "state": torch.tensor([[0.5, 0.0], [0.0, 0.5]]),

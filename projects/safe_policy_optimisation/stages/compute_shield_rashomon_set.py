@@ -442,7 +442,12 @@ def calibrate_inverse_temperature(
     multi_label_mode: str = "any",
     surrogate: str = "auto",
 ) -> tuple[int, float, float]:
-    """Find the first inverse temperature whose selected Rashomon surrogate is feasible."""
+    """Find the first inverse temperature whose per-state surrogate is feasible.
+
+    For the probability-based ``"any"`` surrogate, the returned value is the
+    minimum valid-action mass and the returned threshold is that same state's
+    cardinality-specific threshold.
+    """
 
     if inverse_temp_start > inverse_temp_max:
         raise ValueError("--inverse-temp-start must be <= --inverse-temp-max.")
@@ -457,44 +462,48 @@ def calibrate_inverse_temperature(
     device_t = torch.device(device)
     states = dataset["state"].to(device_t)
     masks = dataset["actions"].to(device_t)
-    max_valid = float(masks.sum(dim=1).max().item())
-    if max_valid <= 0:
-        raise ValueError("Dataset contains no valid actions.")
-    threshold = max_valid / (1.0 + max_valid)
+    if not bool(masks.bool().any(dim=1).all().item()):
+        raise ValueError("Dataset contains a state with no valid actions.")
     model.eval()
     with torch.no_grad():
         logits = model(states)
-        min_valid_mass = float("-inf")
+        point_logits = IntervalTensor(logits, logits)
+        calibration_value = float("-inf")
+        calibration_threshold = 0.0
         min_margin = float("-inf")
+        valid_counts = masks.bool().sum(dim=1).to(dtype=logits.dtype)
+        state_thresholds = valid_counts / (1.0 + valid_counts)
         for inverse_temp in range(int(inverse_temp_start), int(inverse_temp_max) + 1):
+            margins = verify.bound_multi_label_accuracy_margin(
+                point_logits,
+                masks,
+                tau=1.0 / float(inverse_temp),
+                lower=True,
+                aggregation="none",
+                mode=multi_label_mode,
+                surrogate=surrogate,
+            )
+            min_margin = float(margins.min().item())
             if resolved_surrogate == "probability":
-                probs = torch.softmax(logits * inverse_temp, dim=1)
-                valid_mass = (probs * masks).sum(dim=1)
-                min_valid_mass = float(valid_mass.min().item())
-                if min_valid_mass >= threshold:
-                    return int(inverse_temp), float(min_valid_mass), float(threshold)
+                valid_mass = (
+                    torch.softmax(logits * inverse_temp, dim=1) * masks
+                ).sum(dim=1)
+                min_valid_mass, min_mass_index = valid_mass.min(dim=0)
+                calibration_value = float(min_valid_mass.item())
+                calibration_threshold = float(state_thresholds[min_mass_index].item())
             else:
-                tau = 1.0 / float(inverse_temp)
-                margins = verify.bound_multi_label_accuracy_margin(
-                    IntervalTensor(logits, logits),
-                    masks,
-                    tau=tau,
-                    lower=True,
-                    aggregation="none",
-                    mode=multi_label_mode,
-                    surrogate=surrogate,
-                )
-                min_margin = float(margins.min().item())
-                if min_margin > 0.0:
-                    return int(inverse_temp), float(min_margin), 0.0
-    if resolved_surrogate == "logsumexp":
-        raise ValueError(
-            "Could not calibrate inverse temperature for LogSumExp Rashomon surrogate: "
-            f"min_margin={min_margin:.6f}."
-        )
+                calibration_value = min_margin
+                calibration_threshold = 0.0
+            feasible = (
+                min_margin >= 0.0
+                if resolved_surrogate == "probability"
+                else min_margin > 0.0
+            )
+            if feasible:
+                return int(inverse_temp), calibration_value, calibration_threshold
     raise ValueError(
-        "Could not calibrate inverse temperature for Rashomon surrogate: "
-        f"min_valid_mass={min_valid_mass:.6f}, threshold={threshold:.6f}.",
+        "Could not calibrate inverse temperature for Rashomon surrogate "
+        f"({resolved_surrogate}): min_state_specific_margin={min_margin:.6f}.",
     )
 
 

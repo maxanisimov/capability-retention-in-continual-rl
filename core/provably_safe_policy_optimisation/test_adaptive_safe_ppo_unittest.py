@@ -344,6 +344,15 @@ class HelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             calibrate_inverse_temperature(-logits, masks, cap=10)
 
+    def test_calibration_uses_each_states_safe_action_cardinality(self) -> None:
+        logits = th.tensor([[0.8, 0.0, 0.0], [0.4, 0.4, 0.0]])
+        masks = th.tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+
+        # At beta=1, safe mass is about 0.527 in the first state and 0.749
+        # in the second. Both clear their own thresholds (1/2 and 2/3), but
+        # the former does not clear the old global 2/3 threshold.
+        self.assertEqual(calibrate_inverse_temperature(logits, masks, cap=1), 1)
+
     def test_select_certified_box_picks_last_fully_certified(self) -> None:
         def box(value: float, certs: list[float]):
             return (

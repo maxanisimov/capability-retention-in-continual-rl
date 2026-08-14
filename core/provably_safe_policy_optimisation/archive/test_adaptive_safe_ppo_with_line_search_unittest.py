@@ -16,6 +16,9 @@ from provably_safe_policy_optimisation.adaptive_safe_ppo import (
     select_certified_box,
     shield_safe_behaviour_dataset,
 )
+from provably_safe_policy_optimisation.archive.adaptive_safe_ppo_with_line_search import (
+    calibrate_inverse_temperature as calibrate_archived_inverse_temperature,
+)
 
 
 def _only_action_safe(action: int, n_states: int = 16, n_actions: int = 4) -> np.ndarray:
@@ -415,6 +418,12 @@ class HelperTests(unittest.TestCase):
         # A wrong-way policy can never clear the threshold.
         with self.assertRaises(ValueError):
             calibrate_inverse_temperature(-logits, masks, cap=10)
+
+    def test_calibration_uses_each_states_safe_action_cardinality(self) -> None:
+        logits = th.tensor([[0.8, 0.0, 0.0], [0.4, 0.4, 0.0]])
+        masks = th.tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+
+        self.assertEqual(calibrate_archived_inverse_temperature(logits, masks, cap=1), 1)
 
     def test_select_certified_box_picks_last_fully_certified(self) -> None:
         def box(value: float, certs: list[float]):
