@@ -1,7 +1,6 @@
 """AdaptiveSafePPO multi-seed launcher (paper_2503_07671 MASA environments).
 
-Runs the adaptive verify-then-project method (``train_pspo_adaptive`` or
-``train_pspo_adaptive_v2``)
+Runs the unified ``train_pspo_adaptive`` method
 for every (env, seed) pair, fully in parallel, with **each job pinned to its
 own CPU core** via ``taskset`` (plus single-threaded BLAS) to maximise
 parallelism without cross-job contention.
@@ -23,11 +22,14 @@ Env vars:
     SEEDS             comma list (default 0..9)
     ENVS              comma list of short env names (default all 6)
     ADAPTIVE_N_ITERS  per-computation Rashomon budget (default 100)
-    ADAPTIVE_TOTAL_ITERS  v2-only total Rashomon budget across all possible
-                       safe-region computations.
-    ADAPTIVE_VERSION  v1 (default) or v2.
-    ADAPTIVE_REGION_MODE  v2-only: union (default) or replace.
-    ADAPTIVE_GRANULARITY  gradient_step (default) or train_phase
+    ADAPTIVE_VERIFY_FIRST  false (default) for region-first; true for
+                       verify-then-project behavior.
+    ADAPTIVE_FREQ     update (default), rollout, once, or every-N-rollouts.
+    ADAPTIVE_DIRECTIONAL  true (default) or false.
+    ADAPTIVE_SURROGATE  logsumexp (default) or probability.
+    ADAPTIVE_REGION_MODE  replace (default) or union.
+    ADAPTIVE_VERSION  deprecated compatibility alias: v1/v2.
+    ADAPTIVE_GRANULARITY  deprecated compatibility alias.
     ADAPTIVE_STRATEGY  rashomon_project (default) or none.
                        'none' is the BC-init-without-projection ablation: the
                        policy is BC-initialised and explores under the shield,
@@ -49,12 +51,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 PY = str(REPO / ".venv/bin/python")
-STAGE_V1 = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive.py")
-STAGE_V2 = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive_v2.py")
+STAGE = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive.py")
 
 OUT_BASE = os.environ.get(
     "ADAPTIVE_OUT_BASE",
-    "projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/adaptive",
+    "projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_adaptive",
 )
 LOGDIR = REPO / OUT_BASE / "_launch_logs"
 
@@ -71,10 +72,18 @@ SEEDS = [int(s) for s in os.environ.get("SEEDS", ",".join(map(str, range(10)))).
 ENVS = os.environ.get("ENVS", ",".join(ENV_PIPELINE)).split(",")
 ADAPTIVE_N_ITERS = os.environ.get("ADAPTIVE_N_ITERS", "100")
 ADAPTIVE_TOTAL_ITERS = os.environ.get("ADAPTIVE_TOTAL_ITERS")
-ADAPTIVE_VERSION = os.environ.get("ADAPTIVE_VERSION", "v1")
-ADAPTIVE_REGION_MODE = os.environ.get("ADAPTIVE_REGION_MODE", "union")
+ADAPTIVE_VERSION = os.environ.get("ADAPTIVE_VERSION", "v2")
+ADAPTIVE_REGION_MODE = os.environ.get("ADAPTIVE_REGION_MODE", "replace")
 ADAPTIVE_GRANULARITY = os.environ.get("ADAPTIVE_GRANULARITY", "gradient_step")
 ADAPTIVE_STRATEGY = os.environ.get("ADAPTIVE_STRATEGY", "rashomon_project")
+ADAPTIVE_VERIFY_FIRST = os.environ.get(
+    "ADAPTIVE_VERIFY_FIRST", "true" if ADAPTIVE_VERSION == "v1" else "false"
+)
+ADAPTIVE_FREQ = os.environ.get(
+    "ADAPTIVE_FREQ", "rollout" if ADAPTIVE_GRANULARITY == "train_phase" else "update"
+)
+ADAPTIVE_DIRECTIONAL = os.environ.get("ADAPTIVE_DIRECTIONAL", "true")
+ADAPTIVE_SURROGATE = os.environ.get("ADAPTIVE_SURROGATE", "logsumexp")
 SMOKE = os.environ.get("SMOKE_TIMESTEPS")
 NO_PIN = os.environ.get("NO_PIN")
 
@@ -87,26 +96,98 @@ def _resolve_env_settings(pipeline_name: str) -> dict:
     return settings
 
 
+def _canonical_base_dir(environment: str) -> Path:
+    output_root = Path(OUT_BASE)
+    if not output_root.is_absolute():
+        output_root = REPO / output_root
+    return output_root / "_base_policies" / environment
+
+
+def _prepare_all_safe_base_policy(environment: str, cfg: dict) -> Path:
+    """Create/reuse the all-safe-logit base required by canonical PSPO adaptive."""
+
+    from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
+        load_shield_mask,
+        make_safe_behaviour_payload,
+    )
+    from projects.safe_policy_optimisation.utils.pspo_adaptive_launcher import (
+        base_policy_artifact_matches,
+    )
+
+    base_dir = _canonical_base_dir(environment)
+    shield_path = Path(cfg["shield_path"])
+    if not shield_path.is_absolute():
+        shield_path = REPO / shield_path
+    mask = load_shield_mask(shield_path)
+    _, metadata = make_safe_behaviour_payload(mask)
+    dataset_size = int(metadata["dataset_size"])
+    hidden_dim = int(cfg.get("hidden_dim", 64))
+    n_hidden = int(cfg.get("n_hidden", 2))
+    target_margin = float(cfg.get("bc_target_margin", 2.0))
+    if not base_policy_artifact_matches(
+        base_dir,
+        shield_path=shield_path,
+        dataset_size=dataset_size,
+        hidden_dim=hidden_dim,
+        n_hidden=n_hidden,
+        state_representation="one_hot_discrete_observation",
+        margin_mode="all",
+        target_margin=target_margin,
+    ):
+        command = [
+            PY,
+            str(
+                REPO
+                / "projects/safe_policy_optimisation/stages/compute_shield_rashomon_set.py"
+            ),
+            "--output-dir", str(base_dir.parent),
+            "--run-id", base_dir.name,
+            "--base-policy-only",
+            "--shield-path", str(shield_path),
+            "--env-id", str(cfg["env_id"]),
+            "--env-kwargs", json.dumps(cfg.get("env_kwargs") or {}),
+            "--state-representation", "one_hot",
+            "--seed", "0",
+            "--device", str(cfg.get("device", "cpu")),
+            "--hidden-dim", str(hidden_dim),
+            "--n-hidden", str(n_hidden),
+            "--bc-target-margin", str(target_margin),
+            "--linear-init-margin", str(target_margin),
+            "--bc-margin-mode", "all",
+            "--rashomon-multi-label-mode", "all",
+            "--rashomon-surrogate", ADAPTIVE_SURROGATE,
+            "--rashomon-batch-size", str(dataset_size),
+            "--certificate-samples", str(dataset_size),
+        ]
+        print(f"preparing all-safe base policy for {environment}", flush=True)
+        subprocess.check_call(command, cwd=str(REPO))
+    return base_dir / "base_policy.pt"
+
+
 def build_jobs() -> list[dict]:
     if ADAPTIVE_VERSION not in {"v1", "v2"}:
         raise SystemExit(f"ADAPTIVE_VERSION must be v1 or v2, got {ADAPTIVE_VERSION!r}")
-    if ADAPTIVE_VERSION == "v1" and ADAPTIVE_TOTAL_ITERS is not None:
-        raise SystemExit("ADAPTIVE_TOTAL_ITERS is only supported with ADAPTIVE_VERSION=v2")
+    if ADAPTIVE_TOTAL_ITERS is not None:
+        raise SystemExit(
+            "ADAPTIVE_TOTAL_ITERS is legacy-only; use ADAPTIVE_N_ITERS as the "
+            "per-computation budget"
+        )
     jobs: list[dict] = []
     for env in ENVS:
         cfg = _resolve_env_settings(ENV_PIPELINE[env])
-        base_policy = Path(cfg["rashomon_dir"]) / "base_policy.pt"
-        if not (REPO / base_policy).exists():
+        base_policy = _canonical_base_dir(env) / "base_policy.pt"
+        if not base_policy.exists():
             raise SystemExit(f"{env}: missing safe base policy {base_policy}")
         total_timesteps = SMOKE or cfg["total_timesteps"]
         for seed in SEEDS:
             run_dir = f"{OUT_BASE}/{env}"
             cmd = [
-                PY, STAGE_V2 if ADAPTIVE_VERSION == "v2" else STAGE_V1,
+                PY, STAGE,
                 "--base-policy-path", str(base_policy),
                 "--shield-path", str(cfg["shield_path"]),
                 "--env-id", cfg["env_id"],
                 "--env-kwargs", json.dumps(cfg["env_kwargs"] or {}),
+                "--state-representation", "one_hot",
                 "--max-episode-steps", str(cfg["max_episode_steps"]),
                 "--cost-limit", str(cfg["cost_limit"]),
                 "--total-timesteps", str(total_timesteps),
@@ -133,21 +214,16 @@ def build_jobs() -> list[dict]:
                 "--curve-eval-episodes", str(cfg["curve_eval_episodes"]),
                 "--output-dir", run_dir,
                 "--run-id", f"seed{seed}",
+                "--verify-first", ADAPTIVE_VERIFY_FIRST,
+                "--freq", ADAPTIVE_FREQ,
+                "--directional", ADAPTIVE_DIRECTIONAL,
+                "--region-mode", ADAPTIVE_REGION_MODE,
+                "--n-iters", ADAPTIVE_N_ITERS,
+                "--rashomon-multi-label-mode", "all",
+                "--surrogate", ADAPTIVE_SURROGATE,
             ]
-            if ADAPTIVE_VERSION == "v2":
-                cmd.extend(["--region-update-mode", ADAPTIVE_REGION_MODE])
-                if ADAPTIVE_TOTAL_ITERS is not None:
-                    cmd.extend(["--rashomon-total-iters", ADAPTIVE_TOTAL_ITERS])
-                else:
-                    cmd.extend(["--rashomon-n-iters", ADAPTIVE_N_ITERS])
-            else:
-                cmd.extend(
-                    [
-                        "--adaptive-granularity", ADAPTIVE_GRANULARITY,
-                        "--unsafe-update-strategy", ADAPTIVE_STRATEGY,
-                        "--rashomon-n-iters", ADAPTIVE_N_ITERS,
-                    ]
-                )
+            if ADAPTIVE_STRATEGY != "rashomon_project":
+                cmd.extend(["--unsafe-update-strategy", ADAPTIVE_STRATEGY])
             jobs.append({"tag": f"{env}/seed{seed}", "cmd": cmd})
     return jobs
 
@@ -188,15 +264,19 @@ def run_job(job: dict) -> tuple[str, int, float]:
 
 
 def main() -> int:
+    for environment in ENVS:
+        _prepare_all_safe_base_policy(
+            environment, _resolve_env_settings(ENV_PIPELINE[environment])
+        )
     jobs = build_jobs()
     cores = _assign_cores(len(jobs))
     for job, core in zip(jobs, cores):
         job["core"] = core
     print(
         f"launching {len(jobs)} AdaptiveSafePPO jobs (envs={len(ENVS)} x seeds={len(SEEDS)}), "
-        f"version={ADAPTIVE_VERSION}, strategy={ADAPTIVE_STRATEGY}, "
-        f"n_iters={ADAPTIVE_N_ITERS}, total_iters={ADAPTIVE_TOTAL_ITERS or 'off'}, "
-        f"granularity={ADAPTIVE_GRANULARITY}, region_mode={ADAPTIVE_REGION_MODE}, "
+        f"verify_first={ADAPTIVE_VERIFY_FIRST}, strategy={ADAPTIVE_STRATEGY}, "
+        f"n_iters={ADAPTIVE_N_ITERS}, freq={ADAPTIVE_FREQ}, "
+        f"directional={ADAPTIVE_DIRECTIONAL}, region_mode={ADAPTIVE_REGION_MODE}, "
         f"pinning={'off' if NO_PIN else 'one core per job'}, smoke={SMOKE or 'off'}",
         flush=True,
     )

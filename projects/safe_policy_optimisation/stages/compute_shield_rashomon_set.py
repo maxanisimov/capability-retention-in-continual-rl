@@ -9,6 +9,7 @@ demonstration dataset, and computes an IBP Rashomon set around that base policy.
 from __future__ import annotations
 
 import argparse
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,100 @@ def build_base_policy(
         last_dim = int(hidden_dim)
     layers.append(nn.Linear(last_dim, int(n_actions)))
     return nn.Sequential(*layers)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_base_policy_for_dataset(
+    base_policy_path: Path,
+    dataset: dict[str, torch.Tensor],
+    dataset_metadata: dict[str, Any],
+    *,
+    hidden_dim: int,
+    n_hidden: int,
+    target_margin: float,
+    margin_mode: str,
+    device: str | torch.device,
+) -> tuple[nn.Sequential, dict[str, Any], dict[str, Any]]:
+    """Load and validate an existing BC policy for Rashomon-set growth.
+
+    This is used by compute-matched PSPO comparisons, where refitting the BC
+    policy would change the centre of the safe parameter region and confound
+    the comparison. The returned metrics are recomputed on the current shield
+    dataset rather than trusted from the saved payload.
+    """
+
+    base_policy_path = Path(base_policy_path).resolve()
+    payload = torch.load(base_policy_path, map_location="cpu", weights_only=False)
+    for key in ("architecture", "state_dict"):
+        if key not in payload:
+            raise KeyError(
+                f"Base policy file must contain {key!r}; keys={sorted(payload.keys())}."
+            )
+
+    architecture = dict(payload["architecture"])
+    expected = {
+        "input_dim": int(dataset["state"].shape[1]),
+        "n_actions": int(dataset["actions"].shape[1]),
+        "hidden_dim": int(hidden_dim),
+        "n_hidden": int(n_hidden),
+        "activation": "Tanh",
+        "state_representation": str(dataset_metadata["state_representation"]),
+    }
+    mismatches = {
+        key: {"expected": value, "actual": architecture.get(key)}
+        for key, value in expected.items()
+        if architecture.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(
+            "Existing base policy is incompatible with the requested safe-set "
+            f"configuration: {mismatches}."
+        )
+
+    model = build_base_policy(
+        expected["input_dim"],
+        expected["n_actions"],
+        hidden_dim=expected["hidden_dim"],
+        n_hidden=expected["n_hidden"],
+    )
+    model.load_state_dict(dict(payload["state_dict"]), strict=True)
+    model.to(torch.device(device))
+
+    final_accuracy = allowed_action_accuracy(model, dataset, device=device)
+    final_any_margin = minimum_safe_action_margin(model, dataset, device=device, mode="any")
+    final_all_margin = minimum_safe_action_margin(model, dataset, device=device, mode="all")
+    final_margin = final_any_margin if margin_mode == "any" else final_all_margin
+    reached_target = bool(
+        final_accuracy >= 1.0 and final_margin >= float(target_margin)
+    )
+    bc_metrics = {
+        "initial_accuracy": final_accuracy,
+        "final_accuracy": final_accuracy,
+        "epochs_run": 0,
+        "reached_target": reached_target,
+        "used_direct_linear_init": False,
+        "initial_min_margin": final_margin,
+        "final_min_margin": final_margin,
+        "initial_min_any_margin": final_any_margin,
+        "final_min_any_margin": final_any_margin,
+        "initial_min_all_margin": final_all_margin,
+        "final_min_all_margin": final_all_margin,
+        "target_margin": float(target_margin),
+        "bc_margin_mode": margin_mode,
+        "source": "loaded_existing_policy",
+    }
+    source_metadata = {
+        "path": str(base_policy_path),
+        "sha256": _file_sha256(base_policy_path),
+    }
+    return model, bc_metrics, source_metadata
 
 
 def initialise_linear_policy_from_masks(model: nn.Sequential, dataset: dict[str, torch.Tensor], *, margin: float) -> bool:
@@ -484,7 +579,7 @@ def calibrate_inverse_temperature(
                 surrogate=surrogate,
             )
             min_margin = float(margins.min().item())
-            if resolved_surrogate == "probability":
+            if resolved_surrogate == "probability" and multi_label_mode == "any":
                 valid_mass = (
                     torch.softmax(logits * inverse_temp, dim=1) * masks
                 ).sum(dim=1)
@@ -496,7 +591,7 @@ def calibrate_inverse_temperature(
                 calibration_threshold = 0.0
             feasible = (
                 min_margin >= 0.0
-                if resolved_surrogate == "probability"
+                if resolved_surrogate == "probability" and multi_label_mode == "any"
                 else min_margin > 0.0
             )
             if feasible:
@@ -581,6 +676,7 @@ def compute_rashomon_bounds(
         "selected_certificate_index": int(selected_idx),
         "selected_certificate": float(cert_values[selected_idx]),
         "all_certificates": [float(value) for value in cert_values],
+        "iterations_run": int(n_iters),
         "temperatures": {str(key): float(value) for key, value in interval_trainer.temperatures.items()},
         "multi_label_mode": multi_label_mode,
         "surrogate": interval_trainer.surrogate,
@@ -664,6 +760,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--base-policy-path",
+        type=Path,
+        default=None,
+        help=(
+            "Load this exact saved base_policy.pt and grow the safe region around "
+            "it instead of fitting a new BC policy. Its architecture, state "
+            "representation, safety, and requested BC margin are validated."
+        ),
+    )
+    parser.add_argument(
+        "--base-policy-only",
+        action="store_true",
+        help=(
+            "Fit or validate the base policy and save its dataset artifacts, but "
+            "do not calibrate a Rashomon temperature or grow a safe region. This "
+            "is intended for directional adaptive PSPO, whose first proposal "
+            "determines the initial region-growth direction."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--hidden-dim", type=int, default=64)
@@ -747,7 +863,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rashomon-surrogate",
-        choices=("auto", "logsumexp"),
+        choices=("auto", "probability", "logsumexp"),
         default="auto",
         help=(
             "Soft constraint used while growing the Rashomon region. 'auto' "
@@ -811,26 +927,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     input_dim = int(dataset["state"].shape[1])
     n_actions = int(dataset["actions"].shape[1])
 
-    model = build_base_policy(
-        input_dim,
-        n_actions,
-        hidden_dim=args.hidden_dim,
-        n_hidden=args.n_hidden,
-    )
-    bc_metrics = fit_base_policy(
-        model,
-        dataset,
-        lr=args.bc_lr,
-        max_epochs=args.bc_max_epochs,
-        batch_size=args.bc_batch_size,
-        seed=args.seed,
-        device=args.device,
-        direct_linear_init=not args.no_direct_linear_init,
-        linear_init_margin=args.linear_init_margin,
-        target_margin=args.bc_target_margin,
-        margin_loss_weight=args.bc_margin_loss_weight,
-        margin_mode=args.bc_margin_mode,
-    )
+    base_policy_source = None
+    if args.base_policy_path is None:
+        model = build_base_policy(
+            input_dim,
+            n_actions,
+            hidden_dim=args.hidden_dim,
+            n_hidden=args.n_hidden,
+        )
+        bc_metrics = fit_base_policy(
+            model,
+            dataset,
+            lr=args.bc_lr,
+            max_epochs=args.bc_max_epochs,
+            batch_size=args.bc_batch_size,
+            seed=args.seed,
+            device=args.device,
+            direct_linear_init=not args.no_direct_linear_init,
+            linear_init_margin=args.linear_init_margin,
+            target_margin=args.bc_target_margin,
+            margin_loss_weight=args.bc_margin_loss_weight,
+            margin_mode=args.bc_margin_mode,
+        )
+    else:
+        model, bc_metrics, base_policy_source = load_base_policy_for_dataset(
+            args.base_policy_path,
+            dataset,
+            dataset_metadata,
+            hidden_dim=args.hidden_dim,
+            n_hidden=args.n_hidden,
+            target_margin=args.bc_target_margin,
+            margin_mode=args.bc_margin_mode,
+            device=args.device,
+        )
     if not bc_metrics["reached_target"]:
         raise RuntimeError(
             "Base policy did not reach 100% allowed-action accuracy at the required "
@@ -840,6 +969,60 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             f"(target {bc_metrics['target_margin']:.4f}). Raise --bc-max-epochs or "
             "--bc-lr, or lower --bc-target-margin.",
         )
+
+    safe_dataset_path = run_dir / "safe_behaviour_dataset.pt"
+    rashomon_dataset_path = run_dir / "rashomon_dataset.pt"
+    base_policy_path = run_dir / "base_policy.pt"
+    bounded_model_path = run_dir / "rashomon_bounded_model.pt"
+    bounds_path = run_dir / "rashomon_param_bounds.pt"
+    zonotope_path = run_dir / "rashomon_zonotope_region.pt"
+    architecture = {
+        "input_dim": input_dim,
+        "n_actions": n_actions,
+        "hidden_dim": int(args.hidden_dim),
+        "n_hidden": int(args.n_hidden),
+        "activation": "Tanh",
+        "state_representation": dataset_metadata["state_representation"],
+    }
+
+    torch.save(dataset, safe_dataset_path)
+    torch.save(dataset, rashomon_dataset_path)
+    torch.save(
+        {
+            "state_dict": {
+                key: value.detach().cpu()
+                for key, value in model.state_dict().items()
+            },
+            "architecture": architecture,
+            "bc_metrics": bc_metrics,
+        },
+        base_policy_path,
+    )
+
+    common_summary = {
+        "shield_path": str(args.shield_path),
+        "shield_sha256": _file_sha256(args.shield_path),
+        "run_dir": str(run_dir),
+        "safe_behaviour_dataset_path": str(safe_dataset_path),
+        "rashomon_dataset_path": str(rashomon_dataset_path),
+        "base_policy_path": str(base_policy_path),
+        "base_policy_source": base_policy_source,
+        "architecture": architecture,
+        "dataset": dataset_metadata,
+        "base_policy": bc_metrics,
+    }
+    if args.base_policy_only:
+        summary = {
+            **common_summary,
+            "base_policy_only": True,
+            "rashomon": {
+                "status": "skipped",
+                "reason": "base_policy_only",
+            },
+        }
+        write_json(run_dir / "summary.json", summary)
+        log_info(f"Base-policy artifacts written to {run_dir}")
+        return summary
 
     inverse_temp, min_valid_mass, surrogate_threshold = calibrate_inverse_temperature(
         model,
@@ -891,33 +1074,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         param_bounds_u = None
         bounded_model = None
 
-    safe_dataset_path = run_dir / "safe_behaviour_dataset.pt"
-    rashomon_dataset_path = run_dir / "rashomon_dataset.pt"
-    base_policy_path = run_dir / "base_policy.pt"
-    bounded_model_path = run_dir / "rashomon_bounded_model.pt"
-    bounds_path = run_dir / "rashomon_param_bounds.pt"
-    zonotope_path = run_dir / "rashomon_zonotope_region.pt"
-
-    torch.save(dataset, safe_dataset_path)
-    torch.save(dataset, rashomon_dataset_path)
-    torch.save(
-        {
-            "state_dict": {
-                key: value.detach().cpu()
-                for key, value in model.state_dict().items()
-            },
-            "architecture": {
-                "input_dim": input_dim,
-                "n_actions": n_actions,
-                "hidden_dim": int(args.hidden_dim),
-                "n_hidden": int(args.n_hidden),
-                "activation": "Tanh",
-                "state_representation": dataset_metadata["state_representation"],
-            },
-            "bc_metrics": bc_metrics,
-        },
-        base_policy_path,
-    )
     if args.safe_region_shape == "orthotope":
         torch.save(bounded_model, bounded_model_path)
         torch.save({"param_bounds_l": param_bounds_l, "param_bounds_u": param_bounds_u}, bounds_path)
@@ -946,23 +1102,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     summary = {
-        "shield_path": str(args.shield_path),
-        "run_dir": str(run_dir),
-        "safe_behaviour_dataset_path": str(safe_dataset_path),
-        "rashomon_dataset_path": str(rashomon_dataset_path),
-        "base_policy_path": str(base_policy_path),
+        **common_summary,
+        "base_policy_only": False,
         "rashomon_bounded_model_path": str(bounded_model_path),
         "rashomon_param_bounds_path": str(bounds_path),
         "rashomon_zonotope_region_path": str(zonotope_path),
-        "dataset": dataset_metadata,
-        "base_policy": bc_metrics,
         "rashomon": {
             "safe_region_shape": args.safe_region_shape,
             "zonotope_rank": int(zonotope_rank) if args.safe_region_shape == "zonotope" else None,
             "inverse_temperature": int(inverse_temp),
             "min_valid_mass": (
                 float(min_valid_mass)
-                if args.rashomon_multi_label_mode == "any" and args.rashomon_surrogate == "auto"
+                if args.rashomon_multi_label_mode == "any"
+                and rashomon_metadata["resolved_surrogate"] == "probability"
                 else None
             ),
             "min_all_safe_margin": float(min_valid_mass) if args.rashomon_multi_label_mode == "all" else None,

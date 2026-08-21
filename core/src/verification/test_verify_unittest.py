@@ -153,6 +153,38 @@ class BoundMultiLabelAccuracyMarginAggregationTests(unittest.TestCase):
         )
         self.assertTrue(torch.equal(auto, explicit))
 
+    def test_probability_all_checks_every_safe_against_every_unsafe(self):
+        logits = IntervalTensor(
+            torch.tensor([[3.0, 2.0, 1.0], [3.0, 0.0, 1.0]]),
+            torch.tensor([[3.0, 2.0, 1.0], [3.0, 0.0, 1.0]]),
+        )
+        targets = torch.tensor([[1, 1, 0], [1, 1, 0]], dtype=torch.float32)
+        margins = verify.bound_multi_label_accuracy_margin(
+            logits,
+            targets,
+            tau=0.5,
+            aggregation="none",
+            mode="all",
+            surrogate="probability",
+        )
+        self.assertGreater(float(margins[0]), 0.0)
+        self.assertLess(float(margins[1]), 0.0)
+
+    def test_probability_all_degenerate_rows_are_finite(self):
+        logits = IntervalTensor(
+            torch.tensor([[1.0, 2.0], [1.0, 2.0]]),
+            torch.tensor([[1.0, 2.0], [1.0, 2.0]]),
+        )
+        targets = torch.tensor([[1, 1], [0, 0]], dtype=torch.float32)
+        margins = verify.bound_multi_label_accuracy_margin(
+            logits,
+            targets,
+            aggregation="none",
+            mode="all",
+            surrogate="probability",
+        )
+        self.assertTrue(torch.equal(margins, torch.tensor([1.0, -1.0])))
+
     def test_logsumexp_avoids_outer_probability_saturation(self):
         targets = torch.tensor([[1, 0, 0]], dtype=torch.float32)
 

@@ -82,6 +82,12 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         extra.setdefault("batch_size", 16)
         extra.setdefault("n_epochs", 1)
         extra.setdefault("learning_rate", 1e-6)
+        # Most tests below exercise the historical verify-first mechanics.
+        # Canonical PSPO-adaptive defaults are covered by the stage parser tests.
+        extra.setdefault("rashomon_multi_label_mode", "any")
+        extra.setdefault("rashomon_surrogate", "auto")
+        extra.setdefault("directional_rashomon_growth", False)
+        extra.setdefault("stop_when_proposal_contained", False)
         model = AdaptiveSafePPO(
             "MlpPolicy", env, shield=mask if mask is not None else _only_action_safe(1),
             seed=0, shield_seed=0, device="cpu", verbose=0,
@@ -124,6 +130,16 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         # Argmax = action 0 everywhere, but only action 1 is shield-safe.
         with self.assertRaises(ValueError):
             self._make(base_policy_state_dict=_safe_base_state_dict(action=0))
+
+    def test_all_safe_logit_mode_rejects_a_merely_greedy_safe_base(self) -> None:
+        mask = _only_action_safe(1)
+        mask[:, 2] = 1
+        with self.assertRaisesRegex(ValueError, "configured hard shield invariant"):
+            self._make(
+                mask=mask,
+                rashomon_multi_label_mode="all",
+                rashomon_surrogate="logsumexp",
+            )
 
     def test_misaligned_base_state_dict_raises(self) -> None:
         missing = {"action_net.weight": th.zeros(4, 16)}
@@ -186,6 +202,19 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         self.assertEqual(model.adaptive_diagnostics()["verifications_run"], 2)
         self.assertIsNone(model.policy.optimizer.post_step_hook)
 
+    def test_rollout_interval_is_flushed_before_final_use(self) -> None:
+        model = self._make(
+            adaptive_granularity="train_phase",
+            adaptive_frequency=3,
+        )
+        model.learn(total_timesteps=64)
+        self.assertEqual(model.adaptive_diagnostics()["verifications_run"], 0)
+        model.finalize_adaptive_update()
+        diagnostics = model.adaptive_diagnostics()
+        self.assertEqual(diagnostics["verifications_run"], 1)
+        self.assertEqual(diagnostics["final_flushes"], 1)
+        self.assertFalse(diagnostics["pending_adaptive_update"])
+
     # ---------------------------------------------------------- project path
 
     def test_unsafe_candidate_triggers_rashomon_and_projection(self) -> None:
@@ -220,6 +249,31 @@ class AdaptiveSafePPOTests(unittest.TestCase):
             self.assertTrue(th.all(param.data >= base - eps - 1e-8))
             self.assertTrue(th.all(param.data <= base + eps + 1e-8))
             self.assertTrue(th.equal(param.data, snapshot))
+
+    def test_directional_fallback_weights_objective_by_candidate_magnitude(self) -> None:
+        record: list = []
+        self._patch_engine(record)
+        model = self._make(
+            directional_rashomon_growth=True,
+            stop_when_proposal_contained=True,
+        )
+        base_params = [param.detach().clone() for param in model._last_safe_params]
+        with th.no_grad():
+            flat = model._live_actor_params[0].reshape(-1)
+            flat[0].add_(0.25)
+            flat[1].sub_(0.75)
+        candidate_params = [param.detach().clone() for param in model._live_actor_params]
+        model._verify_greedy_safe = lambda: False  # type: ignore[method-assign]
+
+        model._accept_or_project_candidate()
+
+        self.assertEqual(len(record), 1)
+        weights = record[0]["kwargs"]["param_objective_weights"]
+        self.assertIsNotNone(weights)
+        for actual, candidate, base in zip(weights, candidate_params, base_params):
+            self.assertTrue(th.equal(actual, (candidate - base).abs()))
+        self.assertAlmostEqual(weights[0].reshape(-1)[0].item(), 0.25)
+        self.assertAlmostEqual(weights[0].reshape(-1)[1].item(), 0.75)
 
     def test_logsumexp_surrogate_is_forwarded_to_engine_and_diagnostics(self) -> None:
         record: list = []

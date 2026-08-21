@@ -150,6 +150,12 @@ def classify_adaptive(config: dict[str, Any]) -> str | None:
         update_mode = adaptive.get("region_update_mode", "union")
         if update_mode in {"union", "replace"}:
             return f"adaptive_v2_{update_mode}"
+    if algorithm == "pspo_adaptive":
+        if adaptive.get("verify_first", False):
+            return "adaptive_v1_projection"
+        update_mode = adaptive.get("region_update_mode", "replace")
+        if update_mode in {"union", "replace"}:
+            return f"adaptive_v2_{update_mode}"
     return None
 
 

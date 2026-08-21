@@ -1,19 +1,20 @@
-"""Train AdaptiveSafePPO: shielded exploration + adaptive verify-then-project updates.
+"""Train unified PSPO adaptive with configurable safety-enforcement behavior.
 
-Unlike ``train_pspo_precomputed.py`` (which loads a *precomputed*
-Rashomon set and projects every gradient step onto it), this stage loads only a
-safe base policy (``base_policy.pt`` from ``compute_shield_rashomon_set.py``)
-and lets :class:`AdaptiveSafePPO` verify each policy update, computing a
-Rashomon set on demand around the last safe iterate only when a candidate
-update is unsafe.
+``--verify-first true`` selects verify-then-project behavior; the default
+region-first behavior computes a certified parameter region before accepting
+or projecting each enforced candidate. Enforcement can happen after every
+optimizer update, after every N PPO rollouts, or against one fixed initial
+region.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 
@@ -55,7 +56,7 @@ from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
 )
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
-ALGORITHM_NAME = "adaptive_safe_ppo"
+ALGORITHM_NAME = "pspo_adaptive"
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT
     / "projects"
@@ -95,15 +96,51 @@ def base_state_dict_to_ppo_actor(
     return {ppo_name: state_dict[base_name] for base_name, ppo_name in name_map.items()}
 
 
+def _parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
+def _parse_frequency(value: str) -> tuple[str, int, bool]:
+    normalized = value.strip().lower()
+    if normalized in {"update", "gradient_step"}:
+        return "gradient_step", 1, False
+    if normalized in {"rollout", "train_phase"}:
+        return "train_phase", 1, False
+    if normalized == "once":
+        return "gradient_step", 1, True
+    try:
+        interval = int(normalized)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--freq must be update, rollout, once, or a positive rollout count"
+        ) from exc
+    if interval <= 0:
+        raise argparse.ArgumentTypeError("numeric --freq must be positive")
+    return "train_phase", interval, False
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train AdaptiveSafePPO from a saved shield and safe base policy.",
+        description="Train unified PSPO adaptive from a saved shield and safe base policy.",
     )
     parser.add_argument("--base-policy-path", type=Path, required=True)
     parser.add_argument("--shield-path", type=Path, required=True)
     parser.add_argument("--env-id", default=None)
     parser.add_argument("--env-kwargs", default=None, help="JSON object passed to gym.make.")
-    parser.add_argument("--state-representation", choices=("one_hot", "features"), default=None)
+    parser.add_argument(
+        "--state-representation",
+        choices=("one_hot", "features"),
+        default="one_hot",
+        help=(
+            "Observation representation used by the policy. Defaults to one-hot "
+            "encoding of discrete state indices."
+        ),
+    )
     parser.add_argument("--max-episode-steps", type=int, default=100)
     parser.add_argument("--shield-key", default="shield")
     parser.add_argument("--shield-source", choices=("shield", "action_risk"), default="shield")
@@ -117,7 +154,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--adaptive-granularity",
         choices=("gradient_step", "train_phase"),
         default="gradient_step",
-        help="What counts as one policy-update candidate for the adaptive scheme.",
+        help="Deprecated alias for --freq update/rollout.",
+    )
+    parser.add_argument(
+        "--verify-first",
+        type=_parse_bool,
+        default=False,
+        metavar="BOOL",
+        help=(
+            "true selects verify-then-project behavior; false (default) computes "
+            "a safe region before accepting/projecting each enforced update."
+        ),
+    )
+    parser.add_argument(
+        "--freq",
+        default="update",
+        help=(
+            "Safety-enforcement frequency: update, rollout, once, or a positive "
+            "integer meaning every N rollouts."
+        ),
+    )
+    parser.add_argument(
+        "--directional",
+        type=_parse_bool,
+        default=True,
+        metavar="BOOL",
+        help="Grow safe regions only toward the proposed policy update (default: true).",
+    )
+    parser.add_argument(
+        "--region-mode",
+        choices=("replace", "union"),
+        default="replace",
+        help="Replace the previous region or retain the union of certified regions.",
     )
     parser.add_argument(
         "--unsafe-update-strategy",
@@ -131,16 +199,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--n-iters",
         "--rashomon-n-iters",
+        dest="rashomon_n_iters",
         type=int,
         default=100,
-        help="Optimization budget of each on-demand Rashomon-set computation.",
+        help="Maximum optimization budget for each safe-region computation.",
     )
     parser.add_argument(
         "--rashomon-checkpoint",
         type=int,
         default=None,
-        help="Engine checkpoint cadence. Defaults to max(1, rashomon-n-iters // 10).",
+        help="Engine checkpoint cadence. Defaults to max(1, n-iters // 10).",
     )
     parser.add_argument("--rashomon-batch-size", type=int, default=500)
     parser.add_argument(
@@ -158,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rashomon-multi-label-mode",
         choices=("any", "all"),
-        default="any",
+        default="all",
         help=(
             "Admissible-set certificate/surrogate used for adaptive Rashomon boxes. "
             "'any' requires at least one safe action logit to beat every unsafe "
@@ -167,12 +237,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--surrogate",
         "--rashomon-surrogate",
-        choices=("auto", "logsumexp"),
-        default="auto",
+        dest="rashomon_surrogate",
+        choices=("auto", "probability", "logsumexp"),
+        default="logsumexp",
         help=(
-            "Soft constraint used for adaptive Rashomon boxes. 'auto' preserves "
-            "the historical per-mode formula; 'logsumexp' uses LSE for both modes."
+            "Soft constraint used for adaptive safe regions. 'probability' and "
+            "'logsumexp' both support all-safe-vs-all-unsafe semantics; 'auto' "
+            "preserves the historical per-mode formula."
         ),
     )
     parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
@@ -238,11 +311,76 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    args = parser.parse_args(raw_argv)
+    explicit_freq = any(
+        token == "--freq" or token.startswith("--freq=") for token in raw_argv
+    )
+    explicit_legacy_granularity = any(
+        token == "--adaptive-granularity"
+        or token.startswith("--adaptive-granularity=")
+        for token in raw_argv
+    )
+    if explicit_freq and explicit_legacy_granularity:
+        parser.error("--freq and --adaptive-granularity cannot be combined.")
+    frequency_value = (
+        args.adaptive_granularity
+        if explicit_legacy_granularity
+        else str(args.freq)
+    )
+    try:
+        granularity, interval, compute_once = _parse_frequency(str(frequency_value))
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+    if int(args.rashomon_n_iters) <= 0:
+        parser.error("--n-iters must be positive.")
+    if args.directional and args.safe_region_shape != "orthotope":
+        parser.error("--directional true requires --safe-region-shape orthotope.")
+    if compute_once and args.verify_first:
+        parser.error("--freq once requires --verify-first false.")
+    if compute_once and args.directional:
+        parser.error("--freq once requires --directional false.")
+    if not args.verify_first and args.unsafe_update_strategy != "rashomon_project":
+        parser.error("Region-first PSPO adaptive does not support monitor-only correction.")
+
+    args.freq = "once" if compute_once else (
+        "update" if granularity == "gradient_step" else str(interval)
+    )
+    args.adaptive_granularity = granularity
+    args.adaptive_frequency = int(interval)
+    args.compute_region_once = bool(compute_once)
+    args.directional_rashomon_growth = bool(args.directional)
+    args.stop_when_proposal_contained = bool(args.directional)
+    args.region_update_mode = str(args.region_mode)
+    args.rashomon_budget_mode = "per_computation"
+    args.rashomon_total_iters = None
+    args.rashomon_initial_n_iters = int(args.rashomon_n_iters)
+    args.rashomon_recompute_n_iters = int(args.rashomon_n_iters)
+    train_phases = int(math.ceil(float(args.total_timesteps) / float(args.n_steps)))
+    if granularity == "gradient_step":
+        minibatches = int(math.ceil(float(args.n_steps) / float(args.batch_size)))
+        args.rashomon_max_region_computations = int(
+            train_phases * int(args.n_epochs) * minibatches
+        )
+    else:
+        args.rashomon_max_region_computations = max(
+            1, int(math.ceil(float(train_phases) / float(interval)))
+        )
+    args.algorithm_name = ALGORITHM_NAME
+    return args
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     algorithm_name = getattr(args, "algorithm_name", ALGORITHM_NAME)
-    adaptive_version = getattr(args, "adaptive_version", "v1")
-    if adaptive_version not in ("v1", "v2"):
-        raise ValueError(f"adaptive_version must be 'v1' or 'v2', got {adaptive_version!r}.")
+    verify_first = bool(
+        getattr(
+            args,
+            "verify_first",
+            getattr(args, "adaptive_version", "v1") != "v2",
+        )
+    )
     if args.env_id is None:
         raise ValueError("--env-id is required for adaptive safe policy training.")
     env_kwargs = env_kwargs_with_state_representation(args)
@@ -288,17 +426,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 f"architecture={architecture['n_actions']}, env={expected_n_actions}."
             )
 
-        model_cls = AdaptiveSafePPO if adaptive_version == "v1" else AdaptiveSafePPOV2
+        model_cls = AdaptiveSafePPO if verify_first else AdaptiveSafePPOV2
         adaptive_kwargs: dict[str, Any] = {}
-        if adaptive_version == "v2":
+        if not verify_first:
             adaptive_kwargs.update(
                 {
-                    "region_update_mode": args.region_update_mode,
-                    "rashomon_budget_mode": args.rashomon_budget_mode,
-                    "rashomon_total_iters": args.rashomon_total_iters,
-                    "rashomon_initial_n_iters": args.rashomon_initial_n_iters,
-                    "rashomon_recompute_n_iters": args.rashomon_recompute_n_iters,
-                    "rashomon_max_region_computations": args.rashomon_max_region_computations,
+                    "region_update_mode": getattr(args, "region_update_mode", "replace"),
+                    "rashomon_budget_mode": getattr(
+                        args, "rashomon_budget_mode", "per_computation"
+                    ),
+                    "rashomon_total_iters": getattr(args, "rashomon_total_iters", None),
+                    "rashomon_initial_n_iters": getattr(
+                        args, "rashomon_initial_n_iters", args.rashomon_n_iters
+                    ),
+                    "rashomon_recompute_n_iters": getattr(
+                        args, "rashomon_recompute_n_iters", args.rashomon_n_iters
+                    ),
+                    "rashomon_max_region_computations": getattr(
+                        args, "rashomon_max_region_computations", None
+                    ),
+                    "compute_region_once": getattr(args, "compute_region_once", False),
                 }
             )
         model = model_cls(
@@ -311,6 +458,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             shield_action_storage=args.shield_action_storage,
             base_policy_state_dict=base_policy_state_dict,
             adaptive_granularity=args.adaptive_granularity,
+            adaptive_frequency=getattr(args, "adaptive_frequency", 1),
             unsafe_update_strategy=args.unsafe_update_strategy,
             rashomon_n_iters=args.rashomon_n_iters,
             rashomon_checkpoint=args.rashomon_checkpoint,
@@ -322,6 +470,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             safe_region_shape=args.safe_region_shape,
             zonotope_rank=args.zonotope_rank,
             rashomon_seed=args.seed,
+            directional_rashomon_growth=getattr(
+                args, "directional_rashomon_growth", getattr(args, "directional", True)
+            ),
+            stop_when_proposal_contained=getattr(
+                args, "stop_when_proposal_contained", True
+            ),
             **adaptive_kwargs,
             policy_kwargs=policy_kwargs,
             learning_rate=args.learning_rate,
@@ -360,12 +514,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         log_info(f"[{algorithm_name}] training for up to {args.total_timesteps} timesteps")
         model.learn(total_timesteps=args.total_timesteps, callback=[reward_curve, early_stop])
+        model.finalize_adaptive_update()
         final_curve_evaluation = reward_curve.record_final_evaluation()
         training_records = list(train_env.episodes)
         executed_action_diagnostics = train_env.diagnostics()
         executed_action_records = list(train_env.records)
         training_shield_diagnostics = model.shield_diagnostics()
         adaptive_diagnostics = model.adaptive_diagnostics()
+        adaptive_diagnostics["method"] = "pspo_adaptive"
+        adaptive_diagnostics["verify_first"] = verify_first
         model.save(run_dir / "model.zip")
     finally:
         train_env.close()
@@ -428,8 +585,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "activation_fn": "Tanh",
         },
         "adaptive": {
-            "version": adaptive_version,
+            "method": "pspo_adaptive",
+            "verify_first": verify_first,
+            "frequency": getattr(args, "freq", args.adaptive_granularity),
             "granularity": args.adaptive_granularity,
+            "rollout_interval": int(getattr(args, "adaptive_frequency", 1)),
+            "compute_region_once": bool(getattr(args, "compute_region_once", False)),
             "unsafe_update_strategy": args.unsafe_update_strategy,
             "rashomon_n_iters": int(args.rashomon_n_iters),
             "rashomon_checkpoint": args.rashomon_checkpoint,
@@ -438,24 +599,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "rashomon_inverse_temperature": args.rashomon_inverse_temp,
             "rashomon_multi_label_mode": args.rashomon_multi_label_mode,
             "rashomon_surrogate": args.rashomon_surrogate,
-            "rashomon_resolved_surrogate": (
-                "logsumexp"
-                if args.rashomon_surrogate == "logsumexp"
-                or args.rashomon_multi_label_mode == "all"
-                else "probability"
+            "rashomon_resolved_surrogate": adaptive_diagnostics.get(
+                "rashomon_resolved_surrogate"
             ),
             "safe_region_shape": args.safe_region_shape,
             "zonotope_rank": args.zonotope_rank,
+            "directional_rashomon_growth": getattr(
+                args, "directional_rashomon_growth", getattr(args, "directional", True)
+            ),
+            "stop_when_proposal_contained": getattr(
+                args, "stop_when_proposal_contained", True
+            ),
             **(
                 {
-                    "region_update_mode": args.region_update_mode,
-                    "rashomon_budget_mode": args.rashomon_budget_mode,
-                    "rashomon_total_iters": args.rashomon_total_iters,
-                    "rashomon_initial_n_iters": args.rashomon_initial_n_iters,
-                    "rashomon_recompute_n_iters": args.rashomon_recompute_n_iters,
-                    "rashomon_max_region_computations": args.rashomon_max_region_computations,
+                    "region_update_mode": getattr(args, "region_update_mode", "replace"),
+                    "rashomon_budget_mode": getattr(
+                        args, "rashomon_budget_mode", "per_computation"
+                    ),
+                    "rashomon_total_iters": getattr(args, "rashomon_total_iters", None),
+                    "rashomon_initial_n_iters": getattr(
+                        args, "rashomon_initial_n_iters", args.rashomon_n_iters
+                    ),
+                    "rashomon_recompute_n_iters": getattr(
+                        args, "rashomon_recompute_n_iters", args.rashomon_n_iters
+                    ),
+                    "rashomon_max_region_computations": getattr(
+                        args, "rashomon_max_region_computations", None
+                    ),
                 }
-                if adaptive_version == "v2"
+                if not verify_first
                 else {}
             ),
         },
@@ -582,14 +754,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     log_info(
-        "[{algorithm}] adaptive updates: {accepted}/{checked} accepted without Rashomon, "
-        "{rashomon} Rashomon computations, {projections} projections, {reverts} reverts".format(
+        "[{algorithm}] adaptive enforcement: verify_first={verify_first}, "
+        "verifications={checked}, region_computations={regions}, "
+        "projections={projections}, reverts={reverts}, final_flushes={flushes}".format(
             algorithm=algorithm_name,
-            accepted=adaptive_diagnostics["accepted_without_rashomon"],
+            verify_first=verify_first,
             checked=adaptive_diagnostics["verifications_run"],
-            rashomon=adaptive_diagnostics["rashomon_computations"],
+            regions=adaptive_diagnostics["rashomon_computations"],
             projections=adaptive_diagnostics["projections_applied"],
             reverts=adaptive_diagnostics["fallback_reverts"],
+            flushes=adaptive_diagnostics.get("final_flushes", 0),
         )
     )
     log_info(f"Artifacts written to {run_dir}")
@@ -597,8 +771,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    run(args)
+    run(parse_args(argv))
     return 0
 
 

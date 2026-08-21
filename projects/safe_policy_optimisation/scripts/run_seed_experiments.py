@@ -53,14 +53,14 @@ ENV_PIPELINE = {
 # PPO-PID-Lagrangian train as separate processes (own cores) yet still write the
 # combined ppo_lagrangian/ output. Other groups are single-method -> jobs=1.
 METHOD_JOBS = {
-    "baselines_lag": (["--skip-ppo-policy", "--skip-cpo-policy", "--skip-shielded-policy", "--skip-rashomon-policy"], 2),
-    "cpo": (["--skip-ppo-policy", "--skip-ppo-lagrangian", "--skip-shielded-policy", "--skip-rashomon-policy"], 1),
-    "shielded": (["--skip-ppo-policy", "--skip-baselines", "--skip-rashomon-policy"], 1),
-    "rashomon": (["--skip-ppo-policy", "--skip-baselines", "--skip-shielded-policy"], 1),
+    "baselines_lag": (["--skip-ppo-policy", "--skip-cpo-policy", "--skip-shielded-policy", "--skip-rashomon-policy", "--skip-rashomon-adaptive-policy"], 2),
+    "cpo": (["--skip-ppo-policy", "--skip-ppo-lagrangian", "--skip-shielded-policy", "--skip-rashomon-policy", "--skip-rashomon-adaptive-policy"], 1),
+    "shielded": (["--skip-ppo-policy", "--skip-ppo-lagrangian", "--skip-cpo-policy", "--skip-rashomon-policy", "--skip-rashomon-adaptive-policy"], 1),
+    "rashomon": (["--skip-ppo-policy", "--skip-baselines", "--skip-shielded-policy", "--skip-rashomon-adaptive-policy"], 1),
     # Unsafe PPO reference. Historically no group ran it (every other group
     # passes --skip-ppo-policy), so it is kept OUT of DEFAULT_METHOD_GROUPS
     # below to preserve the default sweep; select it with METHOD_GROUPS=ppo.
-    "ppo": (["--skip-baselines", "--skip-shielded-policy", "--skip-rashomon-policy"], 1),
+    "ppo": (["--skip-ppo-lagrangian", "--skip-cpo-policy", "--skip-shielded-policy", "--skip-rashomon-policy", "--skip-rashomon-adaptive-policy"], 1),
 }
 
 # The four groups a bare `run_seed_experiments.py` has always run.

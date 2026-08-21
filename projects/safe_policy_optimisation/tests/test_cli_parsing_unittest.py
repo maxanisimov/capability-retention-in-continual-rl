@@ -62,9 +62,7 @@ from projects.safe_policy_optimisation.stages.train_ppo import (
 )
 from projects.safe_policy_optimisation.stages.train_pspo_adaptive import (
     build_parser as build_adaptive_safe_ppo_parser,
-)
-from projects.safe_policy_optimisation.stages.train_pspo_adaptive_v2 import (
-    parse_args as parse_adaptive_safe_ppo_v2_args,
+    parse_args as parse_adaptive_safe_ppo_args,
 )
 from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (
     build_parser as build_rashomon_shielded_ppo_parser,
@@ -680,6 +678,7 @@ class CliParsingTests(unittest.TestCase):
             [
                 "--shield-path",
                 "shield_q.pt",
+                "--base-policy-only",
                 "--rashomon-n-iters",
                 "0",
                 "--bc-margin-mode",
@@ -694,6 +693,7 @@ class CliParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(args.shield_path, Path("shield_q.pt"))
+        self.assertTrue(args.base_policy_only)
         self.assertEqual(args.rashomon_n_iters, 0)
         self.assertEqual(args.bc_margin_mode, "all")
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
@@ -936,94 +936,57 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(overridden.rashomon_n_iters, 50)
         self.assertEqual(overridden.rashomon_checkpoint, 5)
 
-    def test_adaptive_safe_ppo_v2_parser_accepts_region_and_total_budget(self) -> None:
-        args = parse_adaptive_safe_ppo_v2_args(
+    def test_unified_pspo_adaptive_defaults_to_region_first_directional_all_lse(self) -> None:
+        args = parse_adaptive_safe_ppo_args(
             [
                 "--base-policy-path",
-                "rashomon_run/base_policy.pt",
+                "base_policy.pt",
                 "--shield-path",
-                "shield_q.pt",
-                "--env-id",
-                "CustomMiniPacman-v0",
-                "--total-timesteps",
-                "64",
-                "--n-steps",
-                "32",
-                "--batch-size",
-                "16",
-                "--n-epochs",
-                "2",
-                "--region-update-mode",
-                "replace",
-                "--rashomon-total-iters",
-                "45",
+                "shield.pt",
             ]
         )
+        self.assertFalse(args.verify_first)
+        self.assertEqual(args.state_representation, "one_hot")
+        self.assertEqual(args.freq, "update")
+        self.assertEqual(args.adaptive_granularity, "gradient_step")
+        self.assertTrue(args.directional_rashomon_growth)
+        self.assertEqual(args.rashomon_multi_label_mode, "all")
+        self.assertEqual(args.rashomon_surrogate, "logsumexp")
 
-        self.assertEqual(args.adaptive_version, "v2")
-        self.assertEqual(args.algorithm_name, "adaptive_safe_ppo_v2")
-        self.assertEqual(args.region_update_mode, "replace")
-        self.assertEqual(args.rashomon_budget_mode, "total")
-        # 1 initial region + ceil(64/32) phases * 2 epochs * ceil(32/16) minibatches = 9.
-        self.assertEqual(args.rashomon_max_region_computations, 9)
-        self.assertEqual(args.rashomon_n_iters, 45)
-        self.assertEqual(args.rashomon_initial_n_iters, 45)
-        self.assertEqual(args.rashomon_recompute_n_iters, 45)
-
-    def test_adaptive_safe_ppo_v2_parser_accepts_split_region_budgets(self) -> None:
-        args = parse_adaptive_safe_ppo_v2_args(
+    def test_unified_pspo_adaptive_accepts_static_initial_region_command(self) -> None:
+        args = parse_adaptive_safe_ppo_args(
             [
                 "--base-policy-path",
-                "rashomon_run/base_policy.pt",
+                "base_policy.pt",
                 "--shield-path",
-                "shield_q.pt",
-                "--env-id",
-                "CustomMiniPacman-v0",
-                "--rashomon-total-iters",
-                "2000",
-                "--rashomon-initial-n-iters",
-                "500",
-                "--rashomon-recompute-n-iters",
-                "100",
+                "shield.pt",
+                "--n-iters",
+                "10000",
+                "--freq",
+                "once",
+                "--directional",
+                "false",
+                "--verify-first",
+                "false",
             ]
         )
+        self.assertEqual(args.rashomon_n_iters, 10000)
+        self.assertTrue(args.compute_region_once)
+        self.assertFalse(args.directional_rashomon_growth)
 
-        self.assertEqual(args.rashomon_budget_mode, "total")
-        self.assertEqual(args.rashomon_total_iters, 2000)
-        self.assertEqual(args.rashomon_initial_n_iters, 500)
-        self.assertEqual(args.rashomon_recompute_n_iters, 100)
-        self.assertEqual(args.rashomon_n_iters, 500)
-
-    def test_adaptive_safe_ppo_v2_parser_rejects_conflicting_budget_modes(self) -> None:
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit):
-                parse_adaptive_safe_ppo_v2_args(
-                    [
-                        "--base-policy-path",
-                        "base_policy.pt",
-                        "--shield-path",
-                        "shield_q.pt",
-                        "--rashomon-n-iters",
-                        "10",
-                        "--rashomon-total-iters",
-                        "1000",
-                    ]
-                )
-
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit):
-                parse_adaptive_safe_ppo_v2_args(
-                    [
-                        "--base-policy-path",
-                        "base_policy.pt",
-                        "--shield-path",
-                        "shield_q.pt",
-                        "--rashomon-n-iters",
-                        "10",
-                        "--rashomon-initial-n-iters",
-                        "5",
-                    ]
-                )
+    def test_unified_pspo_adaptive_numeric_frequency_means_rollouts(self) -> None:
+        args = parse_adaptive_safe_ppo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--freq",
+                "7",
+            ]
+        )
+        self.assertEqual(args.adaptive_granularity, "train_phase")
+        self.assertEqual(args.adaptive_frequency, 7)
 
     def test_training_parsers_accept_paper_hyperparameters(self) -> None:
         baseline_args = build_train_parser().parse_args(

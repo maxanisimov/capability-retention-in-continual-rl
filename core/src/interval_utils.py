@@ -66,6 +66,56 @@ def _objective_fn(
     return objective / nparams
 
 
+def _magnitude_weighted_objective_fn(
+    bounded_model: IntervalBoundedModel,
+    alpha: float,
+    param_weights: list[torch.Tensor],
+) -> torch.Tensor:
+    """Candidate-magnitude-weighted box-growth objective.
+
+    Each scalar parameter interval is weighted by the absolute magnitude of
+    the corresponding proposed policy update. Dividing by the total weight
+    preserves the objective's scale while making its allocation of region
+    growth depend on the relative update magnitudes.
+    """
+
+    assert 0 <= alpha <= 1, "Alpha must be between 0 and 1"
+    if len(param_weights) != len(bounded_model.param_l):
+        raise ValueError(
+            "param_weights must contain one tensor per bounded parameter "
+            f"({len(bounded_model.param_l)} expected, got {len(param_weights)})."
+        )
+
+    weighted_logvol = torch.tensor(0.0, device=bounded_model.device)
+    weighted_width = torch.tensor(0.0, device=bounded_model.device)
+    total_weight = torch.tensor(0.0, device=bounded_model.device)
+    for index, (p_l, p_u, weight) in enumerate(
+        zip(bounded_model.param_l, bounded_model.param_u, param_weights)
+    ):
+        if weight.shape != p_l.shape:
+            raise ValueError(
+                f"param_weights[{index}] must have shape {tuple(p_l.shape)}, "
+                f"got {tuple(weight.shape)}."
+            )
+        width = p_u - p_l
+        aligned_weight = weight.to(device=width.device, dtype=width.dtype)
+        weighted_logvol += (aligned_weight * torch.log(width + 1e-6)).sum()
+        weighted_width += (aligned_weight * width).sum()
+        total_weight += aligned_weight.sum()
+
+    objective = alpha * weighted_logvol + (1 - alpha) * weighted_width
+    # An exactly-zero candidate freezes both sides of every interval. Keep a
+    # differentiable zero objective so the constrained optimizer can still
+    # certify the nominal point and terminate through target containment.
+    objective = objective / total_weight.clamp_min(1e-12)
+    if torch.isnan(objective):
+        raise ValueError(
+            "Magnitude-weighted objective returned NaN. Check the model "
+            "parameters, bounds, and proposed-update weights."
+        )
+    return objective
+
+
 def _unpack_batch(
     batch: tuple[torch.Tensor, ...], has_input_intervals: bool
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -672,6 +722,88 @@ def _resolve_param_masks(
     return effective_l, effective_u
 
 
+def _validate_stop_target_params(
+    target_params: Iterable | None,
+    bounded_model: IntervalBoundedModel,
+) -> list[torch.Tensor] | None:
+    """Validate and align an optional parameter target used for early stopping."""
+
+    if target_params is None:
+        return None
+    targets = list(target_params)
+    if len(targets) != len(bounded_model.param_l):
+        raise ValueError(
+            "`stop_target_params` must contain one tensor per bounded parameter "
+            f"({len(bounded_model.param_l)} expected, got {len(targets)})."
+        )
+    validated = []
+    for index, (target, lower) in enumerate(zip(targets, bounded_model.param_l)):
+        if not isinstance(target, torch.Tensor):
+            raise TypeError(
+                f"`stop_target_params[{index}]` must be a torch.Tensor, "
+                f"got {type(target).__name__}."
+            )
+        if target.shape != lower.shape:
+            raise ValueError(
+                f"`stop_target_params[{index}]` must have shape {tuple(lower.shape)}, "
+                f"got {tuple(target.shape)}."
+            )
+        if not bool(torch.isfinite(target).all()):
+            raise ValueError(f"`stop_target_params[{index}]` contains non-finite values.")
+        validated.append(target.detach().to(device=lower.device, dtype=lower.dtype).clone())
+    return validated
+
+
+def _validate_param_objective_weights(
+    param_objective_weights: Iterable | None,
+    bounded_model: IntervalBoundedModel,
+) -> list[torch.Tensor] | None:
+    """Validate non-negative per-parameter weights for the growth objective."""
+
+    if param_objective_weights is None:
+        return None
+    weights = list(param_objective_weights)
+    if len(weights) != len(bounded_model.param_l):
+        raise ValueError(
+            "`param_objective_weights` must contain one tensor per bounded "
+            f"parameter ({len(bounded_model.param_l)} expected, got {len(weights)})."
+        )
+    validated = []
+    for index, (weight, bound) in enumerate(zip(weights, bounded_model.param_l)):
+        if not isinstance(weight, torch.Tensor):
+            raise TypeError(
+                f"`param_objective_weights[{index}]` must be a torch.Tensor, "
+                f"got {type(weight).__name__}."
+            )
+        if weight.shape != bound.shape:
+            raise ValueError(
+                f"`param_objective_weights[{index}]` must have shape "
+                f"{tuple(bound.shape)}, got {tuple(weight.shape)}."
+            )
+        if not bool(torch.isfinite(weight).all()):
+            raise ValueError(f"`param_objective_weights[{index}]` contains non-finite values.")
+        if bool((weight < 0).any()):
+            raise ValueError(f"`param_objective_weights[{index}]` contains negative values.")
+        validated.append(
+            weight.detach().to(device=bound.device, dtype=bound.dtype).clone()
+        )
+    return validated
+
+
+def _bounded_model_contains_params(
+    bounded_model: IntervalBoundedModel,
+    target_params: list[torch.Tensor],
+) -> bool:
+    """Return whether every target coordinate lies in the current orthotope."""
+
+    return all(
+        bool(((lower <= target) & (target <= upper)).all())
+        for lower, target, upper in zip(
+            bounded_model.param_l, target_params, bounded_model.param_u
+        )
+    )
+
+
 def compute_rashomon_set(
     model: torch.nn.Sequential,
     dataset: torch.utils.data.Dataset,
@@ -696,6 +828,8 @@ def compute_rashomon_set(
     param_mask: Iterable | None = None,
     param_l_mask: Iterable | None = None,
     param_u_mask: Iterable | None = None,
+    param_objective_weights: Iterable | None = None,
+    stop_target_params: Iterable | None = None,
     group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
     has_input_intervals: bool = False,
     growth_method: str = "IBP",
@@ -753,6 +887,13 @@ def compute_rashomon_set(
             must remain fixed at the nominal parameter values.
         param_u_mask (Iterable, optional): Boolean tensors marking upper-bound entries that
             must remain fixed at the nominal parameter values.
+        param_objective_weights (Iterable, optional): Non-negative tensors aligned with the
+            bounded parameters. When supplied, both the log-volume and width terms are
+            weighted coordinate-wise and normalized by the total weight. Directional PSPO
+            supplies ``abs(candidate - last_safe)`` here.
+        stop_target_params (Iterable, optional): Proposed parameter tensors. When the current
+            box contains this target and the box passes full certification, optimization stops
+            early. Thus, `n_iters` becomes a maximum rather than a mandatory iteration count.
         group_by (Callable, optional): Function applied to each minibatch's `y` (the per-row multi-hot
             admissible-set tensor) producing an integer group-id tensor. Each unique group gets its own
             Lagrangian constraint with its own target accuracy and calibrated temperature, resolved via
@@ -813,8 +954,6 @@ def compute_rashomon_set(
             f"Unsupported multi_label_mode={multi_label_mode!r}. Expected 'any' or 'all'."
         )
     resolved_surrogate = verify.resolve_surrogate_form(multi_label_mode, surrogate)
-    objective_fn = custom_objective if custom_objective is not None else _objective_fn
-
     from src.verification.registry import get_method
     from src.verification.compatibility import check_model_compatibility
 
@@ -831,6 +970,22 @@ def compute_rashomon_set(
     effective_param_l_mask, effective_param_u_mask = _resolve_param_masks(
         bounded_model, param_mask, param_l_mask, param_u_mask
     )
+    validated_objective_weights = _validate_param_objective_weights(
+        param_objective_weights, bounded_model
+    )
+    if custom_objective is not None and validated_objective_weights is not None:
+        raise ValueError(
+            "custom_objective and param_objective_weights cannot be supplied together."
+        )
+    if custom_objective is not None:
+        objective_fn = custom_objective
+    elif validated_objective_weights is not None:
+        objective_fn = lambda current_model, alpha: _magnitude_weighted_objective_fn(
+            current_model, alpha, validated_objective_weights
+        )
+    else:
+        objective_fn = _objective_fn
+    validated_stop_target = _validate_stop_target_params(stop_target_params, bounded_model)
     hooks = []
     if effective_param_l_mask is not None:
         for pl, mask in zip(bounded_model.param_l, effective_param_l_mask):
@@ -1087,6 +1242,8 @@ def compute_rashomon_set(
     defects = []
     checkpoint_models = []
 
+    iterations_run = 0
+    target_contained_and_certified = False
     for iter_ in (pbar := tqdm.trange(n_iters)):
         if checkpoint != -1 and iter_ % checkpoint == 0 and iter_ > 0:
             checkpoint_models.append(copy.deepcopy(bounded_model))
@@ -1104,6 +1261,7 @@ def compute_rashomon_set(
             param_l_mask=effective_param_l_mask,
             param_u_mask=effective_param_u_mask,
         )
+        iterations_run = iter_ + 1
 
         # Logging
         losses.append(roll_out.cmp_state.loss.item())
@@ -1115,6 +1273,35 @@ def compute_rashomon_set(
                 "min_surrogate": f"{roll_out.cmp_state.misc['min_surrogate']:.3f}",
             }
         )
+
+        # Geometric containment is cheap, but it is not itself a safety proof.
+        # Stop only after the containing box also passes the same full-batch hard
+        # certificate used to select the returned region.
+        if (
+            validated_stop_target is not None
+            and _bounded_model_contains_params(bounded_model, validated_stop_target)
+        ):
+            from src.verification.api import build_bounded_model
+
+            stop_cert_model = build_bounded_model(
+                model,
+                certification_method,
+                param_l=[p.detach().clone() for p in bounded_model.param_l],
+                param_u=[p.detach().clone() for p in bounded_model.param_u],
+                **(certification_method_kwargs or {}),
+            )
+            stop_certs = _certify_groups(
+                stop_cert_model, X_l_cert, X_u_cert, og_y_cert, accuracy, groups, group_by,
+                context_mask, temperatures, multi_label_mode=multi_label_mode,
+                surrogate=surrogate,
+            )
+            if stop_certs and all(cert.min_hard_acc >= 1.0 for cert in stop_certs):
+                target_contained_and_certified = True
+                print(
+                    "Stopping Rashomon optimization early at iteration "
+                    f"{iterations_run}: the target parameters are inside the certified box."
+                )
+                break
 
     checkpoint_models.append(bounded_model)
 
@@ -1170,6 +1357,8 @@ def compute_rashomon_set(
     return RashomonResult(
         bounded_models=checkpoint_models, certificates=checkpoint_certs, temperatures=temperatures,
         surrogate=surrogate, resolved_surrogate=resolved_surrogate,
+        iterations_run=iterations_run,
+        target_contained_and_certified=target_contained_and_certified,
     )
 
 

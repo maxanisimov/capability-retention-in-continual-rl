@@ -45,3 +45,5 @@ class RashomonResult:
     temperatures: dict[int | None, float]  # per-group calibrated (or caller-supplied) softmax temperature
     surrogate: str = "auto"  # requested public surrogate form
     resolved_surrogate: str = "probability"  # concrete formula used by the optimizer
+    iterations_run: int = 0  # actual optimizer iterations (may be below the configured maximum)
+    target_contained_and_certified: bool = False  # target-triggered early stop was reached

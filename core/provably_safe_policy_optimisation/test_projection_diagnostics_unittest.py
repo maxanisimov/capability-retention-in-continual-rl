@@ -105,6 +105,32 @@ class ProjectedAdamDiagnosticsTests(unittest.TestCase):
         self.assertIs(opt.last_projection_result, result)
         self.assertEqual(opt.last_projection_result.n_projected, 0)
 
+    def test_records_full_adam_update_before_projection(self) -> None:
+        x = nn.Parameter(th.zeros(3))
+        opt = ProjectedAdam([x], lr=1.0)
+        opt.set_bounds(
+            [th.full_like(x, -0.05)],
+            [th.full_like(x, 0.05)],
+            project_on_set=False,
+        )
+
+        x.grad = th.tensor([-1.0, 1.0, 0.0])
+        opt.step()
+
+        self.assertTrue(th.allclose(x.detach(), th.tensor([0.05, -0.05, 0.0])))
+        self.assertIsNotNone(opt.last_proposed_params)
+        self.assertGreater(float(opt.last_proposed_params[0][0]), 0.9)
+        self.assertLess(float(opt.last_proposed_params[0][1]), -0.9)
+        self.assertIsNotNone(opt.last_proposed_update_deltas)
+        delta = opt.last_proposed_update_deltas[0]
+        self.assertGreater(float(delta[0]), 0.9)
+        self.assertLess(float(delta[1]), -0.9)
+        self.assertEqual(float(delta[2]), 0.0)
+
+        opt.project_now()
+        self.assertIsNone(opt.last_proposed_update_deltas)
+        self.assertIsNone(opt.last_proposed_params)
+
 
 class _FakeLogger:
     def __init__(self) -> None:

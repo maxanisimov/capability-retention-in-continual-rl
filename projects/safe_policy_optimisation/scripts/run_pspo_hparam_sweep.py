@@ -167,7 +167,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--rashomon-surrogate",
-        choices=("auto", "logsumexp"),
+        choices=("auto", "probability", "logsumexp"),
         default="auto",
         help="Rashomon optimization surrogate form.",
     )

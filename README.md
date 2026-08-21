@@ -9,7 +9,8 @@ This repository is organised into three top-level areas:
 
 ## Projects
 - `projects/safe_crl/` contains the current safe continual RL experiment tree.
-- `projects/safe_policy_optimisation/` is scaffolded for future safe policy optimisation experiments.
+- `projects/safe_policy_optimisation/` contains the safe-RL baselines and
+  precomputed/adaptive PSPO experiment pipelines.
 
 ## Repository Structure
 ```text
@@ -69,6 +70,36 @@ from src.trainer import IntervalTrainer
 
 ## Running Experiments
 See `projects/safe_crl/pipelines/README.md` and pipeline-local READMEs for entry points. Run commands from the repository root so imports resolve through the canonical `projects.safe_crl` package path.
+
+### Safe policy optimisation
+
+Run the safety-aware RL baselines over selected paper environments with:
+
+```bash
+ENVS=bridge_crossing,bridge_crossing_v2 \
+SEEDS=0,1,2,3,4,5,6,7,8,9 \
+METHOD_GROUPS=baselines_lag,cpo,shielded \
+PAPER_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/safe_rl_baselines \
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/run_seed_experiments.py
+```
+
+Run canonical region-first PSPO adaptive with:
+
+```bash
+ENVS=bridge_crossing_v2 \
+SEEDS=0,1,2,3,4,5,6,7,8,9 \
+ADAPTIVE_FREQ=update \
+ADAPTIVE_N_ITERS=100 \
+ADAPTIVE_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2 \
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
+```
+
+See
+[`projects/safe_policy_optimisation/README.md`](projects/safe_policy_optimisation/README.md)
+for method groups, supported environments, adaptive modes, CPU controls,
+specialised architecture launchers, output layout, and smoke-test commands.
 
 ## Notes
 - `archive/` directories contain older exploratory material and are not part of the main release pipeline.

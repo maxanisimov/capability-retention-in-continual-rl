@@ -4,24 +4,42 @@ set -euo pipefail
 cd /vol/bitbucket/ma5923/_projects/CertifiedContinualLearning
 
 : "${ENV_NAME:?set ENV_NAME}"
-: "${CORE_START:?set CORE_START}"
 
 SEEDS="${SEEDS:-0 1 2 3 4 5 6 7 8 9}"
-REGION_MODE="${REGION_MODE:-union}"
-RUN_NAME="${RUN_NAME:-adaptive_v2_tabular_best_precomputed}"
+CORE_START="${CORE_START:-}"
+CPU_IDS="${CPU_IDS:-}"
+REGION_MODE="${REGION_MODE:-replace}"
+RUN_NAME="${RUN_NAME:-pspo_adaptive_tabular_best}"
 ARCHITECTURE="${ARCHITECTURE:-tabular}"
-RASHOMON_TOTAL_ITERS="${RASHOMON_TOTAL_ITERS:-}"
-RASHOMON_INITIAL_N_ITERS="${RASHOMON_INITIAL_N_ITERS:-}"
-RASHOMON_RECOMPUTE_N_ITERS="${RASHOMON_RECOMPUTE_N_ITERS:-}"
-INITIAL_SET_RASHOMON_N_ITERS="${INITIAL_SET_RASHOMON_N_ITERS:-}"
-RASHOMON_MULTI_LABEL_MODE="${RASHOMON_MULTI_LABEL_MODE:-any}"
+RASHOMON_N_ITERS="${RASHOMON_N_ITERS:-}"
+RASHOMON_MULTI_LABEL_MODE="${RASHOMON_MULTI_LABEL_MODE:-all}"
+RASHOMON_SURROGATE="${RASHOMON_SURROGATE:-logsumexp}"
+RASHOMON_BATCH_SIZE="${RASHOMON_BATCH_SIZE:-}"
+RASHOMON_CERTIFICATE_SAMPLES="${RASHOMON_CERTIFICATE_SAMPLES:-}"
+BC_TARGET_MARGIN="${BC_TARGET_MARGIN:-}"
+DIRECTIONAL_RASHOMON_GROWTH="${DIRECTIONAL_RASHOMON_GROWTH:-1}"
+ADAPTIVE_GRANULARITY="${ADAPTIVE_GRANULARITY:-}"
+ADAPTIVE_FREQ="${ADAPTIVE_FREQ:-}"
+STOP_WHEN_PROPOSAL_CONTAINED="${STOP_WHEN_PROPOSAL_CONTAINED:-1}"
+SKIP_EXISTING="${SKIP_EXISTING:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
-export ENV_NAME CORE_START SEEDS REGION_MODE RUN_NAME ARCHITECTURE RASHOMON_TOTAL_ITERS
-export RASHOMON_INITIAL_N_ITERS RASHOMON_RECOMPUTE_N_ITERS INITIAL_SET_RASHOMON_N_ITERS
-export RASHOMON_MULTI_LABEL_MODE DRY_RUN
+if [[ -z "$CPU_IDS" && -z "$CORE_START" ]]; then
+  echo "Set CPU_IDS (explicit cores) or CORE_START (legacy consecutive allocation)." >&2
+  exit 2
+fi
 
-python - <<'PY'
+export ENV_NAME CORE_START CPU_IDS SEEDS REGION_MODE RUN_NAME ARCHITECTURE RASHOMON_N_ITERS
+export RASHOMON_MULTI_LABEL_MODE RASHOMON_SURROGATE RASHOMON_BATCH_SIZE
+export RASHOMON_CERTIFICATE_SAMPLES
+export BC_TARGET_MARGIN DRY_RUN
+export DIRECTIONAL_RASHOMON_GROWTH
+export ADAPTIVE_GRANULARITY
+export ADAPTIVE_FREQ
+export STOP_WHEN_PROPOSAL_CONTAINED
+export SKIP_EXISTING
+
+.venv/bin/python - <<'PY'
 import json
 import os
 import subprocess
@@ -30,19 +48,41 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from projects.safe_policy_optimisation.utils.config import compose_pipeline_settings
+from projects.safe_policy_optimisation.utils.pspo_adaptive_launcher import (
+    base_policy_artifact_matches,
+    resolve_certificate_samples,
+    resolve_seed_cpu_ids,
+    resolve_target_margin,
+)
 
 REPO = Path.cwd()
 ENV_NAME = os.environ["ENV_NAME"]
-CORE_START = int(os.environ["CORE_START"])
 SEEDS = [int(x) for x in os.environ["SEEDS"].split()]
+try:
+    CPU_IDS = resolve_seed_cpu_ids(
+        SEEDS,
+        cpu_ids=os.environ["CPU_IDS"],
+        core_start=os.environ["CORE_START"],
+    )
+except ValueError as exc:
+    raise SystemExit(f"Invalid CPU allocation: {exc}") from exc
+unavailable_cpus = sorted(set(CPU_IDS) - set(os.sched_getaffinity(0)))
+if unavailable_cpus:
+    raise SystemExit(f"Requested CPUs are outside this process's affinity: {unavailable_cpus}")
 REGION_MODE = os.environ["REGION_MODE"]
 RUN_NAME = os.environ["RUN_NAME"]
 ARCHITECTURE = os.environ["ARCHITECTURE"]
-RASHOMON_TOTAL_ITERS = os.environ["RASHOMON_TOTAL_ITERS"]
-RASHOMON_INITIAL_N_ITERS = os.environ["RASHOMON_INITIAL_N_ITERS"]
-RASHOMON_RECOMPUTE_N_ITERS = os.environ["RASHOMON_RECOMPUTE_N_ITERS"]
-INITIAL_SET_RASHOMON_N_ITERS = os.environ["INITIAL_SET_RASHOMON_N_ITERS"]
+RASHOMON_N_ITERS = os.environ["RASHOMON_N_ITERS"]
 RASHOMON_MULTI_LABEL_MODE = os.environ["RASHOMON_MULTI_LABEL_MODE"]
+RASHOMON_SURROGATE = os.environ["RASHOMON_SURROGATE"]
+RASHOMON_BATCH_SIZE = os.environ["RASHOMON_BATCH_SIZE"]
+RASHOMON_CERTIFICATE_SAMPLES = os.environ["RASHOMON_CERTIFICATE_SAMPLES"]
+BC_TARGET_MARGIN = os.environ["BC_TARGET_MARGIN"]
+DIRECTIONAL_RASHOMON_GROWTH = os.environ["DIRECTIONAL_RASHOMON_GROWTH"] == "1"
+ADAPTIVE_GRANULARITY = os.environ["ADAPTIVE_GRANULARITY"]
+ADAPTIVE_FREQ = os.environ["ADAPTIVE_FREQ"]
+STOP_WHEN_PROPOSAL_CONTAINED = os.environ["STOP_WHEN_PROPOSAL_CONTAINED"] == "1"
+SKIP_EXISTING = os.environ["SKIP_EXISTING"] == "1"
 DRY_RUN = os.environ["DRY_RUN"] == "1"
 
 PIPELINES = {
@@ -57,6 +97,16 @@ PIPELINES = {
 if ENV_NAME not in PIPELINES:
     choices = ", ".join(sorted(PIPELINES))
     raise SystemExit(f"Unknown ENV_NAME={ENV_NAME!r}; expected one of: {choices}")
+if RASHOMON_MULTI_LABEL_MODE not in {"any", "all"}:
+    raise SystemExit("RASHOMON_MULTI_LABEL_MODE must be 'any' or 'all'")
+if RASHOMON_SURROGATE not in {"auto", "probability", "logsumexp"}:
+    raise SystemExit(
+        "RASHOMON_SURROGATE must be 'auto', 'probability', or 'logsumexp'"
+    )
+if ADAPTIVE_GRANULARITY and ADAPTIVE_GRANULARITY not in {"gradient_step", "train_phase"}:
+    raise SystemExit("ADAPTIVE_GRANULARITY must be 'gradient_step' or 'train_phase'")
+if not ADAPTIVE_FREQ:
+    ADAPTIVE_FREQ = "rollout" if ADAPTIVE_GRANULARITY == "train_phase" else "update"
 
 pipeline, label = PIPELINES[ENV_NAME]
 cfg, _, _ = compose_pipeline_settings(pipeline)
@@ -124,39 +174,63 @@ def repo_path(value):
     return path if path.is_absolute() else REPO / path
 
 
-def initial_set_matches(safe_set_dir):
-    bounds_path = safe_set_dir / "rashomon_param_bounds.pt"
-    base_path = safe_set_dir / "base_policy.pt"
-    summary_path = safe_set_dir / "summary.json"
-    if not bounds_path.exists() or not base_path.exists() or not summary_path.exists():
-        return False
-    try:
-        summary = json.loads(summary_path.read_text())
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(summary, dict):
-        return False
-    base_policy_summary = summary.get("base_policy") or {}
-    rashomon_summary = summary.get("rashomon") or {}
-    if not isinstance(base_policy_summary, dict) or not isinstance(rashomon_summary, dict):
-        return False
-    return (
-        base_policy_summary.get("bc_margin_mode") == RASHOMON_MULTI_LABEL_MODE
-        and rashomon_summary.get("multi_label_mode") == RASHOMON_MULTI_LABEL_MODE
+try:
+    bc_target_margin = resolve_target_margin(
+        BC_TARGET_MARGIN,
+        default=float(hp.get("bc_target_margin", 10.0)),
     )
+except ValueError as exc:
+    raise SystemExit(f"Invalid BC_TARGET_MARGIN: {exc}") from exc
+
+from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
+    load_shield_mask,
+    make_safe_behaviour_payload,
+)
+
+shield_path = repo_path(cfg["shield_path"])
+shield_mask = load_shield_mask(shield_path)
+_, safety_dataset_metadata = make_safe_behaviour_payload(shield_mask)
+safety_demo_size = int(safety_dataset_metadata["dataset_size"])
+try:
+    certificate_samples = resolve_certificate_samples(
+        RASHOMON_CERTIFICATE_SAMPLES,
+        default=int(hp.get("certificate_samples", 1000)),
+        shield_mask=shield_mask,
+    )
+except ValueError as exc:
+    raise SystemExit(f"Invalid RASHOMON_CERTIFICATE_SAMPLES: {exc}") from exc
+
+if RASHOMON_BATCH_SIZE == "all":
+    rashomon_batch_size = safety_demo_size
+elif RASHOMON_BATCH_SIZE:
+    try:
+        rashomon_batch_size = int(RASHOMON_BATCH_SIZE)
+    except ValueError as exc:
+        raise SystemExit(
+            "RASHOMON_BATCH_SIZE must be a positive integer or 'all'"
+        ) from exc
+else:
+    rashomon_batch_size = int(hp.get("rashomon_batch_size", 500))
+if rashomon_batch_size <= 0:
+    raise SystemExit("RASHOMON_BATCH_SIZE must be positive")
+
+if RASHOMON_BATCH_SIZE == "all" and rashomon_batch_size != safety_demo_size:
+    raise AssertionError("full Rashomon batch does not match the safety dataset")
+if RASHOMON_CERTIFICATE_SAMPLES == "all" and certificate_samples != safety_demo_size:
+    raise AssertionError("full certificate coverage does not match the safety dataset")
 
 
-def initial_set_command(safe_set_dir):
-    n_iters = INITIAL_SET_RASHOMON_N_ITERS or hp.get("rashomon_n_iters", 2000)
+def base_policy_command(base_dir):
     return [
         str(REPO / ".venv/bin/python"),
         str(REPO / "projects/safe_policy_optimisation/stages/compute_shield_rashomon_set.py"),
         "--output-dir",
-        str(safe_set_dir.parent),
+        str(base_dir.parent),
         "--run-id",
-        safe_set_dir.name,
+        base_dir.name,
+        "--base-policy-only",
         "--shield-path",
-        str(repo_path(cfg["shield_path"])),
+        str(shield_path),
         "--env-id",
         cfg["env_id"],
         "--env-kwargs",
@@ -172,42 +246,49 @@ def initial_set_command(safe_set_dir):
         "--n-hidden",
         str(hp.get("n_hidden", 0 if ARCHITECTURE == "tabular" else 2)),
         "--bc-target-margin",
-        str(hp.get("bc_target_margin", 10.0)),
+        str(bc_target_margin),
         "--linear-init-margin",
-        str(hp.get("bc_target_margin", 10.0)),
+        str(bc_target_margin),
         "--bc-margin-mode",
         RASHOMON_MULTI_LABEL_MODE,
         "--rashomon-multi-label-mode",
         RASHOMON_MULTI_LABEL_MODE,
-        "--rashomon-n-iters",
-        str(int(n_iters)),
-        "--rashomon-checkpoint",
-        str(hp.get("checkpoint", hp.get("rashomon_checkpoint", 100))),
+        "--rashomon-surrogate",
+        RASHOMON_SURROGATE,
         "--rashomon-batch-size",
-        str(hp.get("rashomon_batch_size", 500)),
+        str(rashomon_batch_size),
         "--certificate-samples",
-        str(hp.get("certificate_samples", 1000)),
+        str(certificate_samples),
     ]
 
 
 if RASHOMON_MULTI_LABEL_MODE == "all":
-    safe_set_dir = out_base / "initial_safe_set"
-    base_policy = safe_set_dir / "base_policy.pt"
-    if not initial_set_matches(safe_set_dir):
-        set_cmd = initial_set_command(safe_set_dir)
+    base_dir = out_base / "initial_base_policy"
+    base_policy = base_dir / "base_policy.pt"
+    if not base_policy_artifact_matches(
+        base_dir,
+        shield_path=shield_path,
+        dataset_size=safety_demo_size,
+        hidden_dim=int(hp.get("hidden_dim", 64)),
+        n_hidden=int(hp.get("n_hidden", 0 if ARCHITECTURE == "tabular" else 2)),
+        state_representation="one_hot_discrete_observation",
+        margin_mode=RASHOMON_MULTI_LABEL_MODE,
+        target_margin=bc_target_margin,
+    ):
+        set_cmd = base_policy_command(base_dir)
         if DRY_RUN:
-            print(f"dry-run initial-safe-set: {' '.join(set_cmd)}", flush=True)
+            print(f"dry-run base-policy: {' '.join(set_cmd)}", flush=True)
         else:
-            log = logdir / "initial_safe_set.log"
+            log = logdir / "initial_base_policy.log"
             with log.open("w") as fh:
                 rc = subprocess.run(
-                    set_cmd,
+                    ["taskset", "-c", str(CPU_IDS[0]), *set_cmd],
                     cwd=REPO,
                     stdout=fh,
                     stderr=subprocess.STDOUT,
                 ).returncode
             if rc != 0:
-                raise SystemExit(f"Initial safe-set computation failed with rc={rc}; see {log}")
+                raise SystemExit(f"Base-policy preparation failed with rc={rc}; see {log}")
 else:
     base_policy = repo_path(hp["rashomon_dir"]) / "base_policy.pt"
 
@@ -215,15 +296,18 @@ if not base_policy.exists() and not DRY_RUN:
     raise SystemExit(f"Missing base policy: {base_policy}")
 
 jobs = []
-for i, seed in enumerate(SEEDS):
-    core = CORE_START + i
+for seed, core in zip(SEEDS, CPU_IDS):
+    completed_metrics = out_base / f"seed{seed}" / "metrics.json"
+    if SKIP_EXISTING and completed_metrics.exists():
+        print(f"{ENV_NAME}: skipping completed seed{seed}: {completed_metrics}", flush=True)
+        continue
     cmd = [
         str(REPO / ".venv/bin/python"),
-        str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive_v2.py"),
+        str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive.py"),
         "--base-policy-path",
         str(base_policy),
         "--shield-path",
-        str(REPO / cfg["shield_path"]),
+        str(shield_path),
         "--env-id",
         cfg["env_id"],
         "--env-kwargs",
@@ -240,16 +324,24 @@ for i, seed in enumerate(SEEDS):
         str(cfg["eval_episodes"]),
         "--seed",
         str(seed),
-        "--region-update-mode",
+        "--verify-first",
+        "false",
+        "--freq",
+        ADAPTIVE_FREQ,
+        "--directional",
+        "true" if DIRECTIONAL_RASHOMON_GROWTH else "false",
+        "--region-mode",
         REGION_MODE,
         "--rashomon-checkpoint",
         str(hp.get("checkpoint", 100)),
         "--rashomon-batch-size",
-        str(hp.get("rashomon_batch_size", 500)),
+        str(rashomon_batch_size),
         "--certificate-samples",
-        str(hp.get("certificate_samples", 1000)),
+        str(certificate_samples),
         "--rashomon-multi-label-mode",
         RASHOMON_MULTI_LABEL_MODE,
+        "--surrogate",
+        RASHOMON_SURROGATE,
         "--learning-rate",
         str(cfg["learning_rate"]),
         "--n-steps",
@@ -293,22 +385,13 @@ for i, seed in enumerate(SEEDS):
         "--run-id",
         f"seed{seed}",
     ]
-    budget_args = []
-    if RASHOMON_TOTAL_ITERS:
-        budget_args.extend(["--rashomon-total-iters", str(int(RASHOMON_TOTAL_ITERS))])
-    if RASHOMON_INITIAL_N_ITERS:
-        budget_args.extend(["--rashomon-initial-n-iters", str(int(RASHOMON_INITIAL_N_ITERS))])
-    if RASHOMON_RECOMPUTE_N_ITERS:
-        budget_args.extend(["--rashomon-recompute-n-iters", str(int(RASHOMON_RECOMPUTE_N_ITERS))])
-    if budget_args:
-        cmd[cmd.index("--rashomon-checkpoint"):cmd.index("--rashomon-checkpoint")] = [
-            *budget_args,
-        ]
-    else:
-        cmd[cmd.index("--rashomon-checkpoint"):cmd.index("--rashomon-checkpoint")] = [
-            "--rashomon-n-iters",
-            str(hp["rashomon_n_iters"]),
-        ]
+    n_iters = int(RASHOMON_N_ITERS) if RASHOMON_N_ITERS else int(hp["rashomon_n_iters"])
+    if n_iters <= 0:
+        raise SystemExit("RASHOMON_N_ITERS must be positive")
+    cmd[cmd.index("--rashomon-checkpoint"):cmd.index("--rashomon-checkpoint")] = [
+        "--n-iters",
+        str(n_iters),
+    ]
     jobs.append((seed, core, cmd))
 
 
@@ -337,10 +420,20 @@ def run(job):
 print(f"{ENV_NAME}: launching {len(jobs)} seeds on cores {[j[1] for j in jobs]}", flush=True)
 print(f"{ENV_NAME}: base policy {base_policy}", flush=True)
 print(f"{ENV_NAME}: output {out_base}", flush=True)
+print(
+    f"{ENV_NAME}: safety demonstrations={safety_demo_size}, "
+    f"rashomon_batch_size={rashomon_batch_size}, "
+    f"certificate_samples={certificate_samples}",
+    flush=True,
+)
 
 if DRY_RUN:
     for seed, core, cmd in jobs:
         print(f"dry-run seed{seed} core={core}: {' '.join(cmd)}", flush=True)
+    raise SystemExit(0)
+
+if not jobs:
+    print(f"{ENV_NAME}: all requested seeds are already complete", flush=True)
     raise SystemExit(0)
 
 with ProcessPoolExecutor(max_workers=len(jobs)) as ex:

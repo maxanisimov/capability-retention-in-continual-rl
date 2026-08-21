@@ -100,6 +100,11 @@ class ProjectedAdam(torch.optim.Adam):
         # kept separate from the per-step diagnostics (it is not a gradient update).
         self._init_projection: ProjectionResult | None = None
         self._last_projection_result: ProjectionResult | None = None
+        # Full optimizer proposal for the projected parameter subset, measured
+        # before safe-region projection changes it. Adaptive-v2 uses this to
+        # direct the next Rashomon region along the policy update.
+        self._last_proposed_update_deltas: list[torch.Tensor] | None = None
+        self._last_proposed_params: list[torch.Tensor] | None = None
 
     @property
     def has_bounds(self) -> bool:
@@ -213,6 +218,8 @@ class ProjectedAdam(torch.optim.Adam):
         self._bounds_l_sets = None
         self._bounds_u_sets = None
         self._regions = None
+        self._last_proposed_update_deltas = None
+        self._last_proposed_params = None
 
     @torch.no_grad()
     def project_now(self) -> ProjectionResult:
@@ -224,6 +231,10 @@ class ProjectedAdam(torch.optim.Adam):
         """
         if self._regions is None:
             raise RuntimeError("project_now() called before set_bounds()/set_regions().")
+        # An on-demand projection is not an optimizer proposal. Clear any
+        # previous step's direction so callers cannot accidentally reuse it.
+        self._last_proposed_update_deltas = None
+        self._last_proposed_params = None
         result = project_to_region_union(
             self._projection_params,
             self._regions,
@@ -256,8 +267,23 @@ class ProjectedAdam(torch.optim.Adam):
 
     @torch.no_grad()
     def step(self, closure: Any = None) -> Any:  # type: ignore[override]
+        self._last_proposed_update_deltas = None
+        self._last_proposed_params = None
+        before_step = (
+            [param.detach().clone() for param in self._projection_params]
+            if self._regions is not None
+            else None
+        )
         loss = super().step(closure)
         if self._regions is not None:
+            assert before_step is not None
+            self._last_proposed_params = [
+                param.detach().clone() for param in self._projection_params
+            ]
+            self._last_proposed_update_deltas = [
+                param.detach().clone() - before
+                for param, before in zip(self._projection_params, before_step)
+            ]
             result = project_to_region_union(
                 self._projection_params,
                 self._regions,
@@ -274,6 +300,26 @@ class ProjectedAdam(torch.optim.Adam):
         """Most recent projection result, including on-demand projections."""
 
         return self._last_projection_result
+
+    @property
+    def last_proposed_update_deltas(self) -> list[torch.Tensor] | None:
+        """Full projected-parameter Adam update before safe-region projection.
+
+        The returned tensors are detached clones aligned with the parameter
+        order supplied to :meth:`set_bounds` or :meth:`set_regions`.
+        """
+
+        if self._last_proposed_update_deltas is None:
+            return None
+        return [delta.detach().clone() for delta in self._last_proposed_update_deltas]
+
+    @property
+    def last_proposed_params(self) -> list[torch.Tensor] | None:
+        """Exact parameter proposal captured before safe-region projection."""
+
+        if self._last_proposed_params is None:
+            return None
+        return [param.detach().clone() for param in self._last_proposed_params]
 
     def _record(self, result: ProjectionResult) -> None:
         """Fold a single-step :class:`ProjectionResult` into cumulative counters."""

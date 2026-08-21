@@ -11,13 +11,17 @@ from src.IntervalTensor import IntervalTensor
 import src.verification.verify as verify
 from src.interval_utils import (
     _calibrate_temperature,
+    _bounded_model_contains_params,
     _certify_groups,
     _create_hook,
     _get_min_acc,
+    _magnitude_weighted_objective_fn,
     _order_statistic_k,
     _order_statistic_select,
     _project_bounded_model,
     _resolve_param_masks,
+    _validate_param_objective_weights,
+    _validate_stop_target_params,
     compute_rashomon_set,
 )
 from src.rashomon_spec import resolve_accuracy
@@ -163,6 +167,19 @@ class ParameterMaskTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "dtype torch.bool"):
             _resolve_param_masks(self.bounded_model, None, None, wrong_dtype)
 
+    def test_stop_target_validation_and_containment(self):
+        inside = [param.detach().clone() for param in self.model.parameters()]
+        validated = _validate_stop_target_params(inside, self.bounded_model)
+        self.assertIsNotNone(validated)
+        self.assertTrue(_bounded_model_contains_params(self.bounded_model, validated))
+
+        outside = [param.detach().clone() for param in inside]
+        outside[0].reshape(-1)[0].add_(1.0)
+        self.assertFalse(_bounded_model_contains_params(self.bounded_model, outside))
+
+        with self.assertRaisesRegex(ValueError, "one tensor per bounded parameter"):
+            _validate_stop_target_params(inside[:-1], self.bounded_model)
+
     def test_public_api_enforces_masks_on_early_return(self):
         inputs = torch.zeros(2, 2)
         targets = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
@@ -255,6 +272,64 @@ class ParameterMaskTests(unittest.TestCase):
             self.assertEqual(
                 bounded_model.param_u[0][0, 1].item(), pn[0, 1].item()
             )
+
+
+class MagnitudeWeightedObjectiveTests(unittest.TestCase):
+    def setUp(self):
+        self.model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        self.bounded_model = IntervalBoundedModel(self.model)
+        with torch.no_grad():
+            for lower, upper in zip(
+                self.bounded_model.param_l, self.bounded_model.param_u
+            ):
+                lower.zero_()
+                upper.zero_()
+            self.bounded_model.param_u[0].reshape(-1)[:2].copy_(
+                torch.tensor([2.0, 4.0])
+            )
+
+    def _weights(self):
+        weights = [
+            torch.zeros_like(param) for param in self.bounded_model.param_l
+        ]
+        weights[0].reshape(-1)[:2].copy_(torch.tensor([1.0, 3.0]))
+        return weights
+
+    def test_weights_both_log_volume_and_width_terms(self):
+        weights = self._weights()
+
+        width_objective = _magnitude_weighted_objective_fn(
+            self.bounded_model, 0.0, weights
+        )
+        area_objective = _magnitude_weighted_objective_fn(
+            self.bounded_model, 1.0, weights
+        )
+
+        self.assertAlmostEqual(width_objective.item(), (1.0 * 2.0 + 3.0 * 4.0) / 4.0)
+        expected_area = (
+            torch.log(torch.tensor(2.0 + 1e-6))
+            + 3.0 * torch.log(torch.tensor(4.0 + 1e-6))
+        ) / 4.0
+        self.assertAlmostEqual(area_objective.item(), expected_area.item(), places=6)
+
+    def test_weight_normalization_preserves_global_objective_scale(self):
+        weights = self._weights()
+        scaled_weights = [weight * 100.0 for weight in weights]
+
+        objective = _magnitude_weighted_objective_fn(
+            self.bounded_model, 0.25, weights
+        )
+        scaled_objective = _magnitude_weighted_objective_fn(
+            self.bounded_model, 0.25, scaled_weights
+        )
+
+        self.assertAlmostEqual(objective.item(), scaled_objective.item(), places=6)
+
+    def test_weight_validation_rejects_negative_values(self):
+        weights = self._weights()
+        weights[0].reshape(-1)[0] = -1.0
+        with self.assertRaisesRegex(ValueError, "contains negative values"):
+            _validate_param_objective_weights(weights, self.bounded_model)
 
 
 class OrderStatisticTests(unittest.TestCase):
@@ -593,6 +668,31 @@ class ComputeRashomonSetSmokeTests(unittest.TestCase):
         for certs in result.certificates:
             self.assertEqual(len(certs), 1)
             self.assertIsNone(certs[0].group)
+
+    def test_certified_target_containment_stops_before_iteration_limit(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        with torch.no_grad():
+            model[0].weight.zero_()
+            model[0].bias.copy_(torch.tensor([10.0, 0.0]))
+        inputs = torch.zeros(4, 2)
+        targets = torch.tensor([[1.0, 0.0]]).expand(4, -1).clone()
+        dataset = torch.utils.data.TensorDataset(inputs, targets)
+        proposal = [param.detach().clone() for param in model.parameters()]
+
+        result = compute_rashomon_set(
+            model,
+            dataset,
+            1.0,
+            batch_size=4,
+            certificate_samples=4,
+            n_iters=5,
+            checkpoint=1,
+            temperatures={None: 0.1},
+            stop_target_params=proposal,
+        )
+
+        self.assertTrue(result.target_contained_and_certified)
+        self.assertEqual(result.iterations_run, 1)
 
     def test_explicit_temperatures_override_skips_calibration(self):
         torch.manual_seed(0)

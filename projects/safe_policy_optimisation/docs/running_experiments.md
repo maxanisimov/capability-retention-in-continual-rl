@@ -109,11 +109,52 @@ ENVS=colour_bomb SEEDS=0,1 SMOKE_TIMESTEPS=2000 \
   python projects/safe_policy_optimisation/scripts/run_seed_experiments.py
 ```
 
-## 4. Adaptive PSPO (`run_adaptive_seed_experiments.py`)
+## 4. PSPO adaptive (`run_adaptive_seed_experiments.py`)
 
-`train_pspo_adaptive.py` (the verify-then-fallback `AdaptiveSafePPO` method)
-isn't wired into `run_experiment.py`'s pipeline stages, so it has its own
-multi-seed launcher, one CPU core pinned per job:
+PSPO adaptive exposes the former v1 and v2 update rules through one stage and
+one result name (`pspo_adaptive`). Region-first behavior is the default; use
+`--verify-first true` for verify-then-project behavior.
+
+The canonical stage arguments are:
+
+| argument | default | meaning |
+|---|---|---|
+| `--verify-first` | `false` | verify a candidate before region synthesis (`true`), or synthesize a region first (`false`) |
+| `--freq` | `update` | `update`, `rollout`, `once`, or a positive integer for every N rollouts |
+| `--directional` | `true` | grow an orthotope only toward the proposed update |
+| `--n-iters` | `100` | maximum iterations for each region computation, including the initial region |
+| `--surrogate` | `logsumexp` | `probability` or `logsumexp`; `auto` remains as a legacy compatibility value |
+| `--region-mode` | `replace` | replace the previous region or retain a union of certified regions |
+
+Both surrogate forms default to the hard requirement that every safe-action
+logit exceed every unsafe-action logit. With numeric `--freq N`, PPO updates
+are aggregated for N rollouts under shielded exploration and then enforced.
+Any pending aggregate update is enforced before final evaluation and saving.
+
+The strongest-frequency region-first invocation is:
+
+```bash
+.venv/bin/python projects/safe_policy_optimisation/stages/train_pspo_adaptive.py \
+  --base-policy-path PATH/base_policy.pt \
+  --shield-path PATH/shield.pt \
+  --env-id ENV_ID
+```
+
+To compute one non-directional safe region around the initial policy and use it
+for every projected optimizer update:
+
+```bash
+.venv/bin/python projects/safe_policy_optimisation/stages/train_pspo_adaptive.py \
+  --base-policy-path PATH/base_policy.pt \
+  --shield-path PATH/shield.pt \
+  --env-id ENV_ID \
+  --n-iters 10000 \
+  --freq once \
+  --directional false \
+  --verify-first false
+```
+
+The multi-seed launcher pins one CPU core per job:
 
 ```bash
 python projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
@@ -123,18 +164,83 @@ python projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.p
 |---|---|---|
 | `SEEDS` | `0..9` | comma list of seeds |
 | `ENVS` | all 6 | comma list of short env names |
-| `ADAPTIVE_STRATEGY` | `rashomon_project` | fallback strategy: `rashomon_project` (the only certified correction — PGD onto the certified-safe parameter region) or `none` |
-| `ADAPTIVE_GRANULARITY` | `gradient_step` | `gradient_step` or `train_phase` |
+| `ADAPTIVE_VERIFY_FIRST` | `false` | unified equivalent of former v1 (`true`) or v2 (`false`) behavior |
+| `ADAPTIVE_FREQ` | `update` | canonical enforcement frequency |
+| `ADAPTIVE_DIRECTIONAL` | `true` | directional safe-region growth |
+| `ADAPTIVE_SURROGATE` | `logsumexp` | all-safe probability or log-sum-exp surrogate |
+| `ADAPTIVE_REGION_MODE` | `replace` | certified-region replacement/union behavior |
 | `ADAPTIVE_N_ITERS` | `100` | per-computation Rashomon budget |
-| `ADAPTIVE_OUT_BASE` | `artifacts/paper_2503_07671/runs/adaptive` | output root |
+| `ADAPTIVE_OUT_BASE` | `artifacts/paper_2503_07671/runs/pspo_adaptive` | output root |
 | `SMOKE_TIMESTEPS` | off | override every env's timestep budget |
 | `NO_PIN` | off | `=1` disables per-job `taskset` core pinning |
 | `CPU_OFFSET` | `0` | shift core pinning so this launcher can share a machine with another concurrent sweep |
 
-> A third strategy, `line_search`, existed previously (bisection line search
-> toward the candidate) but was removed after a bug was found in it.
-> `rashomon_project` is now the only certified correction behaviour; `none` is
-> not a safety strategy at all, it is the monitor-only ablation in §5.2 below.
+The one-environment launcher invokes the unified stage and additionally accepts:
+
+| env var | default | meaning |
+|---|---|---|
+| `BC_TARGET_MARGIN` | selected historical setting | required base-policy margin; also controls the direct tabular initialiser |
+| `RASHOMON_MULTI_LABEL_MODE` | `all` | hard safe-action-logit semantics; `any` is legacy |
+| `RASHOMON_SURROGATE` | `logsumexp` | `probability`, `logsumexp`, or legacy `auto` |
+| `RASHOMON_BATCH_SIZE` | selected historical setting | positive integer, or `all` for the complete safety-demonstration dataset |
+| `RASHOMON_CERTIFICATE_SAMPLES` | selected historical setting | positive integer, or `all` for every shield state having a safe action |
+| `RASHOMON_N_ITERS` | selected setting | maximum iterations for every safe-region computation |
+| `ADAPTIVE_FREQ` | `update` | unified enforcement frequency |
+| `DIRECTIONAL_RASHOMON_GROWTH` | `1` | `=0` disables proposal-directed orthotope growth |
+| `CPU_IDS` | unset | explicit comma-separated, whitespace-separated, or ranged CPU allocation; supersedes `CORE_START` |
+
+When either Rashomon sample setting is `all`, the launcher derives the actual
+number of rows from the safety-demonstration dataset. Directional PSPO adaptive
+uses a validated base-policy-only artifact: it does not waste an undirected
+preliminary Rashomon computation before the first policy proposal is known.
+Compatible base-policy artifacts and completed seed runs are reused.
+
+```bash
+DIRECTIONAL_RASHOMON_GROWTH=1 \
+STOP_WHEN_PROPOSAL_CONTAINED=1 \
+ENV_NAME=media_streaming \
+CORE_START=0 \
+SEEDS="0" \
+REGION_MODE=union \
+RUN_NAME=pspo_adaptive_media_streaming_directional \
+  projects/safe_policy_optimisation/scripts/run_pspo_adaptive_one_env.sh
+```
+
+The following launcher runs the `replace`, directional,
+all-safe-logit/log-sum-exp experiment for all MASA environments except Media
+Streaming. It defaults to two hidden layers; pass `--architecture one_hidden`
+for the corresponding one-hidden-layer experiment. Both the optimisation batch
+and certificate coverage equal the full safety-demonstration dataset, and 200
+iterations are available to every region computation. By default it samples CPU
+utilisation for five seconds and launches only if 50 distinct cores are at least
+90% idle:
+
+```bash
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py
+```
+
+The one-hidden-layer command is:
+
+```bash
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  --architecture one_hidden
+```
+
+Inspect the resolved datasets, commands, and allocation without starting jobs:
+
+```bash
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  --cpu-ids 0-49 \
+  --dry-run
+```
+
+Set `DRY_RUN=1` to print the generated command without launching training.
+Directional growth is supported only for orthotope regions. Region growth stops
+early when the proposal is contained in a fully certified region, so
+`--n-iters` is always a maximum rather than a required spend.
 
 ## 5. Ablation studies
 

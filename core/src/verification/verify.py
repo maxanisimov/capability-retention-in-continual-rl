@@ -11,18 +11,23 @@ import sklearn
 
 # pylint: disable=not-callable
 
-SurrogateForm = Literal["auto", "logsumexp"]
+SurrogateForm = Literal["auto", "probability", "logsumexp"]
 ResolvedSurrogateForm = Literal["probability", "logsumexp"]
 
 
 def resolve_surrogate_form(mode: str, surrogate: str) -> ResolvedSurrogateForm:
     """Resolve the public surrogate option to the concrete per-sample formula."""
     _validate_multi_label_mode(mode)
-    if surrogate not in {"auto", "logsumexp"}:
+    if surrogate not in {"auto", "probability", "logsumexp"}:
         raise ValueError(
-            f"Unsupported surrogate form: {surrogate!r}. Expected 'auto' or 'logsumexp'."
+            "Unsupported surrogate form: "
+            f"{surrogate!r}. Expected 'auto', 'probability', or 'logsumexp'."
         )
-    if surrogate == "logsumexp" or mode == "all":
+    if surrogate == "logsumexp":
+        return "logsumexp"
+    if surrogate == "probability":
+        return "probability"
+    if mode == "all":
         return "logsumexp"
     return "probability"
 
@@ -376,8 +381,10 @@ def bound_multi_label_accuracy_margin(
     sufficient condition that at least one valid action has higher softmax
     probability than every invalid action.
 
-    With ``mode='all'``, this uses a smooth lower bound on the strict logit
-    ordering ``min(valid logits) > max(invalid logits)``:
+    With ``mode='all'``, both explicit surrogate forms enforce the strict logit
+    ordering ``min(valid logits) > max(invalid logits)``. The probability form
+    compares the least safe softmax probability with the greatest unsafe
+    softmax probability. The LogSumExp form uses the smooth margin:
 
         softmin_tau(valid_logits) - softmax_tau(invalid_logits)
 
@@ -399,7 +406,8 @@ def bound_multi_label_accuracy_margin(
         mode: ``'any'`` preserves the historical admissible-argmax semantics;
             ``'all'`` requires every valid logit to beat every invalid logit.
         surrogate: ``'auto'`` preserves the historical formulas (probability
-            mass for ``'any'``, LogSumExp for ``'all'``). ``'logsumexp'`` uses
+            mass for ``'any'``, LogSumExp for ``'all'``). ``'probability'``
+            explicitly selects the probability margin and ``'logsumexp'`` uses
             the temperature-scaled LogSumExp margin for either mode.
     Returns:
         Aggregated margin. Values >= 0 indicate the chosen aggregate clears the
@@ -432,12 +440,26 @@ def bound_multi_label_accuracy_margin(
         best_case_logits = valid_mask_float * logits_u + (1 - valid_mask_float) * logits_l
         probabilities = torch.nn.functional.softmax(best_case_logits / tau, dim=1)
 
-    # Sum probability mass on valid actions
-    correct_probs = (probabilities * valid_mask_float).sum(dim=1)
-
-    adm_set_cardinalities = valid_mask.sum(dim=1)
-    sound_thresholds = adm_set_cardinalities / (1 + adm_set_cardinalities)
-
-    margins = correct_probs - sound_thresholds
+    if mode == "all":
+        invalid_mask = ~valid_mask
+        has_valid = valid_mask.any(dim=1)
+        has_invalid = invalid_mask.any(dim=1)
+        least_safe_probability = probabilities.masked_fill(
+            ~valid_mask, float("inf")
+        ).min(dim=1).values
+        greatest_unsafe_probability = probabilities.masked_fill(
+            ~invalid_mask, float("-inf")
+        ).max(dim=1).values
+        margins = least_safe_probability - greatest_unsafe_probability
+        margins = torch.where(has_invalid, margins, torch.ones_like(margins))
+        margins = torch.where(has_valid, margins, -torch.ones_like(margins))
+    else:
+        # Historical admissible-argmax probability certificate: enough total
+        # safe mass guarantees that at least one safe action beats all unsafe
+        # actions.
+        correct_probs = (probabilities * valid_mask_float).sum(dim=1)
+        adm_set_cardinalities = valid_mask.sum(dim=1)
+        sound_thresholds = adm_set_cardinalities / (1 + adm_set_cardinalities)
+        margins = correct_probs - sound_thresholds
 
     return _aggregate_per_sample(margins, aggregation)

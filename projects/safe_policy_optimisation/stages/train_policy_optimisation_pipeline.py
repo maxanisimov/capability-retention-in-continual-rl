@@ -427,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rashomon-surrogate",
-        choices=("auto", "logsumexp"),
+        choices=("auto", "probability", "logsumexp"),
         default="auto",
         help=(
             "Soft constraint used for Rashomon-set growth. 'auto' preserves the "

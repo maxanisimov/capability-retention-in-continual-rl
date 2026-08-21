@@ -10,12 +10,11 @@ Public API
   parameters each step.
 * :class:`ProjectedDQN` / :class:`ProjectedPPO` -- SB3 DQN/PPO subclasses that
   wire ``ProjectedAdam`` in and attach caller-supplied bounds.
-* :class:`AdaptiveSafePPO` -- shielded PPO that verifies each policy update and
-  computes a Rashomon set on demand (around the last safe iterate) only when a
-  candidate update is unsafe.
-* :class:`AdaptiveSafePPOV2` -- shielded PPO that projects each update onto the
-  current certified region and recomputes that region only after active
-  projection.
+* :class:`AdaptiveSafePPO` -- verify-first implementation used by unified PSPO
+  adaptive.
+* :class:`AdaptiveSafePPOV2` -- compatibility implementation for region-first
+  PSPO adaptive; new experiments select it through the unified stage rather
+  than a separate v2 method.
 * :func:`projection_target_parameter_names` -- resolve the ordered parameter
   names a ``ProjectedPPO`` would project (to align bounds).
 * :func:`project_to_interval_union` / :func:`validate_and_prepare_param_interval_bounds`

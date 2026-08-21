@@ -94,6 +94,71 @@ AdaptiveGranularity = Literal["gradient_step", "train_phase"]
 UnsafeUpdateStrategy = Literal["rashomon_project", "none"]
 
 
+def directional_masks_from_update_deltas(
+    deltas: list[th.Tensor],
+) -> tuple[list[th.Tensor], list[th.Tensor], dict[str, int]]:
+    """Freeze each parameter bound opposite to the proposed update direction."""
+
+    if not deltas:
+        raise ValueError("Directional safe-region growth requires at least one update tensor.")
+    param_l_mask: list[th.Tensor] = []
+    param_u_mask: list[th.Tensor] = []
+    counts = {"positive": 0, "negative": 0, "zero": 0}
+    for index, delta in enumerate(deltas):
+        if not isinstance(delta, th.Tensor):
+            raise TypeError(
+                f"Proposed update delta {index} must be a torch.Tensor, "
+                f"got {type(delta).__name__}."
+            )
+        if not bool(th.isfinite(delta).all()):
+            raise ValueError(f"Proposed update delta {index} contains non-finite values.")
+        detached = delta.detach()
+        positive = detached > 0
+        negative = detached < 0
+        zero = detached == 0
+        param_l_mask.append(positive | zero)
+        param_u_mask.append(negative | zero)
+        counts["positive"] += int(positive.sum().item())
+        counts["negative"] += int(negative.sum().item())
+        counts["zero"] += int(zero.sum().item())
+    return param_l_mask, param_u_mask, counts
+
+
+def directional_objective_weights_from_update_deltas(
+    deltas: list[th.Tensor],
+) -> list[th.Tensor]:
+    """Return ``abs(delta)`` weights aligned with actor parameters."""
+
+    if not deltas:
+        raise ValueError("Directional safe-region growth requires at least one update tensor.")
+    weights = []
+    for index, delta in enumerate(deltas):
+        if not isinstance(delta, th.Tensor):
+            raise TypeError(
+                f"Proposed update delta {index} must be a torch.Tensor, "
+                f"got {type(delta).__name__}."
+            )
+        if not bool(th.isfinite(delta).all()):
+            raise ValueError(f"Proposed update delta {index} contains non-finite values.")
+        weights.append(delta.detach().abs().clone())
+    return weights
+
+
+def orthotope_contains_params(
+    region: SafeParameterRegion,
+    params: list[th.Tensor],
+) -> bool:
+    """Return whether an orthotope contains an aligned parameter list."""
+
+    if not isinstance(region, OrthotopeRegion) or len(params) != len(region.lower):
+        return False
+    return all(
+        target.shape == lower.shape
+        and bool(((lower <= target) & (target <= upper)).all())
+        for target, lower, upper in zip(params, region.lower, region.upper)
+    )
+
+
 def shield_safe_behaviour_dataset(
     mask: Any, state_to_features: Any = None
 ) -> tuple[TensorDataset, np.ndarray]:
@@ -134,7 +199,7 @@ def calibrate_inverse_temperature(
     start: int = 1,
     cap: int = 1000,
     multi_label_mode: Literal["any", "all"] = "any",
-    surrogate: Literal["auto", "logsumexp"] = "auto",
+    surrogate: Literal["auto", "probability", "logsumexp"] = "auto",
 ) -> int:
     """First integer inverse temperature whose per-state surrogate is feasible.
 
@@ -174,7 +239,7 @@ def calibrate_inverse_temperature(
             min_margin = float(margins.min().item())
             feasible = (
                 min_margin >= 0.0
-                if resolved_surrogate == "probability"
+                if resolved_surrogate == "probability" and multi_label_mode == "any"
                 else min_margin > 0.0
             )
             if feasible:
@@ -197,6 +262,10 @@ def _run_rashomon_engine(
     seed: int,
     multi_label_mode: str = "any",
     surrogate: str = "auto",
+    param_l_mask: list[th.Tensor] | None = None,
+    param_u_mask: list[th.Tensor] | None = None,
+    param_objective_weights: list[th.Tensor] | None = None,
+    stop_target_params: list[th.Tensor] | None = None,
 ) -> Any:
     """Run the IBP Rashomon-set engine around ``model``'s current parameters.
 
@@ -217,6 +286,10 @@ def _run_rashomon_engine(
         seed=int(seed),
         multi_label_mode=multi_label_mode,
         surrogate=surrogate,
+        param_l_mask=param_l_mask,
+        param_u_mask=param_u_mask,
+        param_objective_weights=param_objective_weights,
+        stop_target_params=stop_target_params,
     )
 
 
@@ -304,17 +377,20 @@ class AdaptiveSafePPO(ProvablySafePPO):
         *args: Any,
         base_policy_state_dict: Mapping[str, th.Tensor] | None = None,
         adaptive_granularity: AdaptiveGranularity = "gradient_step",
+        adaptive_frequency: int = 1,
         unsafe_update_strategy: UnsafeUpdateStrategy = "rashomon_project",
         rashomon_n_iters: int = 100,
         rashomon_checkpoint: int | None = None,
         rashomon_batch_size: int = 500,
         rashomon_certificate_samples: int | None = None,
         rashomon_inverse_temperature: int | None = None,
-        rashomon_multi_label_mode: Literal["any", "all"] = "any",
-        rashomon_surrogate: Literal["auto", "logsumexp"] = "auto",
+        rashomon_multi_label_mode: Literal["any", "all"] = "all",
+        rashomon_surrogate: Literal["auto", "probability", "logsumexp"] = "logsumexp",
         safe_region_shape: Literal["orthotope", "zonotope"] = "orthotope",
         zonotope_rank: int | None = None,
         rashomon_seed: int | None = None,
+        directional_rashomon_growth: bool = True,
+        stop_when_proposal_contained: bool = True,
         verify_base_policy: bool = True,
         state_to_features: Any = None,
         **kwargs: Any,
@@ -375,6 +451,10 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 "adaptive_granularity must be 'gradient_step' or 'train_phase', "
                 f"got {adaptive_granularity!r}.",
             )
+        if int(adaptive_frequency) <= 0:
+            raise ValueError(
+                f"adaptive_frequency must be positive; got {adaptive_frequency}."
+            )
         if unsafe_update_strategy not in ("rashomon_project", "none"):
             raise ValueError(
                 "unsafe_update_strategy must be 'rashomon_project' or 'none', got "
@@ -387,9 +467,9 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 "rashomon_multi_label_mode must be either 'any' or 'all', "
                 f"got {rashomon_multi_label_mode!r}.",
             )
-        if rashomon_surrogate not in ("auto", "logsumexp"):
+        if rashomon_surrogate not in ("auto", "probability", "logsumexp"):
             raise ValueError(
-                "rashomon_surrogate must be either 'auto' or 'logsumexp', "
+                "rashomon_surrogate must be 'auto', 'probability', or 'logsumexp', "
                 f"got {rashomon_surrogate!r}.",
             )
         if safe_region_shape not in ("orthotope", "zonotope"):
@@ -399,8 +479,16 @@ class AdaptiveSafePPO(ProvablySafePPO):
             )
         if zonotope_rank is not None and int(zonotope_rank) <= 0:
             raise ValueError(f"zonotope_rank must be positive when set, got {zonotope_rank}.")
+        if directional_rashomon_growth and safe_region_shape != "orthotope":
+            raise ValueError("Directional safe-region growth requires an orthotope region.")
+        if stop_when_proposal_contained and safe_region_shape != "orthotope":
+            raise ValueError("Proposal-containment stopping requires an orthotope region.")
 
         self._adaptive_granularity: AdaptiveGranularity = adaptive_granularity
+        self._adaptive_frequency = int(adaptive_frequency)
+        self._train_phases_since_enforcement = 0
+        self._pending_adaptive_update = False
+        self._final_flushes = 0
         self._unsafe_update_strategy: UnsafeUpdateStrategy = unsafe_update_strategy
         self._rashomon_n_iters = int(rashomon_n_iters)
         self._rashomon_checkpoint = (
@@ -416,15 +504,21 @@ class AdaptiveSafePPO(ProvablySafePPO):
             int(rashomon_inverse_temperature) if rashomon_inverse_temperature is not None else None
         )
         self._rashomon_multi_label_mode: Literal["any", "all"] = rashomon_multi_label_mode
-        self._rashomon_surrogate: Literal["auto", "logsumexp"] = rashomon_surrogate
-        self._rashomon_resolved_surrogate = (
-            "logsumexp"
-            if rashomon_surrogate == "logsumexp" or rashomon_multi_label_mode == "all"
-            else "probability"
+        self._rashomon_surrogate: Literal[
+            "auto", "probability", "logsumexp"
+        ] = rashomon_surrogate
+        from src.verification import verify
+
+        self._rashomon_resolved_surrogate = verify.resolve_surrogate_form(
+            rashomon_multi_label_mode, rashomon_surrogate
         )
         self._safe_region_shape: Literal["orthotope", "zonotope"] = safe_region_shape
         self._zonotope_rank = int(zonotope_rank) if zonotope_rank is not None else None
         self._rashomon_seed = rashomon_seed
+        self._directional_rashomon_growth = bool(directional_rashomon_growth)
+        self._stop_when_proposal_contained = bool(stop_when_proposal_contained)
+        self._last_direction_counts: dict[str, int] | None = None
+        self._directional_growth_failures = 0
         # Diagnostics counters (plain scalars: persisted by SB3 save/load).
         self._n_verifications = 0
         self._n_verified_safe = 0
@@ -437,6 +531,8 @@ class AdaptiveSafePPO(ProvablySafePPO):
         self._rashomon_wall_time_s = 0.0
         self._last_selected_checkpoint_index: int | None = None
         self._last_projection_result: ProjectionResult | None = None
+        self._last_rashomon_iterations_run = 0
+        self._last_rashomon_target_contained_and_certified = False
 
         super().__init__(*args, **kwargs)
 
@@ -521,7 +617,7 @@ class AdaptiveSafePPO(ProvablySafePPO):
             rate = self._greedy_safe_rate_now()
             if rate < 1.0:
                 raise ValueError(
-                    "Initial policy is not greedy-safe under the shield "
+                    "Initial policy does not satisfy the configured hard shield invariant "
                     f"(safe rate {rate:.6f} < 1.0). Provide a safe "
                     "base_policy_state_dict, or pass verify_base_policy=False and "
                     "establish safety via pretrain_on_shield() + "
@@ -583,8 +679,18 @@ class AdaptiveSafePPO(ProvablySafePPO):
 
     @th.no_grad()
     def _greedy_safe_rate_now(self) -> float:
-        """Fraction of states whose greedy action is shield-safe (no counters)."""
+        """Fraction of states satisfying the configured hard safety invariant."""
         logits = self.policy.get_distribution(self._verify_obs).distribution.logits
+        if self._rashomon_multi_label_mode == "all":
+            safe_mask = self._verify_mask
+            unsafe_mask = ~safe_mask
+            has_unsafe = unsafe_mask.any(dim=1)
+            least_safe = logits.masked_fill(~safe_mask, float("inf")).min(dim=1).values
+            greatest_unsafe = logits.masked_fill(
+                ~unsafe_mask, float("-inf")
+            ).max(dim=1).values
+            safe = (~has_unsafe) | (least_safe > greatest_unsafe)
+            return float(safe.float().mean().item())
         return _greedy_safe_rate(logits, self._verify_mask)
 
     def _verify_greedy_safe(self) -> bool:
@@ -614,7 +720,8 @@ class AdaptiveSafePPO(ProvablySafePPO):
             rate = self._greedy_safe_rate_now()
             if rate < 1.0:
                 raise ValueError(
-                    f"Current policy is not greedy-safe (safe rate {rate:.6f} < 1.0); "
+                    "Current policy does not satisfy the configured hard shield invariant "
+                    f"(safe rate {rate:.6f} < 1.0); "
                     "refusing to mark it as the safe iterate.",
                 )
         self._snapshot_last_safe()
@@ -623,8 +730,23 @@ class AdaptiveSafePPO(ProvablySafePPO):
 
     def _compute_rashomon_around_last_safe(
         self,
+        *,
+        param_l_mask: list[th.Tensor] | None = None,
+        param_u_mask: list[th.Tensor] | None = None,
+        param_objective_weights: list[th.Tensor] | None = None,
+        stop_target_params: list[th.Tensor] | None = None,
     ) -> tuple[SafeParameterRegion, int] | None:
         """Compute a certified safe parameter region around iterate ``k``."""
+        if self._safe_region_shape != "orthotope" and (
+            param_l_mask is not None
+            or param_u_mask is not None
+            or param_objective_weights is not None
+            or stop_target_params is not None
+        ):
+            raise ValueError(
+                "Directional masks, magnitude weighting, and proposal-containment "
+                "stopping require an orthotope safe region."
+            )
         with th.no_grad():
             for frozen, snapshot in zip(self._frozen_actor_params, self._last_safe_params):
                 frozen.data.copy_(snapshot)
@@ -676,6 +798,10 @@ class AdaptiveSafePPO(ProvablySafePPO):
                     seed=int(seed),
                     multi_label_mode=self._rashomon_multi_label_mode,
                     surrogate=self._rashomon_surrogate,
+                    param_l_mask=param_l_mask,
+                    param_u_mask=param_u_mask,
+                    param_objective_weights=param_objective_weights,
+                    stop_target_params=stop_target_params,
                 )
             else:
                 result = _run_zonotope_rashomon_engine(
@@ -693,6 +819,12 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 )
         self._rashomon_wall_time_s += time.perf_counter() - started
         self._n_rashomon_computations += 1
+        self._last_rashomon_iterations_run = int(
+            getattr(result, "iterations_run", self._rashomon_n_iters)
+        )
+        self._last_rashomon_target_contained_and_certified = bool(
+            getattr(result, "target_contained_and_certified", False)
+        )
 
         selected = select_certified_region(result, safe_region_shape=self._safe_region_shape)
         if selected is not None:
@@ -717,7 +849,47 @@ class AdaptiveSafePPO(ProvablySafePPO):
             self._n_accepted_unsafe += 1
             return
 
-        region_with_index = self._compute_rashomon_around_last_safe()
+        candidate_params = [param.detach().clone() for param in self._live_actor_params]
+        param_l_mask = None
+        param_u_mask = None
+        param_objective_weights = None
+        stop_target_params = None
+        if self._directional_rashomon_growth:
+            try:
+                deltas = [
+                    candidate - snapshot
+                    for candidate, snapshot in zip(candidate_params, self._last_safe_params)
+                ]
+                param_l_mask, param_u_mask, counts = directional_masks_from_update_deltas(
+                    deltas
+                )
+                param_objective_weights = (
+                    directional_objective_weights_from_update_deltas(deltas)
+                )
+                self._last_direction_counts = counts
+                if self._stop_when_proposal_contained:
+                    stop_target_params = candidate_params
+            except (TypeError, ValueError) as exc:
+                warnings.warn(
+                    f"Could not construct directional safe-region masks ({exc}); "
+                    "reverting to the last safe policy.",
+                    stacklevel=2,
+                )
+                self._directional_growth_failures += 1
+                with th.no_grad():
+                    for param, snapshot in zip(
+                        self._live_actor_params, self._last_safe_params
+                    ):
+                        param.data.copy_(snapshot)
+                self._n_fallback_reverts += 1
+                return
+
+        region_with_index = self._compute_rashomon_around_last_safe(
+            param_l_mask=param_l_mask,
+            param_u_mask=param_u_mask,
+            param_objective_weights=param_objective_weights,
+            stop_target_params=stop_target_params,
+        )
         if region_with_index is None:
             # Degenerate projection: revert to iterate k (snapshot unchanged).
             with th.no_grad():
@@ -727,6 +899,14 @@ class AdaptiveSafePPO(ProvablySafePPO):
             return
 
         region, _ = region_with_index
+        if stop_target_params is not None and orthotope_contains_params(
+            region, stop_target_params
+        ):
+            with th.no_grad():
+                for param, target in zip(self._live_actor_params, stop_target_params):
+                    param.data.copy_(target)
+            self._snapshot_last_safe()
+            return
         distance_norm = getattr(self.policy.optimizer, "_distance_norm", "l2")
         with th.no_grad():
             result = project_to_region_union(
@@ -745,8 +925,24 @@ class AdaptiveSafePPO(ProvablySafePPO):
         self._ensure_adaptive_state()
         result = super().train(*args, **kwargs)
         if self._adaptive_granularity == "train_phase":
-            self._accept_or_project_candidate()
+            self._train_phases_since_enforcement += 1
+            self._pending_adaptive_update = True
+            if self._train_phases_since_enforcement >= self._adaptive_frequency:
+                self._accept_or_project_candidate()
+                self._train_phases_since_enforcement = 0
+                self._pending_adaptive_update = False
         return result
+
+    def finalize_adaptive_update(self) -> None:
+        """Enforce a pending aggregate train-phase update before save/evaluation."""
+
+        self._ensure_adaptive_state()
+        if self._adaptive_granularity != "train_phase" or not self._pending_adaptive_update:
+            return
+        self._accept_or_project_candidate()
+        self._train_phases_since_enforcement = 0
+        self._pending_adaptive_update = False
+        self._final_flushes += 1
 
     # ------------------------------------------------------------ diagnostics
 
@@ -762,12 +958,26 @@ class AdaptiveSafePPO(ProvablySafePPO):
             }
         return {
             "granularity": self._adaptive_granularity,
+            "frequency": int(self._adaptive_frequency),
+            "train_phases_since_enforcement": int(
+                self._train_phases_since_enforcement
+            ),
+            "pending_adaptive_update": bool(self._pending_adaptive_update),
+            "final_flushes": int(self._final_flushes),
             "unsafe_update_strategy": self._unsafe_update_strategy,
             "rashomon_n_iters": int(self._rashomon_n_iters),
             "rashomon_checkpoint": int(self._rashomon_checkpoint),
             "rashomon_multi_label_mode": self._rashomon_multi_label_mode,
             "rashomon_surrogate": self._rashomon_surrogate,
             "rashomon_resolved_surrogate": self._rashomon_resolved_surrogate,
+            "directional_rashomon_growth": self._directional_rashomon_growth,
+            "stop_when_proposal_contained": self._stop_when_proposal_contained,
+            "directional_growth_failures": int(self._directional_growth_failures),
+            "last_direction_counts": (
+                None
+                if self._last_direction_counts is None
+                else dict(self._last_direction_counts)
+            ),
             "safe_region_shape": self._safe_region_shape,
             "zonotope_rank": self._zonotope_rank,
             "verifications_run": int(self._n_verifications),
