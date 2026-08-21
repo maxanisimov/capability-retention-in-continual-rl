@@ -225,6 +225,7 @@ class CliParsingTests(unittest.TestCase):
 
         self.assertEqual(args.jobs, 0)
         self.assertIsNone(args.cpu_ids)
+        self.assertEqual(args.rashomon_batch_size, "auto")
 
     def test_auto_parallelism_counts_policy_methods(self) -> None:
         args = build_deterministic_pipeline_parser().parse_args([])
@@ -699,6 +700,7 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
         self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.zonotope_rank, 5)
+        self.assertEqual(args.rashomon_batch_size, "auto")
         # Default base-policy depth, which also sets the PSPO actor/critic to the
         # [64, 64] MLP the baselines use.
         self.assertEqual(args.n_hidden, 2)
@@ -910,6 +912,7 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.zonotope_rank, 6)
         self.assertIsNone(args.rashomon_checkpoint)
+        self.assertEqual(args.rashomon_batch_size, "auto")
         self.assertIsNone(args.certificate_samples)
         self.assertIsNone(args.rashomon_inverse_temp)
         self.assertEqual(args.shield_action_storage, "proposed")
@@ -952,6 +955,7 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.directional_rashomon_growth)
         self.assertEqual(args.rashomon_multi_label_mode, "all")
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(args.rashomon_batch_size, "auto")
 
     def test_unified_pspo_adaptive_accepts_static_initial_region_command(self) -> None:
         args = parse_adaptive_safe_ppo_args(

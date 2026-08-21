@@ -19,9 +19,21 @@ from projects.safe_policy_optimisation.utils.pspo_adaptive_launcher import (
     resolve_seed_cpu_ids,
     resolve_target_margin,
 )
+from projects.safe_policy_optimisation.utils.rashomon import (
+    parse_rashomon_batch_size,
+    resolve_rashomon_batch_size,
+)
 
 
 class PspoAdaptiveLauncherTests(unittest.TestCase):
+    def test_auto_rashomon_batch_uses_complete_safe_behaviour_dataset(self) -> None:
+        mask = np.asarray([[1, 0], [0, 0], [1, 1], [0, 1]], dtype=np.float32)
+
+        self.assertEqual(resolve_rashomon_batch_size("auto", mask), 3)
+        self.assertEqual(resolve_rashomon_batch_size(2, mask), 2)
+        self.assertEqual(parse_rashomon_batch_size("all"), "auto")
+        self.assertEqual(parse_rashomon_batch_size("17"), 17)
+
     def test_explicit_and_legacy_cpu_allocations(self) -> None:
         self.assertEqual(parse_cpu_ids("3,7-9 12"), [3, 7, 8, 9, 12])
         self.assertEqual(

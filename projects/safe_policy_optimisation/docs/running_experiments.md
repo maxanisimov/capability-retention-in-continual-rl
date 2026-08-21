@@ -123,6 +123,7 @@ The canonical stage arguments are:
 | `--freq` | `update` | `update`, `rollout`, `once`, or a positive integer for every N rollouts |
 | `--directional` | `true` | grow an orthotope only toward the proposed update |
 | `--n-iters` | `100` | maximum iterations for each region computation, including the initial region |
+| `--rashomon-batch-size` | `auto` | use the complete safe-behaviour demonstration dataset; a positive integer overrides it |
 | `--surrogate` | `logsumexp` | `probability` or `logsumexp`; `auto` remains as a legacy compatibility value |
 | `--region-mode` | `replace` | replace the previous region or retain a union of certified regions |
 
@@ -130,6 +131,9 @@ Both surrogate forms default to the hard requirement that every safe-action
 logit exceed every unsafe-action logit. With numeric `--freq N`, PPO updates
 are aggregated for N rollouts under shielded exploration and then enforced.
 Any pending aggregate update is enforced before final evaluation and saving.
+The default `--rashomon-batch-size auto`, together with exhaustive certificate
+coverage, uses every safe-behaviour demonstration during both region growth and
+final certification.
 
 The strongest-frequency region-first invocation is:
 
@@ -182,7 +186,7 @@ The one-environment launcher invokes the unified stage and additionally accepts:
 | `BC_TARGET_MARGIN` | selected historical setting | required base-policy margin; also controls the direct tabular initialiser |
 | `RASHOMON_MULTI_LABEL_MODE` | `all` | hard safe-action-logit semantics; `any` is legacy |
 | `RASHOMON_SURROGATE` | `logsumexp` | `probability`, `logsumexp`, or legacy `auto` |
-| `RASHOMON_BATCH_SIZE` | selected historical setting | positive integer, or `all` for the complete safety-demonstration dataset |
+| `RASHOMON_BATCH_SIZE` | `auto` | complete safe-behaviour demonstration dataset; a positive integer overrides it (`all` is a legacy alias) |
 | `RASHOMON_CERTIFICATE_SAMPLES` | selected historical setting | positive integer, or `all` for every shield state having a safe action |
 | `RASHOMON_N_ITERS` | selected setting | maximum iterations for every safe-region computation |
 | `ADAPTIVE_FREQ` | `update` | unified enforcement frequency |

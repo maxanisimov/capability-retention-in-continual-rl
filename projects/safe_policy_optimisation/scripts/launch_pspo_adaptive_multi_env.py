@@ -149,7 +149,7 @@ def build_launch_environment(
         "RUN_NAME": run_name,
         "RASHOMON_MULTI_LABEL_MODE": "all",
         "RASHOMON_SURROGATE": "logsumexp",
-        "RASHOMON_BATCH_SIZE": "all",
+        "RASHOMON_BATCH_SIZE": "auto",
         "RASHOMON_CERTIFICATE_SAMPLES": "all",
         "RASHOMON_N_ITERS": str(n_iters),
         "BC_TARGET_MARGIN": "2.0",

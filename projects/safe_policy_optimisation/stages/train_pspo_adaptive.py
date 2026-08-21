@@ -46,6 +46,10 @@ from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
     success_mode_for_env,
     summarise_evaluation,
 )
+from projects.safe_policy_optimisation.utils.rashomon import (  # noqa: E402
+    parse_rashomon_batch_size,
+    resolve_rashomon_batch_size,
+)
 from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
     LearningCurveLogger,
     UnshieldedRewardCurveCallback,
@@ -212,7 +216,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Engine checkpoint cadence. Defaults to max(1, n-iters // 10).",
     )
-    parser.add_argument("--rashomon-batch-size", type=int, default=500)
+    parser.add_argument(
+        "--rashomon-batch-size",
+        type=parse_rashomon_batch_size,
+        default="auto",
+        help=(
+            "Safe-behaviour optimisation batch size. 'auto' (default) uses the "
+            "entire safe-behaviour demonstration dataset; a positive integer "
+            "requests an explicit size."
+        ),
+    )
     parser.add_argument(
         "--certificate-samples",
         type=int,
@@ -390,6 +403,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         source=args.shield_source,
         risk_threshold=args.risk_threshold,
     )
+    rashomon_batch_size = resolve_rashomon_batch_size(
+        args.rashomon_batch_size,
+        mask,
+    )
     architecture, base_state_dict = load_base_policy_payload(args.base_policy_path)
     base_policy_state_dict = base_state_dict_to_ppo_actor(architecture, base_state_dict)
     policy_kwargs = policy_kwargs_from_base_architecture(architecture)
@@ -462,7 +479,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             unsafe_update_strategy=args.unsafe_update_strategy,
             rashomon_n_iters=args.rashomon_n_iters,
             rashomon_checkpoint=args.rashomon_checkpoint,
-            rashomon_batch_size=args.rashomon_batch_size,
+            rashomon_batch_size=rashomon_batch_size,
             rashomon_certificate_samples=args.certificate_samples,
             rashomon_inverse_temperature=args.rashomon_inverse_temp,
             rashomon_multi_label_mode=args.rashomon_multi_label_mode,
@@ -594,7 +611,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "unsafe_update_strategy": args.unsafe_update_strategy,
             "rashomon_n_iters": int(args.rashomon_n_iters),
             "rashomon_checkpoint": args.rashomon_checkpoint,
-            "rashomon_batch_size": int(args.rashomon_batch_size),
+            "rashomon_batch_size_setting": args.rashomon_batch_size,
+            "rashomon_batch_size": int(rashomon_batch_size),
             "certificate_samples": args.certificate_samples,
             "rashomon_inverse_temperature": args.rashomon_inverse_temp,
             "rashomon_multi_label_mode": args.rashomon_multi_label_mode,

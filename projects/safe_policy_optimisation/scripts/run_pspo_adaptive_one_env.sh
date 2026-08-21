@@ -14,7 +14,7 @@ ARCHITECTURE="${ARCHITECTURE:-tabular}"
 RASHOMON_N_ITERS="${RASHOMON_N_ITERS:-}"
 RASHOMON_MULTI_LABEL_MODE="${RASHOMON_MULTI_LABEL_MODE:-all}"
 RASHOMON_SURROGATE="${RASHOMON_SURROGATE:-logsumexp}"
-RASHOMON_BATCH_SIZE="${RASHOMON_BATCH_SIZE:-}"
+RASHOMON_BATCH_SIZE="${RASHOMON_BATCH_SIZE:-auto}"
 RASHOMON_CERTIFICATE_SAMPLES="${RASHOMON_CERTIFICATE_SAMPLES:-}"
 BC_TARGET_MARGIN="${BC_TARGET_MARGIN:-}"
 DIRECTIONAL_RASHOMON_GROWTH="${DIRECTIONAL_RASHOMON_GROWTH:-1}"
@@ -200,21 +200,19 @@ try:
 except ValueError as exc:
     raise SystemExit(f"Invalid RASHOMON_CERTIFICATE_SAMPLES: {exc}") from exc
 
-if RASHOMON_BATCH_SIZE == "all":
+if RASHOMON_BATCH_SIZE in {"auto", "all"}:
     rashomon_batch_size = safety_demo_size
-elif RASHOMON_BATCH_SIZE:
+else:
     try:
         rashomon_batch_size = int(RASHOMON_BATCH_SIZE)
     except ValueError as exc:
         raise SystemExit(
-            "RASHOMON_BATCH_SIZE must be a positive integer or 'all'"
+            "RASHOMON_BATCH_SIZE must be 'auto' or a positive integer"
         ) from exc
-else:
-    rashomon_batch_size = int(hp.get("rashomon_batch_size", 500))
 if rashomon_batch_size <= 0:
     raise SystemExit("RASHOMON_BATCH_SIZE must be positive")
 
-if RASHOMON_BATCH_SIZE == "all" and rashomon_batch_size != safety_demo_size:
+if RASHOMON_BATCH_SIZE in {"auto", "all"} and rashomon_batch_size != safety_demo_size:
     raise AssertionError("full Rashomon batch does not match the safety dataset")
 if RASHOMON_CERTIFICATE_SAMPLES == "all" and certificate_samples != safety_demo_size:
     raise AssertionError("full certificate coverage does not match the safety dataset")
@@ -256,7 +254,7 @@ def base_policy_command(base_dir):
         "--rashomon-surrogate",
         RASHOMON_SURROGATE,
         "--rashomon-batch-size",
-        str(rashomon_batch_size),
+        RASHOMON_BATCH_SIZE,
         "--certificate-samples",
         str(certificate_samples),
     ]
@@ -335,7 +333,7 @@ for seed, core in zip(SEEDS, CPU_IDS):
         "--rashomon-checkpoint",
         str(hp.get("checkpoint", 100)),
         "--rashomon-batch-size",
-        str(rashomon_batch_size),
+        RASHOMON_BATCH_SIZE,
         "--certificate-samples",
         str(certificate_samples),
         "--rashomon-multi-label-mode",

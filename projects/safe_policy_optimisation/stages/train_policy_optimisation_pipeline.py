@@ -51,6 +51,9 @@ from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     PPO_LAGRANGIAN_ALGORITHM_NAMES,
 )
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
+from projects.safe_policy_optimisation.utils.rashomon import (  # noqa: E402
+    parse_rashomon_batch_size,
+)
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT
@@ -386,7 +389,15 @@ def build_parser() -> argparse.ArgumentParser:
         "for PSPO (precomputed).",
     )
     parser.add_argument("--rashomon-checkpoint", type=int, default=100)
-    parser.add_argument("--rashomon-batch-size", type=int, default=500)
+    parser.add_argument(
+        "--rashomon-batch-size",
+        type=parse_rashomon_batch_size,
+        default="auto",
+        help=(
+            "Safe-behaviour optimisation batch size. 'auto' (default) uses the "
+            "entire safe-behaviour demonstration dataset."
+        ),
+    )
     parser.add_argument("--certificate-samples", type=int, default=1000)
     parser.add_argument(
         "--bc-target-margin",

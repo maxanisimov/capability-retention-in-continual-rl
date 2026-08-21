@@ -81,7 +81,7 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         self.assertEqual(env["REGION_MODE"], "replace")
         self.assertEqual(env["RASHOMON_MULTI_LABEL_MODE"], "all")
         self.assertEqual(env["RASHOMON_SURROGATE"], "logsumexp")
-        self.assertEqual(env["RASHOMON_BATCH_SIZE"], "all")
+        self.assertEqual(env["RASHOMON_BATCH_SIZE"], "auto")
         self.assertEqual(env["RASHOMON_CERTIFICATE_SAMPLES"], "all")
         self.assertEqual(env["RASHOMON_N_ITERS"], "200")
         self.assertEqual(env["BC_TARGET_MARGIN"], "2.0")

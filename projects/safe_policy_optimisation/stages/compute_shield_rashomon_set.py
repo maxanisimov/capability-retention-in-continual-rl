@@ -22,6 +22,10 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from projects.safe_policy_optimisation.utils.io import write_json
 from projects.safe_policy_optimisation.utils.log import log_info
+from projects.safe_policy_optimisation.utils.rashomon import (
+    parse_rashomon_batch_size,
+    resolve_rashomon_batch_size,
+)
 from projects.safe_policy_optimisation.utils.shield import (
     load_shield_mask as _load_shield_mask,
 )
@@ -834,7 +838,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-direct-linear-init", action="store_true")
     parser.add_argument("--rashomon-n-iters", type=int, default=2000)
     parser.add_argument("--rashomon-checkpoint", type=int, default=100)
-    parser.add_argument("--rashomon-batch-size", type=int, default=500)
+    parser.add_argument(
+        "--rashomon-batch-size",
+        type=parse_rashomon_batch_size,
+        default="auto",
+        help=(
+            "Safe-behaviour optimisation batch size. 'auto' (default) uses the "
+            "entire safe-behaviour demonstration dataset; a positive integer "
+            "requests an explicit size."
+        ),
+    )
     parser.add_argument("--certificate-samples", type=int, default=1000)
     parser.add_argument(
         "--safe-region-shape",
@@ -924,6 +937,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ).unwrapped
         state_to_features = feature_env.state_to_features
     dataset, dataset_metadata = make_safe_behaviour_payload(mask, state_to_features)
+    rashomon_batch_size = resolve_rashomon_batch_size(args.rashomon_batch_size, mask)
     input_dim = int(dataset["state"].shape[1])
     n_actions = int(dataset["actions"].shape[1])
 
@@ -1046,7 +1060,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed,
             n_iters=args.rashomon_n_iters,
             checkpoint=args.rashomon_checkpoint,
-            batch_size=args.rashomon_batch_size,
+            batch_size=rashomon_batch_size,
             certificate_samples=args.certificate_samples,
             inverse_temp=inverse_temp,
             growth_method=args.growth_method,
@@ -1063,7 +1077,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed,
             n_iters=args.rashomon_n_iters,
             checkpoint=args.rashomon_checkpoint,
-            batch_size=args.rashomon_batch_size,
+            batch_size=rashomon_batch_size,
             certificate_samples=args.certificate_samples,
             inverse_temp=inverse_temp,
             rank=zonotope_rank,
@@ -1127,7 +1141,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "resolved_surrogate": rashomon_metadata["resolved_surrogate"],
             "n_iters": int(args.rashomon_n_iters),
             "checkpoint": int(args.rashomon_checkpoint),
-            "batch_size": int(args.rashomon_batch_size),
+            "batch_size_setting": args.rashomon_batch_size,
+            "batch_size": int(rashomon_batch_size),
             "certificate_samples": int(args.certificate_samples),
             "growth_method": args.growth_method,
             "certification_method": args.certification_method,

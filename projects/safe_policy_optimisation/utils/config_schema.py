@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 T = TypeVar("T")
 
@@ -98,7 +98,7 @@ class RashomonSetCfg:
     rashomon_dir: str
     rashomon_n_iters: int
     rashomon_checkpoint: int
-    rashomon_batch_size: int
+    rashomon_batch_size: int | Literal["auto"]
     certificate_samples: int
     safe_region_shape: str = "orthotope"
     zonotope_rank: int | None = None

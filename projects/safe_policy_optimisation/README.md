@@ -277,6 +277,11 @@ initial region, so it must be combined with `ADAPTIVE_DIRECTIONAL=false` and
 `ADAPTIVE_VERIFY_FIRST=false`. Directional growth and proposal-containment
 stopping require an orthotope region. `ADAPTIVE_N_ITERS` is a maximum: growth
 can finish earlier once the proposal lies inside a fully certified region.
+The canonical stage's `--rashomon-batch-size` defaults to `auto`, which resolves
+to the complete safe-behaviour demonstration dataset for every region
+computation. Together with the default exhaustive certificate, this makes every
+safe-behaviour row participate in both growth and final certification. A
+positive integer remains available as an explicit override.
 
 Results are written to:
 
@@ -330,6 +335,7 @@ base policy and shield already exist:
   --directional true \
   --region-mode replace \
   --n-iters 100 \
+  --rashomon-batch-size auto \
   --rashomon-multi-label-mode all \
   --surrogate logsumexp
 ```
