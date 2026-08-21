@@ -82,6 +82,23 @@ class RecordIoTests(unittest.TestCase):
 
 
 class PpoArgsTests(unittest.TestCase):
+    def test_canonical_defaults(self) -> None:
+        self.assertEqual(
+            PPO_HYPERPARAMETER_DEFAULTS,
+            {
+                "learning_rate": 3e-4,
+                "n_steps": 2048,
+                "batch_size": 64,
+                "n_epochs": 10,
+                "gamma": 0.99,
+                "gae_lambda": 0.95,
+                "clip_range": 0.2,
+                "ent_coef": 0.0,
+                "vf_coef": 0.5,
+                "max_grad_norm": 0.5,
+            },
+        )
+
     def test_defaults_match_shared_table(self) -> None:
         parser = add_ppo_hyperparameter_args(argparse.ArgumentParser())
         args = parser.parse_args([])

@@ -87,6 +87,7 @@ from projects.safe_policy_optimisation.utils.cpu_allocation import (
     worker_thread_count,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (
+    DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS,
     EpisodeMetrics,
     aggregate_training_violations,
     aggregate_violations,
@@ -104,6 +105,41 @@ from projects.safe_policy_optimisation.tests.helpers import (
 )
 
 class CliParsingTests(unittest.TestCase):
+    def test_ppo_family_uses_canonical_optimisation_defaults(self) -> None:
+        expected = {
+            "learning_rate": 3e-4,
+            "n_steps": 2048,
+            "batch_size": 64,
+            "n_epochs": 10,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "clip_range": 0.2,
+            "ent_coef": 0.0,
+            "vf_coef": 0.5,
+            "max_grad_norm": 0.5,
+        }
+        parsed = {
+            "ppo": build_ppo_parser().parse_args(["--env-id", "CustomMiniPacman-v0"]),
+            "ppo_lagrangian_and_pid": build_train_parser().parse_args([]),
+            "cpo": build_cpo_parser().parse_args([]),
+            "pspo_precomputed": build_rashomon_shielded_ppo_parser().parse_args(
+                ["--rashomon-dir", "rashomon_run", "--shield-path", "shield_q.pt"]
+            ),
+            "pspo_adaptive": build_adaptive_safe_ppo_parser().parse_args(
+                ["--base-policy-path", "base_policy.pt", "--shield-path", "shield_q.pt"]
+            ),
+            "pipeline": build_deterministic_pipeline_parser().parse_args([]),
+        }
+
+        for method, args in parsed.items():
+            with self.subTest(method=method):
+                for key, value in expected.items():
+                    self.assertEqual(getattr(args, key), value)
+
+        for key, value in expected.items():
+            self.assertEqual(DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS[key], value)
+        self.assertEqual(DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS["cost_gae_lambda"], 0.95)
+
     def test_train_parser_accepts_ppo_lagrangian_subset_and_cost_limit(self) -> None:
         args = build_train_parser().parse_args(
             [

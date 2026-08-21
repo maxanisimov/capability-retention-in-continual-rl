@@ -9,9 +9,9 @@ import argparse
 # drift apart.
 PPO_HYPERPARAMETER_DEFAULTS: dict[str, float | int] = {
     "learning_rate": 3e-4,
-    "n_steps": 512,
-    "batch_size": 128,
-    "n_epochs": 4,
+    "n_steps": 2048,
+    "batch_size": 64,
+    "n_epochs": 10,
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_range": 0.2,

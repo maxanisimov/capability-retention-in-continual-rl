@@ -25,6 +25,7 @@ import torch as th
 from PIL import Image
 from safe_rl_baselines import CPO, PPOLagrangian, PPOPIDLagrangian
 
+from projects.safe_policy_optimisation.utils.cli import PPO_HYPERPARAMETER_DEFAULTS
 from projects.safe_policy_optimisation.utils.safe_crl_bridge import make_custom_masa_env
 
 PPO_LAGRANGIAN_ALGORITHM_NAMES = ("ppo_lagrangian", "ppo_pid_lagrangian")
@@ -51,16 +52,7 @@ SAFE_RL_BASELINE_HYPERPARAMS = (
     "lagrangian_multiplier_init",
 )
 DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS: dict[str, Any] = {
-    "learning_rate": 3e-4,
-    "n_steps": 512,
-    "batch_size": 128,
-    "n_epochs": 4,
-    "gamma": 0.99,
-    "gae_lambda": 0.95,
-    "clip_range": 0.2,
-    "ent_coef": 0.0,
-    "vf_coef": 0.5,
-    "max_grad_norm": 0.5,
+    **PPO_HYPERPARAMETER_DEFAULTS,
     "cost_gamma": 0.99,
     "cost_gae_lambda": 0.95,
     "lagrangian_multiplier_init": 0.0,
@@ -177,7 +169,7 @@ def build_safe_rl_baseline(
     net_arch: tuple[int, ...] = (64, 64),
     **hyperparameters: Any,
 ) -> Any:
-    """Build one safe-RL baseline with smoke-friendly tabular defaults."""
+    """Build one safe-RL baseline with the canonical PPO-family defaults."""
 
     if algorithm not in ALGORITHM_NAMES:
         raise ValueError(f"Unknown algorithm {algorithm!r}. Expected one of {ALGORITHM_NAMES}.")

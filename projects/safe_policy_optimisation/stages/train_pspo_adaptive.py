@@ -20,7 +20,11 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from provably_safe_policy_optimisation import AdaptiveSafePPO, AdaptiveSafePPOV2, Shield  # noqa: E402
+from provably_safe_policy_optimisation import (  # noqa: E402
+    AdaptiveSafePPO,
+    AdaptiveSafePPOV2,
+    Shield,
+)
 
 from projects.safe_policy_optimisation.stages.train_ppo_shield import (  # noqa: E402
     _episode_rows,
@@ -41,7 +45,15 @@ from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (  #
     env_kwargs_with_state_representation,
     policy_kwargs_from_base_architecture,
 )
+from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
+    add_ppo_hyperparameter_args,
+)
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
+    LearningCurveLogger,
+    UnshieldedRewardCurveCallback,
+)
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
     success_mode_for_env,
     summarise_evaluation,
@@ -50,15 +62,10 @@ from projects.safe_policy_optimisation.utils.rashomon import (  # noqa: E402
     parse_rashomon_batch_size,
     resolve_rashomon_batch_size,
 )
-from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
-    LearningCurveLogger,
-    UnshieldedRewardCurveCallback,
-)
 from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     aggregate_training_violations,
     aggregate_violations,
 )
-from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 ALGORITHM_NAME = "pspo_adaptive"
 DEFAULT_OUTPUT_DIR = (
@@ -268,16 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Number of learned zonotope generator directions. Defaults to min(16, n_actor_params).",
     )
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--n-steps", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--n-epochs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--clip-range", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.0)
-    parser.add_argument("--vf-coef", type=float, default=0.5)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    add_ppo_hyperparameter_args(parser)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--early-stop-eval-freq", type=int, default=5_000)
     parser.add_argument("--early-stop-eval-episodes", type=int, default=20)
