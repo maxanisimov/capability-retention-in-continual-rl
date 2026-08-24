@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stderr
 from unittest import mock
 
 from projects.safe_policy_optimisation.scripts.launch_pspo_adaptive_multi_env import (
     DEFAULT_ENVS,
     build_launch_environment,
     build_parser,
+    parse_launcher_args,
     parse_mpstat_idle,
     safety_demo_sizes,
     select_idle_cpus,
@@ -38,21 +41,61 @@ class PspoAdaptiveMultiEnvLauncherTests(unittest.TestCase):
         }
         self.assertIn("--envs", sections["experiment selection:"])
         self.assertIn("--freq", sections["PPO update settings:"])
+        self.assertNotIn("--adaptive-granularity", help_text)
         self.assertIn("--architecture", sections["policy initialisation:"])
         self.assertIn("--lid-n-iters", sections["LID settings:"])
         self.assertIn("--minimum-idle", sections["CPU allocation and execution:"])
 
-    def test_lid_cli_name_replaces_rashomon_name_in_help(self) -> None:
+    def test_lid_cli_names_replace_rashomon_names_in_help(self) -> None:
         parser = build_parser()
         help_text = parser.format_help()
 
         self.assertIn("--lid-n-iters", help_text)
+        self.assertIn("--lid-objective", help_text)
         self.assertNotIn("--rashomon-n-iters", help_text)
-        self.assertEqual(parser.parse_args(["--lid-n-iters", "321"]).rashomon_n_iters, 321)
-        self.assertEqual(
-            parser.parse_args(["--rashomon-n-iters", "123"]).rashomon_n_iters,
-            123,
+        self.assertNotIn("--rashomon-objective", help_text)
+
+        lid_args = parser.parse_args(
+            ["--lid-n-iters", "321", "--lid-objective", "projection_distance"]
         )
+        self.assertEqual(lid_args.rashomon_n_iters, 321)
+        self.assertEqual(lid_args.rashomon_objective, "projection_distance")
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            legacy_args = parse_launcher_args(
+                [
+                    "--rashomon-n-iters",
+                    "123",
+                    "--rashomon-objective",
+                    "projection_distance",
+                ]
+            )
+        self.assertEqual(legacy_args.rashomon_n_iters, 123)
+        self.assertEqual(legacy_args.rashomon_objective, "projection_distance")
+        self.assertIn(
+            "--rashomon-n-iters is deprecated; use --lid-n-iters instead",
+            stderr.getvalue(),
+        )
+        self.assertIn(
+            "--rashomon-objective is deprecated; use --lid-objective instead",
+            stderr.getvalue(),
+        )
+
+    def test_legacy_lid_aliases_cannot_be_mixed_with_canonical_names(self) -> None:
+        conflicting_options = (
+            ["--lid-n-iters", "200", "--rashomon-n-iters", "100"],
+            [
+                "--lid-objective",
+                "weighted_width",
+                "--rashomon-objective",
+                "projection_distance",
+            ],
+        )
+        for options in conflicting_options:
+            with self.subTest(options=options), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parse_launcher_args(options)
 
     def test_architecture_cli_defaults_to_two_hidden_and_accepts_one_hidden(self) -> None:
         self.assertEqual(build_parser().parse_args([]).architecture, "two_hidden")
@@ -109,7 +152,6 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
             architecture="two_hidden",
             run_name="test_run",
             n_iters=200,
-            adaptive_granularity="gradient_step",
             dry_run=True,
         )
 
@@ -119,12 +161,14 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         self.assertEqual(env["REGION_MODE"], "replace")
         self.assertEqual(env["RASHOMON_MULTI_LABEL_MODE"], "all")
         self.assertEqual(env["RASHOMON_SURROGATE"], "logsumexp")
+        self.assertEqual(env["RASHOMON_OBJECTIVE"], "weighted_width")
         self.assertEqual(env["RASHOMON_BATCH_SIZE"], "auto")
         self.assertEqual(env["RASHOMON_CERTIFICATE_SAMPLES"], "all")
         self.assertEqual(env["RASHOMON_N_ITERS"], "200")
         self.assertEqual(env["BC_TARGET_MARGIN"], "2.0")
         self.assertEqual(env["DIRECTIONAL_RASHOMON_GROWTH"], "1")
-        self.assertEqual(env["ADAPTIVE_GRANULARITY"], "gradient_step")
+        self.assertNotIn("ADAPTIVE_GRANULARITY", env)
+        self.assertEqual(env["ADAPTIVE_FREQ"], "update")
         self.assertEqual(env["STOP_WHEN_PROPOSAL_CONTAINED"], "1")
         self.assertEqual(env["DRY_RUN"], "1")
 
@@ -135,16 +179,15 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
             architecture="one_hidden",
             run_name="one_hidden_run",
             n_iters=200,
-            adaptive_granularity="gradient_step",
             dry_run=True,
         )
         self.assertEqual(one_hidden["ARCHITECTURE"], "one_hidden")
 
-    def test_adaptive_granularity_cli_defaults_and_reaches_the_launcher(self) -> None:
-        self.assertEqual(build_parser().parse_args([]).adaptive_granularity, "gradient_step")
+    def test_frequency_cli_defaults_and_reaches_the_launcher(self) -> None:
+        self.assertEqual(build_parser().parse_args([]).freq, "update")
         self.assertEqual(
-            build_parser().parse_args(["--adaptive-granularity", "train_phase"]).adaptive_granularity,
-            "train_phase",
+            build_parser().parse_args(["--freq", "rollout"]).freq,
+            "rollout",
         )
 
         env = build_launch_environment(
@@ -154,10 +197,14 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
             architecture="two_hidden",
             run_name="train_phase_run",
             n_iters=200,
-            adaptive_granularity="train_phase",
             dry_run=True,
+            adaptive_freq="rollout",
         )
-        self.assertEqual(env["ADAPTIVE_GRANULARITY"], "train_phase")
+        self.assertEqual(env["ADAPTIVE_FREQ"], "rollout")
+
+    def test_adaptive_granularity_cli_is_removed(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_launcher_args(["--adaptive-granularity", "train_phase"])
 
 
 if __name__ == "__main__":

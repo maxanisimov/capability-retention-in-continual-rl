@@ -313,8 +313,15 @@ automatic idle-core selection, use:
 .venv/bin/python \
   projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
   --architecture two_hidden \
-  --rashomon-n-iters 200
+  --lid-n-iters 200 \
+  --lid-objective weighted_width
 ```
+
+The former launcher spellings `--rashomon-n-iters` and
+`--rashomon-objective` are deprecated compatibility aliases. They emit a
+warning and will be removed in the next CLI-breaking cleanup. Use
+`--freq rollout` in place of the removed `--adaptive-granularity train_phase`;
+the default frequency is `update`.
 
 This specialised multi-environment launcher excludes Media Streaming by
 default. Pass `--cpu-ids`, `--envs`, and `--seeds` for an explicit allocation,

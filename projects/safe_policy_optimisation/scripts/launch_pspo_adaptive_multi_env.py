@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -132,10 +133,10 @@ def build_launch_environment(
     architecture: str,
     run_name: str,
     n_iters: int,
-    adaptive_granularity: str,
     dry_run: bool,
-    adaptive_freq: str | None = None,
+    adaptive_freq: str = "update",
     directional: bool = True,
+    rashomon_objective: str = "weighted_width",
 ) -> dict[str, str]:
     """Build the exact one-environment launcher configuration."""
 
@@ -149,13 +150,13 @@ def build_launch_environment(
         "RUN_NAME": run_name,
         "RASHOMON_MULTI_LABEL_MODE": "all",
         "RASHOMON_SURROGATE": "logsumexp",
+        "RASHOMON_OBJECTIVE": rashomon_objective,
         "RASHOMON_BATCH_SIZE": "auto",
         "RASHOMON_CERTIFICATE_SAMPLES": "all",
         "RASHOMON_N_ITERS": str(n_iters),
         "BC_TARGET_MARGIN": "2.0",
         "DIRECTIONAL_RASHOMON_GROWTH": "1" if directional else "0",
-        "ADAPTIVE_GRANULARITY": adaptive_granularity,
-        "ADAPTIVE_FREQ": adaptive_freq or "",
+        "ADAPTIVE_FREQ": adaptive_freq,
         "STOP_WHEN_PROPOSAL_CONTAINED": "1",
         "SKIP_EXISTING": "1",
         "DRY_RUN": "1" if dry_run else "0",
@@ -187,18 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     ppo = parser.add_argument_group("PPO update settings")
     ppo.add_argument(
-        "--adaptive-granularity",
-        choices=("gradient_step", "train_phase"),
-        default="gradient_step",
-        help=(
-            "What counts as one policy-update candidate. 'train_phase' verifies once "
-            "per PPO update instead of once per gradient step, which is the only "
-            "affordable cadence on large state spaces such as MiniPacman."
-        ),
-    )
-    ppo.add_argument(
         "--freq",
-        default=None,
+        default="update",
         help="Unified frequency: update, rollout, once, or a positive rollout count.",
     )
 
@@ -225,13 +216,28 @@ def build_parser() -> argparse.ArgumentParser:
         default="true",
         help="Whether to grow each LID towards the proposed PPO update.",
     )
+    lid.add_argument(
+        "--lid-objective",
+        dest="rashomon_objective",
+        choices=("weighted_width", "projection_distance"),
+        default="weighted_width",
+        help="Objective used to grow each certified LID.",
+    )
 
-    # Keep the historical spelling accepted so existing launch commands continue
-    # to work, but omit it from --help in favour of the literature-aligned name.
+    # Keep historical spellings accepted so existing launch commands continue to
+    # work, but omit them from --help in favour of the literature-aligned LID names.
     parser.add_argument(
         "--rashomon-n-iters",
-        dest="rashomon_n_iters",
+        dest="legacy_rashomon_n_iters",
         type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--rashomon-objective",
+        dest="legacy_rashomon_objective",
+        choices=("weighted_width", "projection_distance"),
+        default=None,
         help=argparse.SUPPRESS,
     )
 
@@ -245,6 +251,48 @@ def build_parser() -> argparse.ArgumentParser:
     execution.add_argument("--sample-seconds", type=int, default=5)
     execution.add_argument("--dry-run", action="store_true")
     return parser
+
+
+def _option_was_supplied(argv: list[str], option: str) -> bool:
+    return any(
+        argument == option or argument.startswith(f"{option}=")
+        for argument in argv
+    )
+
+
+def parse_launcher_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse launcher arguments and resolve temporarily supported legacy aliases."""
+
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    args = parser.parse_args(raw_argv)
+    aliases = (
+        (
+            "--rashomon-n-iters",
+            "--lid-n-iters",
+            "legacy_rashomon_n_iters",
+            "rashomon_n_iters",
+        ),
+        (
+            "--rashomon-objective",
+            "--lid-objective",
+            "legacy_rashomon_objective",
+            "rashomon_objective",
+        ),
+    )
+    for legacy_option, replacement, legacy_dest, canonical_dest in aliases:
+        legacy_value = getattr(args, legacy_dest)
+        if legacy_value is not None:
+            if _option_was_supplied(raw_argv, replacement):
+                parser.error(f"{legacy_option} cannot be combined with {replacement}")
+            print(
+                f"warning: {legacy_option} is deprecated; use {replacement} instead. "
+                "It will be removed in the next CLI-breaking cleanup.",
+                file=sys.stderr,
+            )
+            setattr(args, canonical_dest, legacy_value)
+        delattr(args, legacy_dest)
+    return args
 
 
 def _validate_args(args: argparse.Namespace) -> None:
@@ -274,19 +322,27 @@ def _validate_args(args: argparse.Namespace) -> None:
                 raise SystemExit("numeric --freq must be positive")
     if args.freq == "once" and args.directional != "false":
         raise SystemExit("--freq once requires --directional false")
+    if (
+        args.rashomon_objective == "projection_distance"
+        and args.directional != "true"
+    ):
+        raise SystemExit("--lid-objective projection_distance requires --directional true")
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = parse_launcher_args(argv)
     _validate_args(args)
     environments = list(args.envs)
     seeds = list(args.seeds)
     architecture = str(args.architecture)
     architecture_settings = ARCHITECTURES[architecture]
     growth_tag = "directional" if args.directional == "true" else "nondirectional"
-    run_name = args.run_name or (
+    default_run_name = (
         f"pspo_adaptive_{architecture}_{growth_tag}_replace_all_margin2_200iters"
     )
+    if args.rashomon_objective != "weighted_width":
+        default_run_name += f"_{args.rashomon_objective}"
+    run_name = args.run_name or default_run_name
     required = len(environments) * len(seeds)
     allowed_cpus = set(os.sched_getaffinity(0))
 
@@ -332,13 +388,10 @@ def main(argv: list[str] | None = None) -> int:
             "directional_rashomon_growth": args.directional == "true",
             "stop_when_proposal_contained": args.directional == "true",
             "rashomon_n_iters": int(args.rashomon_n_iters),
-            "adaptive_granularity": str(args.adaptive_granularity),
-            "frequency": str(
-                args.freq
-                or ("rollout" if args.adaptive_granularity == "train_phase" else "update")
-            ),
+            "frequency": str(args.freq),
             "rashomon_multi_label_mode": "all",
             "rashomon_surrogate": "logsumexp",
+            "rashomon_objective": str(args.rashomon_objective),
             "bc_target_margin": 2.0,
             "safety_demo_sizes": dataset_sizes,
             "rashomon_batch_size": dataset_sizes,
@@ -356,10 +409,10 @@ def main(argv: list[str] | None = None) -> int:
                 architecture=architecture,
                 run_name=run_name,
                 n_iters=args.rashomon_n_iters,
-                adaptive_granularity=args.adaptive_granularity,
                 dry_run=True,
                 adaptive_freq=args.freq,
                 directional=args.directional == "true",
+                rashomon_objective=args.rashomon_objective,
             )
             completed = subprocess.run(
                 ["bash", str(ONE_ENV_LAUNCHER)],
@@ -387,10 +440,10 @@ def main(argv: list[str] | None = None) -> int:
             architecture=architecture,
             run_name=run_name,
             n_iters=args.rashomon_n_iters,
-            adaptive_granularity=args.adaptive_granularity,
             dry_run=False,
             adaptive_freq=args.freq,
             directional=args.directional == "true",
+            rashomon_objective=args.rashomon_objective,
         )
         log_handle = (log_dir / f"{environment}.log").open("w")
         process = subprocess.Popen(
