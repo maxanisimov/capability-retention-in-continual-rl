@@ -16,6 +16,44 @@ from projects.safe_policy_optimisation.scripts.launch_pspo_adaptive_multi_env im
 
 
 class PspoAdaptiveMultiEnvLauncherTests(unittest.TestCase):
+    def test_cli_help_groups_related_arguments(self) -> None:
+        help_text = build_parser().format_help()
+
+        headings = (
+            "experiment selection:",
+            "PPO update settings:",
+            "policy initialisation:",
+            "LID settings:",
+            "CPU allocation and execution:",
+        )
+        positions = [help_text.index(heading) for heading in headings]
+        self.assertEqual(positions, sorted(positions))
+
+        sections = {
+            heading: help_text[start:end]
+            for (heading, start), end in zip(
+                zip(headings, positions),
+                positions[1:] + [len(help_text)],
+            )
+        }
+        self.assertIn("--envs", sections["experiment selection:"])
+        self.assertIn("--freq", sections["PPO update settings:"])
+        self.assertIn("--architecture", sections["policy initialisation:"])
+        self.assertIn("--lid-n-iters", sections["LID settings:"])
+        self.assertIn("--minimum-idle", sections["CPU allocation and execution:"])
+
+    def test_lid_cli_name_replaces_rashomon_name_in_help(self) -> None:
+        parser = build_parser()
+        help_text = parser.format_help()
+
+        self.assertIn("--lid-n-iters", help_text)
+        self.assertNotIn("--rashomon-n-iters", help_text)
+        self.assertEqual(parser.parse_args(["--lid-n-iters", "321"]).rashomon_n_iters, 321)
+        self.assertEqual(
+            parser.parse_args(["--rashomon-n-iters", "123"]).rashomon_n_iters,
+            123,
+        )
+
     def test_architecture_cli_defaults_to_two_hidden_and_accepts_one_hidden(self) -> None:
         self.assertEqual(build_parser().parse_args([]).architecture, "two_hidden")
         self.assertEqual(

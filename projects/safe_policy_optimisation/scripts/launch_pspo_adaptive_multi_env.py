@@ -170,30 +170,23 @@ def build_launch_environment(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Launch directional region-first PSPO adaptive with all-safe-logit semantics "
-            "for every MASA environment except Media Streaming."
+            "Launch PSPO adaptive with directional Local Independence Domain "
+            "(LID) growth and all-safe-logit semantics for every MASA environment "
+            "except Media Streaming."
         )
     )
-    parser.add_argument("--envs", nargs="+", default=list(DEFAULT_ENVS))
-    parser.add_argument("--seeds", nargs="+", type=int, default=list(range(10)))
-    parser.add_argument(
-        "--architecture",
-        choices=tuple(ARCHITECTURES),
-        default="two_hidden",
-        help="Policy architecture. Defaults to the original two-hidden-layer experiment.",
-    )
-    parser.add_argument(
+
+    experiment = parser.add_argument_group("experiment selection")
+    experiment.add_argument("--envs", nargs="+", default=list(DEFAULT_ENVS))
+    experiment.add_argument("--seeds", nargs="+", type=int, default=list(range(10)))
+    experiment.add_argument(
         "--run-name",
         default=None,
         help="Output run name. By default it is derived from --architecture.",
     )
-    parser.add_argument(
-        "--rashomon-n-iters",
-        type=int,
-        default=200,
-        help="Maximum iterations for each safe-region computation.",
-    )
-    parser.add_argument(
+
+    ppo = parser.add_argument_group("PPO update settings")
+    ppo.add_argument(
         "--adaptive-granularity",
         choices=("gradient_step", "train_phase"),
         default="gradient_step",
@@ -203,25 +196,54 @@ def build_parser() -> argparse.ArgumentParser:
             "affordable cadence on large state spaces such as MiniPacman."
         ),
     )
-    parser.add_argument(
+    ppo.add_argument(
         "--freq",
         default=None,
         help="Unified frequency: update, rollout, once, or a positive rollout count.",
     )
-    parser.add_argument(
+
+    initialisation = parser.add_argument_group("policy initialisation")
+    initialisation.add_argument(
+        "--architecture",
+        choices=tuple(ARCHITECTURES),
+        default="two_hidden",
+        help="Policy architecture. Defaults to the original two-hidden-layer experiment.",
+    )
+
+    lid = parser.add_argument_group("LID settings")
+    lid.add_argument(
+        "--lid-n-iters",
+        dest="rashomon_n_iters",
+        metavar="ITERATIONS",
+        type=int,
+        default=200,
+        help="Maximum optimization iterations used to construct each LID.",
+    )
+    lid.add_argument(
         "--directional",
         choices=("true", "false"),
         default="true",
-        help="Enable or disable directional region growth.",
+        help="Whether to grow each LID towards the proposed PPO update.",
     )
+
+    # Keep the historical spelling accepted so existing launch commands continue
+    # to work, but omit it from --help in favour of the literature-aligned name.
     parser.add_argument(
+        "--rashomon-n-iters",
+        dest="rashomon_n_iters",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+
+    execution = parser.add_argument_group("CPU allocation and execution")
+    execution.add_argument(
         "--cpu-ids",
         default=None,
         help="Optional explicit CPU list/ranges; otherwise cores are sampled with mpstat.",
     )
-    parser.add_argument("--minimum-idle", type=float, default=90.0)
-    parser.add_argument("--sample-seconds", type=int, default=5)
-    parser.add_argument("--dry-run", action="store_true")
+    execution.add_argument("--minimum-idle", type=float, default=90.0)
+    execution.add_argument("--sample-seconds", type=int, default=5)
+    execution.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -236,7 +258,7 @@ def _validate_args(args: argparse.Namespace) -> None:
     if not args.seeds or len(set(args.seeds)) != len(args.seeds):
         raise SystemExit("--seeds must contain distinct values")
     if args.rashomon_n_iters <= 0:
-        raise SystemExit("--rashomon-n-iters must be positive")
+        raise SystemExit("--lid-n-iters must be positive")
     if not 0.0 <= args.minimum_idle <= 100.0:
         raise SystemExit("--minimum-idle must lie in [0, 100]")
     if args.freq is not None:
