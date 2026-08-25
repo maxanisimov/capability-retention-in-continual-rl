@@ -58,8 +58,10 @@ class BasePolicyPredictor:
             inputs = torch.as_tensor(array, dtype=torch.float32)
             if inputs.ndim == 1:
                 inputs = inputs.unsqueeze(0)
-        action = int(self.policy(inputs).argmax(dim=-1).item())
-        return np.asarray(action), None
+        actions = self.policy(inputs).argmax(dim=-1).cpu().numpy()
+        if actions.size == 1:
+            return np.asarray(int(actions.item())), None
+        return actions, None
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -69,8 +71,6 @@ def _read_json(path: Path) -> dict[str, Any]:
 def discover_seed_runs(run_root: Path) -> list[SeedRun]:
     runs: list[SeedRun] = []
     for environment_dir in sorted(path for path in run_root.iterdir() if path.is_dir()):
-        if not (environment_dir / "initial_base_policy/base_policy.pt").is_file():
-            continue
         for seed_dir in sorted(environment_dir.glob("seed*")):
             required = ("config.json", "metrics.json", "model.zip")
             if not all((seed_dir / name).is_file() for name in required):
@@ -107,46 +107,110 @@ def _load_base_policy(path: Path) -> BasePolicyPredictor:
     return BasePolicyPredictor(policy, input_dim=int(architecture["input_dim"]))
 
 
-def _evaluate(model: Any, config: dict[str, Any], *, episodes: int, eval_seed: int) -> list[float]:
-    from projects.safe_policy_optimisation.stages.train_ppo_shield import make_unshielded_env
-    from projects.safe_policy_optimisation.utils.safe_rl import evaluate_policy
+def exhaustive_shield_alignment(
+    model: Any,
+    shield_mask: np.ndarray,
+    *,
+    input_dim: int,
+    batch_size: int = 512,
+) -> dict[str, int | float]:
+    """Audit the greedy policy on every shield state that has a safe action."""
+
+    valid_states = np.flatnonzero(np.asarray(shield_mask).any(axis=1))
+    safe = 0
+    for start in range(0, len(valid_states), batch_size):
+        states = valid_states[start : start + batch_size]
+        observation_space = getattr(model, "observation_space", None)
+        if observation_space is not None and hasattr(observation_space, "n"):
+            observations = states
+        else:
+            observations = np.zeros((len(states), input_dim), dtype=np.float32)
+            observations[np.arange(len(states)), states] = 1.0
+        actions, _ = model.predict(observations, deterministic=True)
+        actions = np.asarray(actions, dtype=np.int64).reshape(-1)
+        safe += int(np.asarray(shield_mask)[states, actions].sum())
+    checked = int(len(valid_states))
+    return {
+        "checked_states": checked,
+        "unsafe_states": checked - safe,
+        "alignment_rate": float(safe / checked) if checked else 0.0,
+    }
+
+
+def _evaluate(
+    model: Any,
+    config: dict[str, Any],
+    shield_mask: np.ndarray,
+    *,
+    episodes: int,
+    eval_seed: int,
+) -> dict[str, Any]:
+    from projects.safe_policy_optimisation.stages.train_ppo_shield import (
+        evaluate_unshielded_policy,
+        make_unshielded_env,
+    )
 
     env = make_unshielded_env(
         config["env_id"],
         env_kwargs=dict(config.get("env_kwargs") or {}),
         max_episode_steps=int(config["max_episode_steps"]),
         cost_limit=float(config["cost_limit"]),
-        record_episodes=False,
+        record_episodes=True,
     )
     try:
-        records = evaluate_policy(
+        records, action_safety = evaluate_unshielded_policy(
             model,
             env,
-            cost_limit=float(config["cost_limit"]),
+            shield_mask,
             episodes=episodes,
             seed=eval_seed,
-            deterministic=True,
         )
     finally:
         env.close()
-    return [float(record.reward) for record in records]
+    rewards = [float(record["reward"]) for record in records]
+    safe_trajectories = [bool(record["safe_trajectory"]) for record in records]
+    return {
+        "rewards": rewards,
+        "safe_trajectory_rate": float(mean(safe_trajectories)),
+        **action_safety,
+    }
 
 
-def compare_seed(run: SeedRun, episodes_override: int | None) -> dict[str, Any]:
+def compare_seed(
+    run: SeedRun,
+    episodes_override: int | None,
+    eval_seed_offset: int = 10_000,
+) -> dict[str, Any]:
     from provably_safe_policy_optimisation import AdaptiveSafePPOV2
+    from projects.safe_policy_optimisation.utils.shield import load_shield_mask
 
     config = _read_json(run.run_dir / "config.json")
     episodes = int(episodes_override or config["eval_episodes"])
-    eval_seed = int(config["seed"]) + 10_000
+    eval_seed = int(config["seed"]) + int(eval_seed_offset)
     base_path = Path(config["base_policy_path"])
     if not base_path.is_absolute():
         base_path = REPO / base_path
+    shield_path = Path(config["shield_path"])
+    if not shield_path.is_absolute():
+        shield_path = REPO / shield_path
+    shield_mask = load_shield_mask(shield_path)
+    input_dim = int(config["base_policy_architecture"]["input_dim"])
 
     initial = _load_base_policy(base_path)
     final = AdaptiveSafePPOV2.load(run.run_dir / "model.zip", device="cpu")
-    initial_rewards = _evaluate(initial, config, episodes=episodes, eval_seed=eval_seed)
-    final_rewards = _evaluate(final, config, episodes=episodes, eval_seed=eval_seed)
+    initial_evaluation = _evaluate(
+        initial, config, shield_mask, episodes=episodes, eval_seed=eval_seed
+    )
+    final_evaluation = _evaluate(
+        final, config, shield_mask, episodes=episodes, eval_seed=eval_seed
+    )
+    initial_exact = exhaustive_shield_alignment(
+        initial, shield_mask, input_dim=input_dim
+    )
+    final_exact = exhaustive_shield_alignment(final, shield_mask, input_dim=input_dim)
     del final
+    initial_rewards = initial_evaluation.pop("rewards")
+    final_rewards = final_evaluation.pop("rewards")
 
     episode_rows = [
         {
@@ -165,6 +229,7 @@ def compare_seed(run: SeedRun, episodes_override: int | None) -> dict[str, Any]:
         "environment": run.environment,
         "seed": run.seed,
         "episodes": episodes,
+        "eval_seed_offset": int(eval_seed_offset),
         "eval_seed_start": eval_seed,
         "initial_policy_path": str(base_path),
         "final_policy_path": str(run.run_dir / "model.zip"),
@@ -173,6 +238,10 @@ def compare_seed(run: SeedRun, episodes_override: int | None) -> dict[str, Any]:
         "mean_reward_delta": mean(final_rewards) - mean(initial_rewards),
         "existing_final_mean_total_reward": float(existing_final),
         "final_reproduction_difference": mean(final_rewards) - float(existing_final),
+        "initial_empirical_safety": initial_evaluation,
+        "final_empirical_safety": final_evaluation,
+        "initial_exhaustive_safety": initial_exact,
+        "final_exhaustive_safety": final_exact,
         "episode_results": episode_rows,
     }
 
@@ -200,6 +269,21 @@ def aggregate(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "final_sem_across_seeds": _sem(final),
                 "paired_mean_reward_delta": mean(deltas),
                 "paired_delta_sem_across_seeds": _sem(deltas),
+                "final_empirical_safe_trajectory_rate": mean(
+                    [float(result["final_empirical_safety"]["safe_trajectory_rate"]) for result in group]
+                ),
+                "final_empirical_unsafe_action_count": sum(
+                    int(result["final_empirical_safety"]["unsafe_proposed_action_count"])
+                    for result in group
+                ),
+                "final_exhaustive_alignment_rate": min(
+                    float(result["final_exhaustive_safety"]["alignment_rate"])
+                    for result in group
+                ),
+                "final_exhaustive_unsafe_states": sum(
+                    int(result["final_exhaustive_safety"]["unsafe_states"])
+                    for result in group
+                ),
             }
         )
     return rows
@@ -237,15 +321,17 @@ def write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> None:
         "",
         "Unshielded deterministic evaluation on matched reset seeds. Values are mean ± SEM across training seeds.",
         "",
-        "| Environment | Seeds | Initial reward | Final reward | Final − initial |",
-        "|---|---:|---:|---:|---:|",
+        "| Environment | Seeds | Initial reward | Final reward | Final − initial | Empirical safety | Exact shield alignment |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary_rows:
         markdown.append(
             "| {environment} | {n_seeds} | {initial_mean_total_reward:.4f} ± "
             "{initial_sem_across_seeds:.4f} | {final_mean_total_reward:.4f} ± "
             "{final_sem_across_seeds:.4f} | {paired_mean_reward_delta:+.4f} ± "
-            "{paired_delta_sem_across_seeds:.4f} |".format(**row)
+            "{paired_delta_sem_across_seeds:.4f} | "
+            "{final_empirical_safe_trajectory_rate:.4f} | "
+            "{final_exhaustive_alignment_rate:.4f} |".format(**row)
         )
     (output_dir / "README.md").write_text("\n".join(markdown) + "\n", encoding="utf-8")
 
@@ -255,6 +341,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--eval-episodes", type=int, default=None)
+    parser.add_argument("--eval-seed-offset", type=int, default=10_000)
+    parser.add_argument("--environments", nargs="+", default=None)
+    parser.add_argument("--seeds", nargs="+", type=int, default=None)
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--force", action="store_true", help="Recompute completed per-seed files.")
     return parser
@@ -264,6 +353,8 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.eval_episodes is not None and args.eval_episodes <= 0:
         raise SystemExit("--eval-episodes must be positive")
+    if args.eval_seed_offset < 0:
+        raise SystemExit("--eval-seed-offset must be non-negative")
     if args.workers <= 0:
         raise SystemExit("--workers must be positive")
     run_root = args.run_root.resolve()
@@ -272,6 +363,12 @@ def main() -> int:
     per_seed_dir.mkdir(parents=True, exist_ok=True)
 
     runs = discover_seed_runs(run_root)
+    if args.environments is not None:
+        requested_environments = set(args.environments)
+        runs = [run for run in runs if run.environment in requested_environments]
+    if args.seeds is not None:
+        requested_seeds = set(args.seeds)
+        runs = [run for run in runs if run.seed in requested_seeds]
     if not runs:
         raise SystemExit(f"No completed region-first PSPO-adaptive runs found under {run_root}")
     print(f"Discovered {len(runs)} completed seed runs under {run_root}", flush=True)
@@ -283,7 +380,10 @@ def main() -> int:
         if result_path.is_file() and not args.force:
             cached = _read_json(result_path)
             expected_episodes = args.eval_episodes or _read_json(run.run_dir / "config.json")["eval_episodes"]
-            if int(cached.get("episodes", -1)) == int(expected_episodes):
+            if (
+                int(cached.get("episodes", -1)) == int(expected_episodes)
+                and int(cached.get("eval_seed_offset", 10_000)) == args.eval_seed_offset
+            ):
                 results.append(cached)
                 print(f"cached {run.environment}/seed{run.seed}", flush=True)
                 continue
@@ -291,7 +391,10 @@ def main() -> int:
 
     with ProcessPoolExecutor(max_workers=min(args.workers, len(pending) or 1)) as executor:
         futures = {
-            executor.submit(compare_seed, run, args.eval_episodes): run for run in pending
+            executor.submit(
+                compare_seed, run, args.eval_episodes, args.eval_seed_offset
+            ): run
+            for run in pending
         }
         for future in as_completed(futures):
             run = futures[future]
