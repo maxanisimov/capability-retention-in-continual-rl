@@ -720,6 +720,18 @@ class CliParsingTests(unittest.TestCase):
                 "0",
                 "--bc-margin-mode",
                 "all",
+                "--bc-safe-action-entropy-weight",
+                "1.0",
+                "--bc-min-safe-action-entropy",
+                "0.97",
+                "--bc-initialisation-objective",
+                "safe_mass",
+                "--bc-unsafe-mass-target",
+                "0.01",
+                "--bc-max-unsafe-mass",
+                "0.02",
+                "--bc-safe-action-uniformity-weight",
+                "1.5",
                 "--rashomon-surrogate",
                 "logsumexp",
                 "--safe-region-shape",
@@ -733,6 +745,12 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.base_policy_only)
         self.assertEqual(args.rashomon_n_iters, 0)
         self.assertEqual(args.bc_margin_mode, "all")
+        self.assertEqual(args.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(args.bc_min_safe_action_entropy, 0.97)
+        self.assertEqual(args.bc_initialisation_objective, "safe_mass")
+        self.assertEqual(args.bc_unsafe_mass_target, 0.01)
+        self.assertEqual(args.bc_max_unsafe_mass, 0.02)
+        self.assertEqual(args.bc_safe_action_uniformity_weight, 1.5)
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
         self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.zonotope_rank, 5)
@@ -742,10 +760,29 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.n_hidden, 2)
         self.assertEqual(args.hidden_dim, 64)
 
+        for flag, value in (
+            ("--bc-safe-action-entropy-weight", "-0.1"),
+            ("--bc-safe-action-entropy-weight", "nan"),
+            ("--bc-min-safe-action-entropy", "1.1"),
+            ("--bc-unsafe-mass-target", "0"),
+            ("--bc-max-unsafe-mass", "0.5"),
+            ("--bc-safe-action-uniformity-weight", "-0.1"),
+        ):
+            with self.subTest(flag=flag, value=value), self.assertRaises(SystemExit):
+                build_shield_rashomon_parser().parse_args(
+                    ["--shield-path", "shield_q.pt", flag, value]
+                )
+
     def test_pipeline_forwards_bc_margin_mode_to_rashomon_set_stage(self) -> None:
         args = argparse.Namespace(
             bc_margin_mode="all",
+            bc_initialisation_objective="safe_mass",
             bc_target_margin=0.5,
+            bc_safe_action_entropy_weight=1.0,
+            bc_min_safe_action_entropy=0.97,
+            bc_unsafe_mass_target=0.01,
+            bc_max_unsafe_mass=0.02,
+            bc_safe_action_uniformity_weight=1.5,
             certificate_samples=1000,
             certification_method="IBP",
             device="cpu",
@@ -773,6 +810,20 @@ class CliParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(argv[argv.index("--bc-margin-mode") + 1], "all")
+        self.assertEqual(
+            argv[argv.index("--bc-initialisation-objective") + 1], "safe_mass"
+        )
+        self.assertEqual(
+            argv[argv.index("--bc-safe-action-entropy-weight") + 1], "1.0"
+        )
+        self.assertEqual(
+            argv[argv.index("--bc-min-safe-action-entropy") + 1], "0.97"
+        )
+        self.assertEqual(argv[argv.index("--bc-unsafe-mass-target") + 1], "0.01")
+        self.assertEqual(argv[argv.index("--bc-max-unsafe-mass") + 1], "0.02")
+        self.assertEqual(
+            argv[argv.index("--bc-safe-action-uniformity-weight") + 1], "1.5"
+        )
         self.assertEqual(argv[argv.index("--rashomon-multi-label-mode") + 1], "all")
         self.assertEqual(argv[argv.index("--rashomon-surrogate") + 1], "logsumexp")
         self.assertEqual(argv[argv.index("--safe-region-shape") + 1], "zonotope")
@@ -796,6 +847,37 @@ class CliParsingTests(unittest.TestCase):
 
         self.assertTrue(reusable)
         self.assertIsNone(reason)
+
+    def test_pipeline_rashomon_cache_includes_entropy_initialisation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_param_bounds.pt").write_bytes(b"bounds")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "all", '
+                    '"safe_action_entropy_weight": 1.0, '
+                    '"min_safe_action_entropy": 0.95}, '
+                    '"rashomon": {"multi_label_mode": "all"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                bc_margin_mode="all",
+                bc_safe_action_entropy_weight=1.0,
+                bc_min_safe_action_entropy=0.95,
+                rashomon_multi_label_mode="all",
+            )
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+            self.assertTrue(reusable)
+            self.assertIsNone(reason)
+
+            args.bc_min_safe_action_entropy = 0.9
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertFalse(reusable)
+        self.assertIn("bc_min_safe_action_entropy mismatch", reason)
 
     def test_pipeline_reuses_zonotope_artifacts_with_matching_shape_and_rank(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

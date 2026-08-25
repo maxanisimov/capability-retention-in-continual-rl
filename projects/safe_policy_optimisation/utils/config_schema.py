@@ -108,6 +108,12 @@ class RashomonSetCfg:
     n_hidden: int = 2
     hidden_dim: int = 64
     bc_margin_mode: str = "any"
+    bc_initialisation_objective: Literal["margin", "safe_mass"] = "margin"
+    bc_safe_action_entropy_weight: float = 0.0
+    bc_min_safe_action_entropy: float = 0.95
+    bc_unsafe_mass_target: float = 0.01
+    bc_max_unsafe_mass: float = 0.02
+    bc_safe_action_uniformity_weight: float = 1.0
     rashomon_surrogate: str = "auto"
     adaptive_rashomon_objective: Literal[
         "weighted_width", "projection_distance"

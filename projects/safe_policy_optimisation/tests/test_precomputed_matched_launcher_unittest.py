@@ -124,6 +124,20 @@ class ExistingBasePolicyTests(unittest.TestCase):
             self.assertEqual(source["path"], str(path.resolve()))
             self.assertEqual(len(source["sha256"]), 64)
 
+            with self.assertRaisesRegex(ValueError, "entropy metadata"):
+                load_base_policy_for_dataset(
+                    path,
+                    dataset,
+                    metadata,
+                    hidden_dim=64,
+                    n_hidden=0,
+                    target_margin=2.0,
+                    margin_mode="any",
+                    device="cpu",
+                    safe_action_entropy_weight=1.0,
+                    min_safe_action_entropy=0.95,
+                )
+
     def test_rejects_incompatible_existing_policy(self) -> None:
         dataset = {
             "state": torch.eye(2),

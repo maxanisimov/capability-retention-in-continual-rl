@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import json
+import math
 import multiprocessing as mp
 import os
 import sys
@@ -155,6 +156,15 @@ def _rashomon_artifacts_reusable(
         return False, f"invalid Rashomon summary metadata: expected object in {summary_path}"
 
     expected_bc_mode = str(getattr(args, "bc_margin_mode", "any"))
+    expected_initialisation_objective = str(
+        getattr(args, "bc_initialisation_objective", "margin")
+    )
+    expected_entropy_weight = float(
+        getattr(args, "bc_safe_action_entropy_weight", 0.0)
+    )
+    expected_min_entropy = float(
+        getattr(args, "bc_min_safe_action_entropy", 0.95)
+    )
     expected_multi_label_mode = str(getattr(args, "rashomon_multi_label_mode", "any"))
     expected_surrogate = str(getattr(args, "rashomon_surrogate", "auto"))
     expected_zonotope_rank = getattr(args, "zonotope_rank", None)
@@ -163,6 +173,12 @@ def _rashomon_artifacts_reusable(
     if not isinstance(base_policy_summary, dict) or not isinstance(rashomon_summary, dict):
         return False, f"invalid Rashomon summary metadata: expected dict sections in {summary_path}"
     actual_bc_mode = base_policy_summary.get("bc_margin_mode")
+    actual_initialisation_objective = base_policy_summary.get(
+        "initialisation_objective", "margin"
+    )
+    actual_entropy_weight = float(
+        base_policy_summary.get("safe_action_entropy_weight", 0.0)
+    )
     actual_multi_label_mode = rashomon_summary.get("multi_label_mode")
     actual_surrogate = rashomon_summary.get("surrogate", "auto")
     actual_shape = rashomon_summary.get("safe_region_shape", "orthotope")
@@ -186,6 +202,58 @@ def _rashomon_artifacts_reusable(
             "bc_margin_mode mismatch: "
             f"requested {expected_bc_mode!r}, artifact has {actual_bc_mode!r}",
         )
+    if actual_initialisation_objective != expected_initialisation_objective:
+        return (
+            False,
+            "bc_initialisation_objective mismatch: "
+            f"requested {expected_initialisation_objective!r}, artifact has "
+            f"{actual_initialisation_objective!r}",
+        )
+    if expected_initialisation_objective == "safe_mass":
+        for argument_name, metadata_name, default in (
+            ("bc_unsafe_mass_target", "unsafe_mass_target", 0.01),
+            ("bc_max_unsafe_mass", "max_unsafe_mass", 0.02),
+            (
+                "bc_safe_action_uniformity_weight",
+                "safe_action_uniformity_weight",
+                1.0,
+            ),
+            ("bc_min_safe_action_entropy", "min_safe_action_entropy", 0.95),
+        ):
+            requested = float(getattr(args, argument_name, default))
+            actual = base_policy_summary.get(metadata_name)
+            if actual is None or not math.isclose(
+                float(actual), requested, rel_tol=0.0, abs_tol=1e-12
+            ):
+                return (
+                    False,
+                    f"{argument_name} mismatch: requested {requested!r}, "
+                    f"artifact has {actual!r}",
+                )
+    if not math.isclose(
+        actual_entropy_weight,
+        expected_entropy_weight,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        return (
+            False,
+            "bc_safe_action_entropy_weight mismatch: "
+            f"requested {expected_entropy_weight!r}, artifact has {actual_entropy_weight!r}",
+        )
+    if expected_entropy_weight > 0.0:
+        actual_min_entropy = base_policy_summary.get("min_safe_action_entropy")
+        if actual_min_entropy is None or not math.isclose(
+            float(actual_min_entropy),
+            expected_min_entropy,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            return (
+                False,
+                "bc_min_safe_action_entropy mismatch: "
+                f"requested {expected_min_entropy!r}, artifact has {actual_min_entropy!r}",
+            )
     if actual_multi_label_mode != expected_multi_label_mode:
         return (
             False,
@@ -394,12 +462,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--certificate-samples", type=int, default=1000)
     parser.add_argument(
+        "--bc-initialisation-objective",
+        choices=("margin", "safe_mass"),
+        default="margin",
+        help=(
+            "Base-policy objective: legacy logit margin, or aggregate safe/unsafe "
+            "probability mass with uniform safe actions."
+        ),
+    )
+    parser.add_argument(
         "--bc-target-margin",
         type=float,
         default=10.0,
         help=(
             "Minimum required gap between the best safe and best unsafe logit "
-            "in every state of the BC-fitted base policy (see "
+            "in every state of a margin-fitted base policy (see "
             "compute_shield_rashomon_set.py). Also sets --linear-init-margin, "
             "so the closed-form linear initialiser and the gradient path (used "
             "whenever the base policy has hidden layers) target the same "
@@ -418,6 +495,42 @@ def build_parser() -> argparse.ArgumentParser:
             "one safe action beats every unsafe action. 'all' requires every "
             "safe action to beat every unsafe action."
         ),
+    )
+    parser.add_argument(
+        "--bc-safe-action-entropy-weight",
+        type=compute_shield_rashomon_set.parse_nonnegative_finite_float,
+        default=0.0,
+        help=(
+            "Weight of the safe-action conditional-entropy regularizer used to "
+            "fit the PSPO base policy. 0 preserves the legacy objective."
+        ),
+    )
+    parser.add_argument(
+        "--bc-min-safe-action-entropy",
+        type=compute_shield_rashomon_set.parse_unit_interval_float,
+        default=0.95,
+        help=(
+            "Required minimum normalized safe-action entropy when the entropy "
+            "regularizer is enabled."
+        ),
+    )
+    parser.add_argument(
+        "--bc-unsafe-mass-target",
+        type=compute_shield_rashomon_set.parse_unsafe_mass_target,
+        default=0.01,
+        help="Target aggregate unsafe probability mass for safe_mass initialisation.",
+    )
+    parser.add_argument(
+        "--bc-max-unsafe-mass",
+        type=compute_shield_rashomon_set.parse_max_unsafe_mass,
+        default=0.02,
+        help="Maximum per-state unsafe mass used by the safe_mass stopping rule.",
+    )
+    parser.add_argument(
+        "--bc-safe-action-uniformity-weight",
+        type=compute_shield_rashomon_set.parse_nonnegative_finite_float,
+        default=1.0,
+        help="Weight of the uniform-safe-action KL term for safe_mass initialisation.",
     )
     parser.add_argument(
         "--rashomon-multi-label-mode",
@@ -1049,15 +1162,26 @@ def _rashomon_set_argv(
             str(getattr(args, "growth_method", "IBP")),
             "--certification-method",
             str(getattr(args, "certification_method", "IBP")),
-            # Sets both the closed-form linear initialiser's target and the
-            # gradient path's target, so they stay matched (see --bc-target-margin
-            # help text).
+            # In margin mode this keeps the closed-form and gradient targets
+            # matched. In safe_mass mode both values are diagnostic only.
             "--bc-target-margin",
             str(getattr(args, "bc_target_margin", 10.0)),
             "--linear-init-margin",
             str(getattr(args, "bc_target_margin", 10.0)),
             "--bc-margin-mode",
             str(getattr(args, "bc_margin_mode", "any")),
+            "--bc-initialisation-objective",
+            str(getattr(args, "bc_initialisation_objective", "margin")),
+            "--bc-safe-action-entropy-weight",
+            str(getattr(args, "bc_safe_action_entropy_weight", 0.0)),
+            "--bc-min-safe-action-entropy",
+            str(getattr(args, "bc_min_safe_action_entropy", 0.95)),
+            "--bc-unsafe-mass-target",
+            str(getattr(args, "bc_unsafe_mass_target", 0.01)),
+            "--bc-max-unsafe-mass",
+            str(getattr(args, "bc_max_unsafe_mass", 0.02)),
+            "--bc-safe-action-uniformity-weight",
+            str(getattr(args, "bc_safe_action_uniformity_weight", 1.0)),
             "--rashomon-multi-label-mode",
             str(getattr(args, "rashomon_multi_label_mode", "any")),
             "--rashomon-surrogate",
@@ -1380,6 +1504,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "cost_gamma": float(args.cost_gamma),
             "cost_gae_lambda": float(args.cost_gae_lambda),
             "lagrangian_multiplier_init": float(args.lagrangian_multiplier_init),
+        },
+        "base_policy_initialisation": {
+            "objective": str(getattr(args, "bc_initialisation_objective", "margin")),
+            "bc_margin_mode": str(args.bc_margin_mode),
+            "bc_target_margin": float(args.bc_target_margin),
+            "unsafe_mass_target": float(getattr(args, "bc_unsafe_mass_target", 0.01)),
+            "max_unsafe_mass": float(getattr(args, "bc_max_unsafe_mass", 0.02)),
+            "safe_action_uniformity_weight": float(
+                getattr(args, "bc_safe_action_uniformity_weight", 1.0)
+            ),
+            "safe_action_entropy_weight": float(args.bc_safe_action_entropy_weight),
+            "min_safe_action_entropy": float(args.bc_min_safe_action_entropy),
         },
         "early_stop_eval_freq": int(args.early_stop_eval_freq),
         "early_stop_eval_episodes": int(args.early_stop_eval_episodes),
