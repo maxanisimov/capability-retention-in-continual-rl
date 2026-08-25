@@ -13,20 +13,20 @@ included in this baseline summary.
 | Bridge Crossing v1 | PPO-Lagrangian | safe_rl_baseline | 10 | 0.100 ± 0.100 | 1.000 ± 0.000 |
 | Bridge Crossing v1 | PPO-PID-Lagrangian | safe_rl_baseline | 10 | 0.000 ± 0.000 | 0.999 ± 0.001 |
 | Bridge Crossing v1 | CPO | safe_rl_baseline | 10 | 0.000 ± 0.000 | 1.000 ± 0.000 |
-| Bridge Crossing v1 | PPO-Shield | safe_rl_baseline | 0 | — | — |
-| Bridge Crossing v1 | PPO-Shield-Nominal | reference_baseline | 0 | — | — |
+| Bridge Crossing v1 | PPO-Shield | safe_rl_baseline | 10 | 1.000 ± 0.000 | 1.000 ± 0.000 |
+| Bridge Crossing v1 | PPO-Shield-Nominal | reference_baseline | 10 | 0.009 ± 0.006 | 0.398 ± 0.090 |
 | Bridge Crossing v2 | PPO | reference_baseline | 10 | 0.880 ± 0.098 | 0.980 ± 0.003 |
 | Bridge Crossing v2 | PPO-Lagrangian | safe_rl_baseline | 10 | 0.394 ± 0.161 | 0.994 ± 0.003 |
 | Bridge Crossing v2 | PPO-PID-Lagrangian | safe_rl_baseline | 10 | 0.476 ± 0.160 | 1.000 ± 0.000 |
 | Bridge Crossing v2 | CPO | safe_rl_baseline | 10 | 0.698 ± 0.152 | 0.998 ± 0.002 |
-| Bridge Crossing v2 | PPO-Shield | safe_rl_baseline | 0 | — | — |
-| Bridge Crossing v2 | PPO-Shield-Nominal | reference_baseline | 0 | — | — |
+| Bridge Crossing v2 | PPO-Shield | safe_rl_baseline | 10 | 0.900 ± 0.100 | 1.000 ± 0.000 |
+| Bridge Crossing v2 | PPO-Shield-Nominal | reference_baseline | 10 | 0.433 ± 0.117 | 0.995 ± 0.005 |
 | Colour Bomb v1 | PPO | reference_baseline | 10 | 1.000 ± 0.000 | 1.000 ± 0.000 |
 | Colour Bomb v1 | PPO-Lagrangian | safe_rl_baseline | 10 | 1.000 ± 0.000 | 1.000 ± 0.000 |
 | Colour Bomb v1 | PPO-PID-Lagrangian | safe_rl_baseline | 10 | 1.000 ± 0.000 | 1.000 ± 0.000 |
 | Colour Bomb v1 | CPO | safe_rl_baseline | 10 | 1.000 ± 0.000 | 1.000 ± 0.000 |
-| Colour Bomb v1 | PPO-Shield | safe_rl_baseline | 0 | — | — |
-| Colour Bomb v1 | PPO-Shield-Nominal | reference_baseline | 0 | — | — |
+| Colour Bomb v1 | PPO-Shield | safe_rl_baseline | 10 | 1.000 ± 0.000 | 1.000 ± 0.000 |
+| Colour Bomb v1 | PPO-Shield-Nominal | reference_baseline | 10 | 0.455 ± 0.107 | 0.885 ± 0.058 |
 | Colour Bomb v2 | PPO | reference_baseline | 10 | 36.387 ± 0.267 | 0.000 ± 0.000 |
 | Colour Bomb v2 | PPO-Lagrangian | safe_rl_baseline | 10 | 0.613 ± 0.285 | 1.000 ± 0.000 |
 | Colour Bomb v2 | PPO-PID-Lagrangian | safe_rl_baseline | 10 | 1.687 ± 1.129 | 1.000 ± 0.000 |
@@ -37,8 +37,8 @@ included in this baseline summary.
 | Media Streaming | PPO-Lagrangian | safe_rl_baseline | 10 | -3.624 ± 0.396 | 1.000 ± 0.000 |
 | Media Streaming | PPO-PID-Lagrangian | safe_rl_baseline | 10 | -4.207 ± 0.357 | 1.000 ± 0.000 |
 | Media Streaming | CPO | safe_rl_baseline | 10 | -24.170 ± 0.013 | 1.000 ± 0.000 |
-| Media Streaming | PPO-Shield | safe_rl_baseline | 0 | — | — |
-| Media Streaming | PPO-Shield-Nominal | reference_baseline | 0 | — | — |
+| Media Streaming | PPO-Shield | safe_rl_baseline | 10 | -1.443 ± 0.017 | 1.000 ± 0.000 |
+| Media Streaming | PPO-Shield-Nominal | reference_baseline | 10 | -0.003 ± 0.003 | 0.006 ± 0.002 |
 | MiniPacman | PPO | reference_baseline | 10 | 0.924 ± 0.016 | 0.217 ± 0.034 |
 | MiniPacman | PPO-Lagrangian | safe_rl_baseline | 10 | 0.592 ± 0.037 | 0.972 ± 0.008 |
 | MiniPacman | PPO-PID-Lagrangian | safe_rl_baseline | 10 | 0.584 ± 0.045 | 0.975 ± 0.011 |
