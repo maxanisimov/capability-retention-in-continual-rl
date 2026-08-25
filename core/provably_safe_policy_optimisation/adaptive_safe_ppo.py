@@ -262,6 +262,7 @@ def _run_rashomon_engine(
     seed: int,
     multi_label_mode: str = "any",
     surrogate: str = "auto",
+    rashomon_objective: Literal["weighted_width", "projection_distance"] = "weighted_width",
     param_l_mask: list[th.Tensor] | None = None,
     param_u_mask: list[th.Tensor] | None = None,
     param_objective_weights: list[th.Tensor] | None = None,
@@ -288,8 +289,13 @@ def _run_rashomon_engine(
         surrogate=surrogate,
         param_l_mask=param_l_mask,
         param_u_mask=param_u_mask,
-        param_objective_weights=param_objective_weights,
+        param_objective_weights=(
+            param_objective_weights
+            if rashomon_objective == "weighted_width"
+            else None
+        ),
         stop_target_params=stop_target_params,
+        rashomon_objective=rashomon_objective,
     )
 
 
@@ -386,6 +392,9 @@ class AdaptiveSafePPO(ProvablySafePPO):
         rashomon_inverse_temperature: int | None = None,
         rashomon_multi_label_mode: Literal["any", "all"] = "all",
         rashomon_surrogate: Literal["auto", "probability", "logsumexp"] = "logsumexp",
+        rashomon_objective: Literal[
+            "weighted_width", "projection_distance"
+        ] = "weighted_width",
         safe_region_shape: Literal["orthotope", "zonotope"] = "orthotope",
         zonotope_rank: int | None = None,
         rashomon_seed: int | None = None,
@@ -437,6 +446,11 @@ class AdaptiveSafePPO(ProvablySafePPO):
         rashomon_surrogate:
             ``"auto"`` preserves the historical per-mode formula;
             ``"logsumexp"`` uses the LSE margin for either mode.
+        rashomon_objective:
+            ``"weighted_width"`` preserves the historical update-weighted
+            interval-width objective. ``"projection_distance"`` grows the
+            certified box to minimize the proposed policy's normalized squared
+            L2 projection distance.
         rashomon_seed:
             Seed for the engine's dataloaders; defaults to the model seed.
         verify_base_policy:
@@ -472,6 +486,11 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 "rashomon_surrogate must be 'auto', 'probability', or 'logsumexp', "
                 f"got {rashomon_surrogate!r}.",
             )
+        if rashomon_objective not in ("weighted_width", "projection_distance"):
+            raise ValueError(
+                "rashomon_objective must be 'weighted_width' or "
+                f"'projection_distance', got {rashomon_objective!r}."
+            )
         if safe_region_shape not in ("orthotope", "zonotope"):
             raise ValueError(
                 "safe_region_shape must be either 'orthotope' or 'zonotope', "
@@ -483,6 +502,16 @@ class AdaptiveSafePPO(ProvablySafePPO):
             raise ValueError("Directional safe-region growth requires an orthotope region.")
         if stop_when_proposal_contained and safe_region_shape != "orthotope":
             raise ValueError("Proposal-containment stopping requires an orthotope region.")
+        if rashomon_objective == "projection_distance" and not directional_rashomon_growth:
+            raise ValueError(
+                "rashomon_objective='projection_distance' requires directional "
+                "Rashomon growth."
+            )
+        if rashomon_objective == "projection_distance" and not stop_when_proposal_contained:
+            raise ValueError(
+                "rashomon_objective='projection_distance' requires "
+                "stop_when_proposal_contained=True."
+            )
 
         self._adaptive_granularity: AdaptiveGranularity = adaptive_granularity
         self._adaptive_frequency = int(adaptive_frequency)
@@ -507,6 +536,9 @@ class AdaptiveSafePPO(ProvablySafePPO):
         self._rashomon_surrogate: Literal[
             "auto", "probability", "logsumexp"
         ] = rashomon_surrogate
+        self._rashomon_objective: Literal[
+            "weighted_width", "projection_distance"
+        ] = rashomon_objective
         from src.verification import verify
 
         self._rashomon_resolved_surrogate = verify.resolve_surrogate_form(
@@ -798,6 +830,7 @@ class AdaptiveSafePPO(ProvablySafePPO):
                     seed=int(seed),
                     multi_label_mode=self._rashomon_multi_label_mode,
                     surrogate=self._rashomon_surrogate,
+                    rashomon_objective=self._rashomon_objective,
                     param_l_mask=param_l_mask,
                     param_u_mask=param_u_mask,
                     param_objective_weights=param_objective_weights,
@@ -970,6 +1003,7 @@ class AdaptiveSafePPO(ProvablySafePPO):
             "rashomon_multi_label_mode": self._rashomon_multi_label_mode,
             "rashomon_surrogate": self._rashomon_surrogate,
             "rashomon_resolved_surrogate": self._rashomon_resolved_surrogate,
+            "rashomon_objective": self._rashomon_objective,
             "directional_rashomon_growth": self._directional_rashomon_growth,
             "stop_when_proposal_contained": self._stop_when_proposal_contained,
             "directional_growth_failures": int(self._directional_growth_failures),

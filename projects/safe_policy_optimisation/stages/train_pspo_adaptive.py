@@ -268,6 +268,17 @@ def build_parser() -> argparse.ArgumentParser:
             "preserves the historical per-mode formula."
         ),
     )
+    parser.add_argument(
+        "--rashomon-objective",
+        choices=("weighted_width", "projection_distance"),
+        default="weighted_width",
+        help=(
+            "Certified-region growth objective. 'weighted_width' preserves the "
+            "historical update-magnitude-weighted width objective; "
+            "'projection_distance' minimizes the proposed policy's normalized "
+            "squared L2 distance to the certified box."
+        ),
+    )
     parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
     parser.add_argument(
         "--zonotope-rank",
@@ -482,6 +493,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             rashomon_inverse_temperature=args.rashomon_inverse_temp,
             rashomon_multi_label_mode=args.rashomon_multi_label_mode,
             rashomon_surrogate=args.rashomon_surrogate,
+            rashomon_objective=args.rashomon_objective,
             safe_region_shape=args.safe_region_shape,
             zonotope_rank=args.zonotope_rank,
             rashomon_seed=args.seed,
@@ -615,6 +627,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "rashomon_inverse_temperature": args.rashomon_inverse_temp,
             "rashomon_multi_label_mode": args.rashomon_multi_label_mode,
             "rashomon_surrogate": args.rashomon_surrogate,
+            "rashomon_objective": args.rashomon_objective,
             "rashomon_resolved_surrogate": adaptive_diagnostics.get(
                 "rashomon_resolved_surrogate"
             ),

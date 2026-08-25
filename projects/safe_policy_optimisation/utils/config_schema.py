@@ -109,6 +109,9 @@ class RashomonSetCfg:
     hidden_dim: int = 64
     bc_margin_mode: str = "any"
     rashomon_surrogate: str = "auto"
+    adaptive_rashomon_objective: Literal[
+        "weighted_width", "projection_distance"
+    ] = "weighted_width"
 
 
 @dataclass

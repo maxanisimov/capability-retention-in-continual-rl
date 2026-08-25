@@ -439,6 +439,16 @@ def build_parser() -> argparse.ArgumentParser:
             "historical per-mode formula; 'logsumexp' uses LSE for both modes."
         ),
     )
+    parser.add_argument(
+        "--adaptive-rashomon-objective",
+        choices=("weighted_width", "projection_distance"),
+        default="weighted_width",
+        help=(
+            "Region-growth objective used only by PSPO adaptive. "
+            "'projection_distance' prioritizes carrying each reward-driven PPO "
+            "proposal into the next certified region."
+        ),
+    )
     parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
     parser.add_argument(
         "--zonotope-rank",
@@ -1219,6 +1229,8 @@ def _rashomon_adaptive_argv(
         str(getattr(args, "rashomon_multi_label_mode", "any")),
         "--rashomon-surrogate",
         str(getattr(args, "rashomon_surrogate", "auto")),
+        "--rashomon-objective",
+        str(getattr(args, "adaptive_rashomon_objective", "weighted_width")),
         "--safe-region-shape",
         str(getattr(args, "safe_region_shape", "orthotope")),
     ]
@@ -1382,6 +1394,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "rashomon_evaluation_policy": args.rashomon_evaluation_policy,
         "safe_region_shape": args.safe_region_shape,
         "rashomon_surrogate": args.rashomon_surrogate,
+        "adaptive_rashomon_objective": args.adaptive_rashomon_objective,
         "zonotope_rank": args.zonotope_rank,
         "shield_path": str(shield_path),
         "stages": {},

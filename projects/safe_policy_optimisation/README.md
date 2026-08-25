@@ -344,8 +344,14 @@ base policy and shield already exist:
   --n-iters 100 \
   --rashomon-batch-size auto \
   --rashomon-multi-label-mode all \
-  --surrogate logsumexp
+  --surrogate logsumexp \
+  --rashomon-objective projection_distance
 ```
+
+`projection_distance` grows each certified orthotope to minimize the proposed
+PPO policy's normalized squared L2 distance to that region. Exact certification
+and proposal-containment checks remain mandatory. The backward-compatible
+default is `weighted_width`.
 
 See [running_experiments.md](docs/running_experiments.md) for ablations and
 additional launcher details.

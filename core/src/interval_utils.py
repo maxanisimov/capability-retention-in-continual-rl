@@ -5,7 +5,7 @@ from src.rashomon_spec import AccuracyTarget, RashomonCertificate, RashomonResul
 
 import torch
 import torch.nn as nn
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Literal
 import copy
 import cooper
 import tqdm
@@ -112,6 +112,49 @@ def _magnitude_weighted_objective_fn(
         raise ValueError(
             "Magnitude-weighted objective returned NaN. Check the model "
             "parameters, bounds, and proposed-update weights."
+        )
+    return objective
+
+
+def _projection_distance_squared(
+    bounded_model: IntervalBoundedModel,
+    target_params: list[torch.Tensor],
+) -> torch.Tensor:
+    """Squared Euclidean distance from ``target_params`` to a parameter box."""
+
+    distance = torch.tensor(0.0, device=bounded_model.device)
+    for lower, upper, target in zip(
+        bounded_model.param_l, bounded_model.param_u, target_params
+    ):
+        below = torch.relu(lower - target)
+        above = torch.relu(target - upper)
+        distance = distance + below.square().sum() + above.square().sum()
+    return distance
+
+
+def _projection_distance_objective_fn(
+    bounded_model: IntervalBoundedModel,
+    _alpha: float,
+    target_params: list[torch.Tensor],
+    initial_distance_squared: torch.Tensor,
+) -> torch.Tensor:
+    """Maximize normalized negative L2 projection distance to a target policy.
+
+    The objective is ``-d(target, box)^2 / d(target, initial_box)^2``. It starts
+    at ``-1`` for a target outside the initial box and reaches its maximum of
+    zero exactly when the target is contained. Normalization makes its scale
+    independent of the magnitude of the PPO proposal.
+    """
+
+    distance_squared = _projection_distance_squared(bounded_model, target_params)
+    normalizer = initial_distance_squared.to(
+        device=distance_squared.device, dtype=distance_squared.dtype
+    ).clamp_min(1e-12)
+    objective = -distance_squared / normalizer
+    if torch.isnan(objective):
+        raise ValueError(
+            "Projection-distance objective returned NaN. Check the parameter "
+            "bounds and target policy parameters."
         )
     return objective
 
@@ -830,6 +873,7 @@ def compute_rashomon_set(
     param_u_mask: Iterable | None = None,
     param_objective_weights: Iterable | None = None,
     stop_target_params: Iterable | None = None,
+    rashomon_objective: Literal["weighted_width", "projection_distance"] = "weighted_width",
     group_by: Callable[[torch.Tensor], torch.Tensor] | None = None,
     has_input_intervals: bool = False,
     growth_method: str = "IBP",
@@ -894,6 +938,12 @@ def compute_rashomon_set(
         stop_target_params (Iterable, optional): Proposed parameter tensors. When the current
             box contains this target and the box passes full certification, optimization stops
             early. Thus, `n_iters` becomes a maximum rather than a mandatory iteration count.
+        rashomon_objective (str): Region-growth objective. ``"weighted_width"`` preserves
+            the historical log-volume/width objective (and uses
+            ``param_objective_weights`` when supplied). ``"projection_distance"``
+            maximizes normalized negative squared L2 distance from
+            ``stop_target_params`` to the box, directly prioritizing containment of the
+            proposed policy update.
         group_by (Callable, optional): Function applied to each minibatch's `y` (the per-row multi-hot
             admissible-set tensor) producing an integer group-id tensor. Each unique group gets its own
             Lagrangian constraint with its own target accuracy and calibrated temperature, resolved via
@@ -953,6 +1003,11 @@ def compute_rashomon_set(
         raise ValueError(
             f"Unsupported multi_label_mode={multi_label_mode!r}. Expected 'any' or 'all'."
         )
+    if rashomon_objective not in {"weighted_width", "projection_distance"}:
+        raise ValueError(
+            "rashomon_objective must be 'weighted_width' or "
+            f"'projection_distance', got {rashomon_objective!r}."
+        )
     resolved_surrogate = verify.resolve_surrogate_form(multi_label_mode, surrogate)
     from src.verification.registry import get_method
     from src.verification.compatibility import check_model_compatibility
@@ -973,11 +1028,37 @@ def compute_rashomon_set(
     validated_objective_weights = _validate_param_objective_weights(
         param_objective_weights, bounded_model
     )
+    validated_stop_target = _validate_stop_target_params(stop_target_params, bounded_model)
+    if rashomon_objective == "projection_distance" and validated_stop_target is None:
+        raise ValueError(
+            "rashomon_objective='projection_distance' requires stop_target_params."
+        )
     if custom_objective is not None and validated_objective_weights is not None:
         raise ValueError(
             "custom_objective and param_objective_weights cannot be supplied together."
         )
-    if custom_objective is not None:
+    if custom_objective is not None and rashomon_objective != "weighted_width":
+        raise ValueError(
+            "custom_objective cannot be combined with "
+            "rashomon_objective='projection_distance'."
+        )
+    if rashomon_objective == "projection_distance":
+        if validated_objective_weights is not None:
+            raise ValueError(
+                "param_objective_weights cannot be combined with "
+                "rashomon_objective='projection_distance'."
+            )
+        assert validated_stop_target is not None
+        initial_projection_distance_squared = _projection_distance_squared(
+            bounded_model, validated_stop_target
+        ).detach()
+        objective_fn = lambda current_model, alpha: _projection_distance_objective_fn(
+            current_model,
+            alpha,
+            validated_stop_target,
+            initial_projection_distance_squared,
+        )
+    elif custom_objective is not None:
         objective_fn = custom_objective
     elif validated_objective_weights is not None:
         objective_fn = lambda current_model, alpha: _magnitude_weighted_objective_fn(
@@ -985,7 +1066,6 @@ def compute_rashomon_set(
         )
     else:
         objective_fn = _objective_fn
-    validated_stop_target = _validate_stop_target_params(stop_target_params, bounded_model)
     hooks = []
     if effective_param_l_mask is not None:
         for pl, mask in zip(bounded_model.param_l, effective_param_l_mask):

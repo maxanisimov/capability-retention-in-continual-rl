@@ -166,6 +166,20 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._make(rashomon_surrogate="unknown")
 
+    def test_invalid_rashomon_objective_raises(self) -> None:
+        with self.assertRaisesRegex(ValueError, "rashomon_objective"):
+            self._make(rashomon_objective="unknown")
+
+    def test_projection_distance_requires_directional_target(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires directional"):
+            self._make(rashomon_objective="projection_distance")
+        with self.assertRaisesRegex(ValueError, "stop_when_proposal_contained"):
+            self._make(
+                rashomon_objective="projection_distance",
+                directional_rashomon_growth=True,
+                stop_when_proposal_contained=False,
+            )
+
     def test_default_strategy_is_rashomon_project(self) -> None:
         model = self._make()
         diag = model.adaptive_diagnostics()
@@ -287,6 +301,32 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         diag = model.adaptive_diagnostics()
         self.assertEqual(diag["rashomon_surrogate"], "logsumexp")
         self.assertEqual(diag["rashomon_resolved_surrogate"], "logsumexp")
+
+    def test_projection_distance_is_forwarded_with_candidate_target(self) -> None:
+        record: list = []
+        self._patch_engine(record)
+        model = self._make(
+            rashomon_objective="projection_distance",
+            directional_rashomon_growth=True,
+            stop_when_proposal_contained=True,
+        )
+        with th.no_grad():
+            model._live_actor_params[0].reshape(-1)[0].add_(0.25)
+        candidate = [param.detach().clone() for param in model._live_actor_params]
+        model._verify_greedy_safe = lambda: False  # type: ignore[method-assign]
+
+        model._accept_or_project_candidate()
+
+        self.assertEqual(len(record), 1)
+        self.assertEqual(record[0]["kwargs"]["rashomon_objective"], "projection_distance")
+        for actual, expected in zip(
+            record[0]["kwargs"]["stop_target_params"], candidate
+        ):
+            self.assertTrue(th.equal(actual, expected))
+        self.assertEqual(
+            model.adaptive_diagnostics()["rashomon_objective"],
+            "projection_distance",
+        )
 
     def test_no_certified_box_falls_back_to_revert(self) -> None:
         record: list = []
