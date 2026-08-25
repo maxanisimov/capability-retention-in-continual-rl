@@ -1073,7 +1073,20 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.directional_rashomon_growth)
         self.assertEqual(args.rashomon_multi_label_mode, "all")
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(args.rashomon_objective, "weighted_width")
         self.assertEqual(args.rashomon_batch_size, "auto")
+
+        projection_args = parse_adaptive_safe_ppo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--rashomon-objective",
+                "projection_distance",
+            ]
+        )
+        self.assertEqual(projection_args.rashomon_objective, "projection_distance")
 
     def test_unified_pspo_adaptive_accepts_static_initial_region_command(self) -> None:
         args = parse_adaptive_safe_ppo_args(

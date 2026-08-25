@@ -42,8 +42,14 @@ class PspoAdaptiveMultiEnvLauncherTests(unittest.TestCase):
         self.assertIn("--envs", sections["experiment selection:"])
         self.assertIn("--freq", sections["PPO update settings:"])
         self.assertNotIn("--adaptive-granularity", help_text)
-        self.assertIn("--architecture", sections["policy initialisation:"])
-        self.assertIn("--lid-n-iters", sections["LID settings:"])
+        self.assertIn(
+            "--bc-safe-action-entropy-weight",
+            sections["policy initialisation:"],
+        )
+        self.assertIn(
+            "--lid-objective",
+            sections["LID settings:"],
+        )
         self.assertIn("--minimum-idle", sections["CPU allocation and execution:"])
 
     def test_lid_cli_names_replace_rashomon_names_in_help(self) -> None:
@@ -108,6 +114,7 @@ class PspoAdaptiveMultiEnvLauncherTests(unittest.TestCase):
         self.assertEqual(
             safety_demo_sizes(list(DEFAULT_ENVS)),
             {
+                "media_streaming": 441,
                 "colour_bomb": 74,
                 "colour_bomb_v2": 856,
                 "bridge_crossing": 332,
@@ -115,6 +122,12 @@ class PspoAdaptiveMultiEnvLauncherTests(unittest.TestCase):
                 "mini_pacman": 8880,
             },
         )
+
+    def test_media_streaming_is_a_supported_default_environment(self) -> None:
+        args = build_parser().parse_args(["--envs", "media_streaming"])
+
+        self.assertIn("media_streaming", DEFAULT_ENVS)
+        self.assertEqual(args.envs, ["media_streaming"])
 
     def test_mpstat_parser_and_idle_selection(self) -> None:
         output = """
@@ -162,10 +175,17 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         self.assertEqual(env["RASHOMON_MULTI_LABEL_MODE"], "all")
         self.assertEqual(env["RASHOMON_SURROGATE"], "logsumexp")
         self.assertEqual(env["RASHOMON_OBJECTIVE"], "weighted_width")
+        self.assertEqual(env["VERIFY_FIRST"], "false")
         self.assertEqual(env["RASHOMON_BATCH_SIZE"], "auto")
         self.assertEqual(env["RASHOMON_CERTIFICATE_SAMPLES"], "all")
         self.assertEqual(env["RASHOMON_N_ITERS"], "200")
         self.assertEqual(env["BC_TARGET_MARGIN"], "2.0")
+        self.assertEqual(env["BC_SAFE_ACTION_ENTROPY_WEIGHT"], "0.0")
+        self.assertEqual(env["BC_MIN_SAFE_ACTION_ENTROPY"], "0.95")
+        self.assertEqual(env["BC_INITIALISATION_OBJECTIVE"], "margin")
+        self.assertEqual(env["BC_UNSAFE_MASS_TARGET"], "0.01")
+        self.assertEqual(env["BC_MAX_UNSAFE_MASS"], "0.02")
+        self.assertEqual(env["BC_SAFE_ACTION_UNIFORMITY_WEIGHT"], "1.0")
         self.assertEqual(env["DIRECTIONAL_RASHOMON_GROWTH"], "1")
         self.assertNotIn("ADAPTIVE_GRANULARITY", env)
         self.assertEqual(env["ADAPTIVE_FREQ"], "update")
@@ -182,6 +202,102 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
             dry_run=True,
         )
         self.assertEqual(one_hidden["ARCHITECTURE"], "one_hidden")
+
+        projection = build_launch_environment(
+            environment="mini_pacman",
+            seeds=[0],
+            cpu_ids=[17],
+            architecture="two_hidden",
+            run_name="projection_run",
+            n_iters=200,
+            dry_run=True,
+            adaptive_freq="rollout",
+            rashomon_objective="projection_distance",
+        )
+        self.assertEqual(projection["RASHOMON_OBJECTIVE"], "projection_distance")
+
+        verify_first = build_launch_environment(
+            environment="mini_pacman",
+            seeds=[0],
+            cpu_ids=[17],
+            architecture="two_hidden",
+            run_name="verify_first_run",
+            n_iters=200,
+            dry_run=True,
+            verify_first=True,
+        )
+        self.assertEqual(verify_first["VERIFY_FIRST"], "true")
+
+        entropy = build_launch_environment(
+            environment="mini_pacman",
+            seeds=[0],
+            cpu_ids=[17],
+            architecture="two_hidden",
+            run_name="entropy_run",
+            n_iters=200,
+            dry_run=True,
+            bc_safe_action_entropy_weight=1.0,
+            bc_min_safe_action_entropy=0.97,
+        )
+        self.assertEqual(entropy["BC_SAFE_ACTION_ENTROPY_WEIGHT"], "1.0")
+        self.assertEqual(entropy["BC_MIN_SAFE_ACTION_ENTROPY"], "0.97")
+
+        safe_mass = build_launch_environment(
+            environment="mini_pacman",
+            seeds=[0],
+            cpu_ids=[17],
+            architecture="two_hidden",
+            run_name="safe_mass_run",
+            n_iters=200,
+            dry_run=True,
+            bc_initialisation_objective="safe_mass",
+            bc_unsafe_mass_target=0.02,
+            bc_max_unsafe_mass=0.03,
+            bc_safe_action_uniformity_weight=1.5,
+        )
+        self.assertEqual(safe_mass["BC_INITIALISATION_OBJECTIVE"], "safe_mass")
+        self.assertEqual(safe_mass["BC_UNSAFE_MASS_TARGET"], "0.02")
+        self.assertEqual(safe_mass["BC_MAX_UNSAFE_MASS"], "0.03")
+        self.assertEqual(safe_mass["BC_SAFE_ACTION_UNIFORMITY_WEIGHT"], "1.5")
+
+    def test_safe_action_entropy_cli_is_opt_in(self) -> None:
+        defaults = build_parser().parse_args([])
+        self.assertEqual(defaults.bc_safe_action_entropy_weight, 0.0)
+        self.assertEqual(defaults.bc_min_safe_action_entropy, 0.95)
+        self.assertEqual(defaults.bc_initialisation_objective, "margin")
+        self.assertEqual(defaults.bc_unsafe_mass_target, 0.01)
+        self.assertEqual(defaults.bc_max_unsafe_mass, 0.02)
+        self.assertEqual(defaults.bc_safe_action_uniformity_weight, 1.0)
+
+        enabled = build_parser().parse_args(
+            [
+                "--bc-safe-action-entropy-weight",
+                "1.0",
+                "--bc-min-safe-action-entropy",
+                "0.97",
+                "--bc-initialisation-objective",
+                "safe_mass",
+                "--bc-unsafe-mass-target",
+                "0.02",
+                "--bc-max-unsafe-mass",
+                "0.03",
+                "--bc-safe-action-uniformity-weight",
+                "1.5",
+            ]
+        )
+        self.assertEqual(enabled.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(enabled.bc_min_safe_action_entropy, 0.97)
+        self.assertEqual(enabled.bc_initialisation_objective, "safe_mass")
+        self.assertEqual(enabled.bc_unsafe_mass_target, 0.02)
+        self.assertEqual(enabled.bc_max_unsafe_mass, 0.03)
+        self.assertEqual(enabled.bc_safe_action_uniformity_weight, 1.5)
+
+    def test_verify_first_cli_defaults_false_and_accepts_true(self) -> None:
+        self.assertEqual(build_parser().parse_args([]).verify_first, "false")
+        self.assertEqual(
+            build_parser().parse_args(["--verify-first", "true"]).verify_first,
+            "true",
+        )
 
     def test_frequency_cli_defaults_and_reaches_the_launcher(self) -> None:
         self.assertEqual(build_parser().parse_args([]).freq, "update")

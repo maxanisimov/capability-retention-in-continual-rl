@@ -1,9 +1,10 @@
-"""Launch region-first PSPO adaptive on idle, disjoint CPU cores."""
+"""Launch PSPO adaptive on idle, disjoint CPU cores."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -25,6 +26,7 @@ ONE_ENV_LAUNCHER = (
     / "projects/safe_policy_optimisation/scripts/run_pspo_adaptive_one_env.sh"
 )
 DEFAULT_ENVS = (
+    "media_streaming",
     "colour_bomb",
     "colour_bomb_v2",
     "bridge_crossing",
@@ -36,6 +38,7 @@ ARCHITECTURES = {
     "two_hidden": {"n_hidden": 2, "hidden_dim": 64, "activation": "Tanh"},
 }
 PIPELINES = {
+    "media_streaming": "paper_2503_07671_media_streaming",
     "colour_bomb": "paper_2503_07671_colour_bomb",
     "colour_bomb_v2": "paper_2503_07671_colour_bomb_v2",
     "bridge_crossing": "paper_2503_07671_bridge_crossing",
@@ -137,6 +140,13 @@ def build_launch_environment(
     adaptive_freq: str = "update",
     directional: bool = True,
     rashomon_objective: str = "weighted_width",
+    verify_first: bool = False,
+    bc_safe_action_entropy_weight: float = 0.0,
+    bc_min_safe_action_entropy: float = 0.95,
+    bc_initialisation_objective: str = "margin",
+    bc_unsafe_mass_target: float = 0.01,
+    bc_max_unsafe_mass: float = 0.02,
+    bc_safe_action_uniformity_weight: float = 1.0,
 ) -> dict[str, str]:
     """Build the exact one-environment launcher configuration."""
 
@@ -151,10 +161,19 @@ def build_launch_environment(
         "RASHOMON_MULTI_LABEL_MODE": "all",
         "RASHOMON_SURROGATE": "logsumexp",
         "RASHOMON_OBJECTIVE": rashomon_objective,
+        "VERIFY_FIRST": "true" if verify_first else "false",
         "RASHOMON_BATCH_SIZE": "auto",
         "RASHOMON_CERTIFICATE_SAMPLES": "all",
         "RASHOMON_N_ITERS": str(n_iters),
         "BC_TARGET_MARGIN": "2.0",
+        "BC_SAFE_ACTION_ENTROPY_WEIGHT": str(bc_safe_action_entropy_weight),
+        "BC_MIN_SAFE_ACTION_ENTROPY": str(bc_min_safe_action_entropy),
+        "BC_INITIALISATION_OBJECTIVE": bc_initialisation_objective,
+        "BC_UNSAFE_MASS_TARGET": str(bc_unsafe_mass_target),
+        "BC_MAX_UNSAFE_MASS": str(bc_max_unsafe_mass),
+        "BC_SAFE_ACTION_UNIFORMITY_WEIGHT": str(
+            bc_safe_action_uniformity_weight
+        ),
         "DIRECTIONAL_RASHOMON_GROWTH": "1" if directional else "0",
         "ADAPTIVE_FREQ": adaptive_freq,
         "STOP_WHEN_PROPOSAL_CONTAINED": "1",
@@ -172,8 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Launch PSPO adaptive with directional Local Independence Domain "
-            "(LID) growth and all-safe-logit semantics for every MASA environment "
-            "except Media Streaming."
+            "(LID) growth and all-safe-logit semantics across the paper MASA "
+            "environments."
         )
     )
 
@@ -200,6 +219,45 @@ def build_parser() -> argparse.ArgumentParser:
         default="two_hidden",
         help="Policy architecture. Defaults to the original two-hidden-layer experiment.",
     )
+    initialisation.add_argument(
+        "--bc-initialisation-objective",
+        choices=("margin", "safe_mass"),
+        default="margin",
+        help="Use the legacy margin loss or the new probability-mass loss.",
+    )
+    initialisation.add_argument(
+        "--bc-safe-action-entropy-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight of the safe-action conditional-entropy regularizer used for "
+            "base-policy fitting. 0 preserves the legacy initializer."
+        ),
+    )
+    initialisation.add_argument(
+        "--bc-min-safe-action-entropy",
+        type=float,
+        default=0.95,
+        help="Required minimum normalized safe-action entropy when enabled.",
+    )
+    initialisation.add_argument(
+        "--bc-unsafe-mass-target",
+        type=float,
+        default=0.01,
+        help="Finite unsafe-mass target for the safe_mass objective.",
+    )
+    initialisation.add_argument(
+        "--bc-max-unsafe-mass",
+        type=float,
+        default=0.02,
+        help="Per-state unsafe-mass threshold for stopping safe_mass fitting.",
+    )
+    initialisation.add_argument(
+        "--bc-safe-action-uniformity-weight",
+        type=float,
+        default=1.0,
+        help="Weight of the uniform-safe-action KL in the safe_mass objective.",
+    )
 
     lid = parser.add_argument_group("LID settings")
     lid.add_argument(
@@ -222,6 +280,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("weighted_width", "projection_distance"),
         default="weighted_width",
         help="Objective used to grow each certified LID.",
+    )
+    lid.add_argument(
+        "--verify-first",
+        choices=("true", "false"),
+        default="false",
+        help=(
+            "Whether to verify a proposed policy before constructing its LID. "
+            "Defaults to LID-first behavior (false)."
+        ),
     )
 
     # Keep historical spellings accepted so existing launch commands continue to
@@ -301,12 +368,43 @@ def _validate_args(args: argparse.Namespace) -> None:
     unknown = sorted(set(args.envs) - set(DEFAULT_ENVS))
     if unknown:
         raise SystemExit(
-            f"Unsupported environments {unknown}; Media Streaming is intentionally excluded"
+            f"Unsupported environments {unknown}; expected choices from {DEFAULT_ENVS}"
         )
     if not args.seeds or len(set(args.seeds)) != len(args.seeds):
         raise SystemExit("--seeds must contain distinct values")
     if args.rashomon_n_iters <= 0:
         raise SystemExit("--lid-n-iters must be positive")
+    if (
+        not math.isfinite(args.bc_safe_action_entropy_weight)
+        or args.bc_safe_action_entropy_weight < 0.0
+    ):
+        raise SystemExit(
+            "--bc-safe-action-entropy-weight must be finite and non-negative"
+        )
+    if (
+        not math.isfinite(args.bc_min_safe_action_entropy)
+        or not 0.0 <= args.bc_min_safe_action_entropy <= 1.0
+    ):
+        raise SystemExit("--bc-min-safe-action-entropy must lie in [0, 1]")
+    if (
+        not math.isfinite(args.bc_unsafe_mass_target)
+        or not 0.0 < args.bc_unsafe_mass_target < 0.5
+    ):
+        raise SystemExit("--bc-unsafe-mass-target must lie strictly between 0 and 0.5")
+    if (
+        not math.isfinite(args.bc_max_unsafe_mass)
+        or not 0.0 <= args.bc_max_unsafe_mass < 0.5
+    ):
+        raise SystemExit("--bc-max-unsafe-mass must lie in [0, 0.5)")
+    if args.bc_unsafe_mass_target > args.bc_max_unsafe_mass:
+        raise SystemExit("--bc-unsafe-mass-target must not exceed --bc-max-unsafe-mass")
+    if (
+        not math.isfinite(args.bc_safe_action_uniformity_weight)
+        or args.bc_safe_action_uniformity_weight < 0.0
+    ):
+        raise SystemExit(
+            "--bc-safe-action-uniformity-weight must be finite and non-negative"
+        )
     if not 0.0 <= args.minimum_idle <= 100.0:
         raise SystemExit("--minimum-idle must lie in [0, 100]")
     if args.freq is not None:
@@ -322,6 +420,8 @@ def _validate_args(args: argparse.Namespace) -> None:
                 raise SystemExit("numeric --freq must be positive")
     if args.freq == "once" and args.directional != "false":
         raise SystemExit("--freq once requires --directional false")
+    if args.freq == "once" and args.verify_first != "false":
+        raise SystemExit("--freq once requires --verify-first false")
     if (
         args.rashomon_objective == "projection_distance"
         and args.directional != "true"
@@ -342,6 +442,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.rashomon_objective != "weighted_width":
         default_run_name += f"_{args.rashomon_objective}"
+    if args.verify_first == "true":
+        default_run_name += "_verify_first"
+    if args.bc_safe_action_entropy_weight > 0.0:
+        entropy_weight_tag = format(args.bc_safe_action_entropy_weight, "g").replace(
+            ".", "p"
+        )
+        min_entropy_tag = format(args.bc_min_safe_action_entropy, "g").replace(
+            ".", "p"
+        )
+        default_run_name += f"_safe_entropy_w{entropy_weight_tag}_min{min_entropy_tag}"
+    if args.bc_initialisation_objective == "safe_mass":
+        epsilon_tag = format(args.bc_unsafe_mass_target, "g").replace(".", "p")
+        default_run_name += f"_safe_mass_eps{epsilon_tag}"
     run_name = args.run_name or default_run_name
     required = len(environments) * len(seeds)
     allowed_cpus = set(os.sched_getaffinity(0))
@@ -385,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
             "architecture": architecture,
             **architecture_settings,
             "region_update_mode": "replace",
+            "verify_first": args.verify_first == "true",
             "directional_rashomon_growth": args.directional == "true",
             "stop_when_proposal_contained": args.directional == "true",
             "rashomon_n_iters": int(args.rashomon_n_iters),
@@ -393,6 +507,14 @@ def main(argv: list[str] | None = None) -> int:
             "rashomon_surrogate": "logsumexp",
             "rashomon_objective": str(args.rashomon_objective),
             "bc_target_margin": 2.0,
+            "bc_safe_action_entropy_weight": float(args.bc_safe_action_entropy_weight),
+            "bc_min_safe_action_entropy": float(args.bc_min_safe_action_entropy),
+            "bc_initialisation_objective": args.bc_initialisation_objective,
+            "bc_unsafe_mass_target": float(args.bc_unsafe_mass_target),
+            "bc_max_unsafe_mass": float(args.bc_max_unsafe_mass),
+            "bc_safe_action_uniformity_weight": float(
+                args.bc_safe_action_uniformity_weight
+            ),
             "safety_demo_sizes": dataset_sizes,
             "rashomon_batch_size": dataset_sizes,
             "certificate_samples": dataset_sizes,
@@ -413,6 +535,15 @@ def main(argv: list[str] | None = None) -> int:
                 adaptive_freq=args.freq,
                 directional=args.directional == "true",
                 rashomon_objective=args.rashomon_objective,
+                verify_first=args.verify_first == "true",
+                bc_safe_action_entropy_weight=args.bc_safe_action_entropy_weight,
+                bc_min_safe_action_entropy=args.bc_min_safe_action_entropy,
+                bc_initialisation_objective=args.bc_initialisation_objective,
+                bc_unsafe_mass_target=args.bc_unsafe_mass_target,
+                bc_max_unsafe_mass=args.bc_max_unsafe_mass,
+                bc_safe_action_uniformity_weight=(
+                    args.bc_safe_action_uniformity_weight
+                ),
             )
             completed = subprocess.run(
                 ["bash", str(ONE_ENV_LAUNCHER)],
@@ -444,6 +575,15 @@ def main(argv: list[str] | None = None) -> int:
             adaptive_freq=args.freq,
             directional=args.directional == "true",
             rashomon_objective=args.rashomon_objective,
+            verify_first=args.verify_first == "true",
+            bc_safe_action_entropy_weight=args.bc_safe_action_entropy_weight,
+            bc_min_safe_action_entropy=args.bc_min_safe_action_entropy,
+            bc_initialisation_objective=args.bc_initialisation_objective,
+            bc_unsafe_mass_target=args.bc_unsafe_mass_target,
+            bc_max_unsafe_mass=args.bc_max_unsafe_mass,
+            bc_safe_action_uniformity_weight=(
+                args.bc_safe_action_uniformity_weight
+            ),
         )
         log_handle = (log_dir / f"{environment}.log").open("w")
         process = subprocess.Popen(

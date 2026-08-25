@@ -302,6 +302,7 @@ SEEDS="0 1 2 3 4 5 6 7 8 9" \
 CPU_IDS=0-9 \
 ARCHITECTURE=two_hidden \
 RASHOMON_N_ITERS=200 \
+RASHOMON_OBJECTIVE=projection_distance \
 RUN_NAME=pspo_adaptive_bridge_v2_two_hidden \
   projects/safe_policy_optimisation/scripts/run_pspo_adaptive_one_env.sh
 ```
@@ -314,7 +315,8 @@ automatic idle-core selection, use:
   projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
   --architecture two_hidden \
   --lid-n-iters 200 \
-  --lid-objective weighted_width
+  --lid-objective projection_distance \
+  --verify-first false
 ```
 
 The former launcher spellings `--rashomon-n-iters` and
@@ -323,9 +325,57 @@ warning and will be removed in the next CLI-breaking cleanup. Use
 `--freq rollout` in place of the removed `--adaptive-granularity train_phase`;
 the default frequency is `update`.
 
-This specialised multi-environment launcher excludes Media Streaming by
-default. Pass `--cpu-ids`, `--envs`, and `--seeds` for an explicit allocation,
-or `--dry-run` to inspect every resolved command without starting training.
+Set `--verify-first true` for the verify-then-project ablation: each enforced
+PPO proposal is checked exactly and a Rashomon region is constructed only when
+the proposal itself is unsafe. The default remains region-first (`false`).
+
+Safe-action-entropy initialisation is an opt-in, reward-free variant. It keeps
+the existing safe-mass and margin objectives, while discouraging the initial
+policy from collapsing onto one action when several actions are certified safe.
+For example:
+
+```bash
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  --envs bridge_crossing \
+  --architecture two_hidden \
+  --bc-safe-action-entropy-weight 1.0 \
+  --bc-min-safe-action-entropy 0.95
+```
+
+The normalized entropy target is enforced only when the weight is positive;
+the default weight of `0` exactly selects the previous initialization objective.
+Base-policy summaries record mean, fifth-percentile, and minimum conditional
+safe-action entropy together with mean and maximum unsafe-action probability.
+
+The margin-free probability-mass objective is also opt-in. It fits the
+aggregate safe/unsafe mass to `(1-epsilon, epsilon)` and simultaneously fits a
+uniform distribution conditional on the safe actions:
+
+```bash
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  --envs bridge_crossing bridge_crossing_v2 mini_pacman \
+  --architecture two_hidden \
+  --bc-initialisation-objective safe_mass \
+  --bc-unsafe-mass-target 0.01 \
+  --bc-max-unsafe-mass 0.02 \
+  --bc-safe-action-uniformity-weight 1.0 \
+  --bc-min-safe-action-entropy 0.95
+```
+
+In this mode, `--bc-target-margin` is diagnostic only. Fitting stops once every
+greedy action is safe, every state's unsafe mass is at most the configured
+maximum, and the minimum normalized safe-action entropy reaches its target.
+The nonzero unsafe-mass target gives the loss a finite optimum; literal binary
+entropy minimization would be symmetric and could instead collapse onto the
+unsafe action set.
+
+By default, this launcher includes Media Streaming and the other five paper
+environments. With the default ten seeds it therefore requires 60 distinct
+idle CPU cores. Pass `--cpu-ids`, `--envs`, and `--seeds` for an explicit
+allocation, or `--dry-run` to inspect every resolved command without starting
+training.
 
 The lower-level stage remains available for a single run when a compatible
 base policy and shield already exist:

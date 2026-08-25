@@ -14,9 +14,19 @@ ARCHITECTURE="${ARCHITECTURE:-tabular}"
 RASHOMON_N_ITERS="${RASHOMON_N_ITERS:-}"
 RASHOMON_MULTI_LABEL_MODE="${RASHOMON_MULTI_LABEL_MODE:-all}"
 RASHOMON_SURROGATE="${RASHOMON_SURROGATE:-logsumexp}"
+RASHOMON_OBJECTIVE="${RASHOMON_OBJECTIVE:-weighted_width}"
+VERIFY_FIRST="${VERIFY_FIRST:-false}"
 RASHOMON_BATCH_SIZE="${RASHOMON_BATCH_SIZE:-auto}"
 RASHOMON_CERTIFICATE_SAMPLES="${RASHOMON_CERTIFICATE_SAMPLES:-}"
 BC_TARGET_MARGIN="${BC_TARGET_MARGIN:-}"
+BC_SAFE_ACTION_ENTROPY_WEIGHT="${BC_SAFE_ACTION_ENTROPY_WEIGHT:-0.0}"
+BC_MIN_SAFE_ACTION_ENTROPY="${BC_MIN_SAFE_ACTION_ENTROPY:-0.95}"
+BC_INITIALISATION_OBJECTIVE="${BC_INITIALISATION_OBJECTIVE:-margin}"
+BC_UNSAFE_MASS_TARGET="${BC_UNSAFE_MASS_TARGET:-0.01}"
+BC_MAX_UNSAFE_MASS="${BC_MAX_UNSAFE_MASS:-0.02}"
+BC_SAFE_ACTION_UNIFORMITY_WEIGHT="${BC_SAFE_ACTION_UNIFORMITY_WEIGHT:-1.0}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-}"
+BASE_POLICY_PATH="${BASE_POLICY_PATH:-}"
 DIRECTIONAL_RASHOMON_GROWTH="${DIRECTIONAL_RASHOMON_GROWTH:-1}"
 ADAPTIVE_GRANULARITY="${ADAPTIVE_GRANULARITY:-}"
 ADAPTIVE_FREQ="${ADAPTIVE_FREQ:-}"
@@ -30,9 +40,14 @@ if [[ -z "$CPU_IDS" && -z "$CORE_START" ]]; then
 fi
 
 export ENV_NAME CORE_START CPU_IDS SEEDS REGION_MODE RUN_NAME ARCHITECTURE RASHOMON_N_ITERS
-export RASHOMON_MULTI_LABEL_MODE RASHOMON_SURROGATE RASHOMON_BATCH_SIZE
+export RASHOMON_MULTI_LABEL_MODE RASHOMON_SURROGATE RASHOMON_OBJECTIVE RASHOMON_BATCH_SIZE
+export VERIFY_FIRST
 export RASHOMON_CERTIFICATE_SAMPLES
-export BC_TARGET_MARGIN DRY_RUN
+export BC_TARGET_MARGIN BC_SAFE_ACTION_ENTROPY_WEIGHT BC_MIN_SAFE_ACTION_ENTROPY DRY_RUN
+export BC_INITIALISATION_OBJECTIVE BC_UNSAFE_MASS_TARGET BC_MAX_UNSAFE_MASS
+export BC_SAFE_ACTION_UNIFORMITY_WEIGHT
+export TOTAL_TIMESTEPS
+export BASE_POLICY_PATH
 export DIRECTIONAL_RASHOMON_GROWTH
 export ADAPTIVE_GRANULARITY
 export ADAPTIVE_FREQ
@@ -41,6 +56,7 @@ export SKIP_EXISTING
 
 .venv/bin/python - <<'PY'
 import json
+import math
 import os
 import subprocess
 import time
@@ -53,6 +69,7 @@ from projects.safe_policy_optimisation.utils.pspo_adaptive_launcher import (
     resolve_certificate_samples,
     resolve_seed_cpu_ids,
     resolve_target_margin,
+    resolve_total_timesteps,
 )
 
 REPO = Path.cwd()
@@ -75,9 +92,19 @@ ARCHITECTURE = os.environ["ARCHITECTURE"]
 RASHOMON_N_ITERS = os.environ["RASHOMON_N_ITERS"]
 RASHOMON_MULTI_LABEL_MODE = os.environ["RASHOMON_MULTI_LABEL_MODE"]
 RASHOMON_SURROGATE = os.environ["RASHOMON_SURROGATE"]
+RASHOMON_OBJECTIVE = os.environ["RASHOMON_OBJECTIVE"]
+VERIFY_FIRST = os.environ["VERIFY_FIRST"]
 RASHOMON_BATCH_SIZE = os.environ["RASHOMON_BATCH_SIZE"]
 RASHOMON_CERTIFICATE_SAMPLES = os.environ["RASHOMON_CERTIFICATE_SAMPLES"]
 BC_TARGET_MARGIN = os.environ["BC_TARGET_MARGIN"]
+BC_SAFE_ACTION_ENTROPY_WEIGHT = os.environ["BC_SAFE_ACTION_ENTROPY_WEIGHT"]
+BC_MIN_SAFE_ACTION_ENTROPY = os.environ["BC_MIN_SAFE_ACTION_ENTROPY"]
+BC_INITIALISATION_OBJECTIVE = os.environ["BC_INITIALISATION_OBJECTIVE"]
+BC_UNSAFE_MASS_TARGET = os.environ["BC_UNSAFE_MASS_TARGET"]
+BC_MAX_UNSAFE_MASS = os.environ["BC_MAX_UNSAFE_MASS"]
+BC_SAFE_ACTION_UNIFORMITY_WEIGHT = os.environ["BC_SAFE_ACTION_UNIFORMITY_WEIGHT"]
+TOTAL_TIMESTEPS = os.environ["TOTAL_TIMESTEPS"]
+BASE_POLICY_PATH = os.environ["BASE_POLICY_PATH"]
 DIRECTIONAL_RASHOMON_GROWTH = os.environ["DIRECTIONAL_RASHOMON_GROWTH"] == "1"
 ADAPTIVE_GRANULARITY = os.environ["ADAPTIVE_GRANULARITY"]
 ADAPTIVE_FREQ = os.environ["ADAPTIVE_FREQ"]
@@ -103,6 +130,12 @@ if RASHOMON_SURROGATE not in {"auto", "probability", "logsumexp"}:
     raise SystemExit(
         "RASHOMON_SURROGATE must be 'auto', 'probability', or 'logsumexp'"
     )
+if RASHOMON_OBJECTIVE not in {"weighted_width", "projection_distance"}:
+    raise SystemExit(
+        "RASHOMON_OBJECTIVE must be 'weighted_width' or 'projection_distance'"
+    )
+if VERIFY_FIRST not in {"true", "false"}:
+    raise SystemExit("VERIFY_FIRST must be 'true' or 'false'")
 if ADAPTIVE_GRANULARITY and ADAPTIVE_GRANULARITY not in {"gradient_step", "train_phase"}:
     raise SystemExit("ADAPTIVE_GRANULARITY must be 'gradient_step' or 'train_phase'")
 if not ADAPTIVE_FREQ:
@@ -182,6 +215,37 @@ try:
 except ValueError as exc:
     raise SystemExit(f"Invalid BC_TARGET_MARGIN: {exc}") from exc
 
+try:
+    bc_safe_action_entropy_weight = float(BC_SAFE_ACTION_ENTROPY_WEIGHT)
+    bc_min_safe_action_entropy = float(BC_MIN_SAFE_ACTION_ENTROPY)
+    bc_unsafe_mass_target = float(BC_UNSAFE_MASS_TARGET)
+    bc_max_unsafe_mass = float(BC_MAX_UNSAFE_MASS)
+    bc_safe_action_uniformity_weight = float(BC_SAFE_ACTION_UNIFORMITY_WEIGHT)
+except ValueError as exc:
+    raise SystemExit("BC initialisation settings must be numeric") from exc
+if BC_INITIALISATION_OBJECTIVE not in {"margin", "safe_mass"}:
+    raise SystemExit("BC_INITIALISATION_OBJECTIVE must be 'margin' or 'safe_mass'")
+if not math.isfinite(bc_safe_action_entropy_weight) or bc_safe_action_entropy_weight < 0.0:
+    raise SystemExit("BC_SAFE_ACTION_ENTROPY_WEIGHT must be finite and non-negative")
+if not math.isfinite(bc_min_safe_action_entropy) or not 0.0 <= bc_min_safe_action_entropy <= 1.0:
+    raise SystemExit("BC_MIN_SAFE_ACTION_ENTROPY must lie in [0, 1]")
+if not math.isfinite(bc_unsafe_mass_target) or not 0.0 < bc_unsafe_mass_target < 0.5:
+    raise SystemExit("BC_UNSAFE_MASS_TARGET must lie strictly between 0 and 0.5")
+if not math.isfinite(bc_max_unsafe_mass) or not 0.0 <= bc_max_unsafe_mass < 0.5:
+    raise SystemExit("BC_MAX_UNSAFE_MASS must lie in [0, 0.5)")
+if bc_unsafe_mass_target > bc_max_unsafe_mass:
+    raise SystemExit("BC_UNSAFE_MASS_TARGET must not exceed BC_MAX_UNSAFE_MASS")
+if not math.isfinite(bc_safe_action_uniformity_weight) or bc_safe_action_uniformity_weight < 0.0:
+    raise SystemExit("BC_SAFE_ACTION_UNIFORMITY_WEIGHT must be finite and non-negative")
+
+try:
+    total_timesteps = resolve_total_timesteps(
+        TOTAL_TIMESTEPS,
+        default=int(cfg["total_timesteps"]),
+    )
+except ValueError as exc:
+    raise SystemExit(f"Invalid TOTAL_TIMESTEPS: {exc}") from exc
+
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     load_shield_mask,
     make_safe_behaviour_payload,
@@ -249,6 +313,18 @@ def base_policy_command(base_dir):
         str(bc_target_margin),
         "--bc-margin-mode",
         RASHOMON_MULTI_LABEL_MODE,
+        "--bc-initialisation-objective",
+        BC_INITIALISATION_OBJECTIVE,
+        "--bc-safe-action-entropy-weight",
+        str(bc_safe_action_entropy_weight),
+        "--bc-min-safe-action-entropy",
+        str(bc_min_safe_action_entropy),
+        "--bc-unsafe-mass-target",
+        str(bc_unsafe_mass_target),
+        "--bc-max-unsafe-mass",
+        str(bc_max_unsafe_mass),
+        "--bc-safe-action-uniformity-weight",
+        str(bc_safe_action_uniformity_weight),
         "--rashomon-multi-label-mode",
         RASHOMON_MULTI_LABEL_MODE,
         "--rashomon-surrogate",
@@ -260,7 +336,36 @@ def base_policy_command(base_dir):
     ]
 
 
-if RASHOMON_MULTI_LABEL_MODE == "all":
+if BASE_POLICY_PATH:
+    base_policy = repo_path(BASE_POLICY_PATH)
+    if not base_policy.exists():
+        raise SystemExit(f"Missing BASE_POLICY_PATH: {base_policy}")
+    if not base_policy_artifact_matches(
+        base_policy.parent,
+        shield_path=shield_path,
+        dataset_size=safety_demo_size,
+        hidden_dim=int(hp.get("hidden_dim", 64)),
+        n_hidden=int(hp.get("n_hidden", 0 if ARCHITECTURE == "tabular" else 2)),
+        state_representation="one_hot_discrete_observation",
+        margin_mode=RASHOMON_MULTI_LABEL_MODE,
+        target_margin=bc_target_margin,
+        safe_action_entropy_weight=bc_safe_action_entropy_weight,
+        min_safe_action_entropy=bc_min_safe_action_entropy,
+        initialisation_objective=BC_INITIALISATION_OBJECTIVE,
+        unsafe_mass_target=bc_unsafe_mass_target,
+        max_unsafe_mass=bc_max_unsafe_mass,
+        safe_action_uniformity_weight=bc_safe_action_uniformity_weight,
+    ):
+        raise SystemExit(
+            "BASE_POLICY_PATH does not match the requested shield, architecture, "
+            "state representation, label mode, or initialisation objective: "
+            f"{base_policy}"
+        )
+elif (
+    RASHOMON_MULTI_LABEL_MODE == "all"
+    or bc_safe_action_entropy_weight > 0.0
+    or BC_INITIALISATION_OBJECTIVE == "safe_mass"
+):
     base_dir = out_base / "initial_base_policy"
     base_policy = base_dir / "base_policy.pt"
     if not base_policy_artifact_matches(
@@ -272,6 +377,12 @@ if RASHOMON_MULTI_LABEL_MODE == "all":
         state_representation="one_hot_discrete_observation",
         margin_mode=RASHOMON_MULTI_LABEL_MODE,
         target_margin=bc_target_margin,
+        safe_action_entropy_weight=bc_safe_action_entropy_weight,
+        min_safe_action_entropy=bc_min_safe_action_entropy,
+        initialisation_objective=BC_INITIALISATION_OBJECTIVE,
+        unsafe_mass_target=bc_unsafe_mass_target,
+        max_unsafe_mass=bc_max_unsafe_mass,
+        safe_action_uniformity_weight=bc_safe_action_uniformity_weight,
     ):
         set_cmd = base_policy_command(base_dir)
         if DRY_RUN:
@@ -317,13 +428,13 @@ for seed, core in zip(SEEDS, CPU_IDS):
         "--cost-limit",
         str(cfg["cost_limit"]),
         "--total-timesteps",
-        str(cfg["total_timesteps"]),
+        str(total_timesteps),
         "--eval-episodes",
         str(cfg["eval_episodes"]),
         "--seed",
         str(seed),
         "--verify-first",
-        "false",
+        VERIFY_FIRST,
         "--freq",
         ADAPTIVE_FREQ,
         "--directional",
@@ -340,6 +451,8 @@ for seed, core in zip(SEEDS, CPU_IDS):
         RASHOMON_MULTI_LABEL_MODE,
         "--surrogate",
         RASHOMON_SURROGATE,
+        "--rashomon-objective",
+        RASHOMON_OBJECTIVE,
         "--learning-rate",
         str(cfg["learning_rate"]),
         "--n-steps",

@@ -18,6 +18,7 @@ from projects.safe_policy_optimisation.utils.pspo_adaptive_launcher import (
     resolve_certificate_samples,
     resolve_seed_cpu_ids,
     resolve_target_margin,
+    resolve_total_timesteps,
 )
 from projects.safe_policy_optimisation.utils.rashomon import (
     parse_rashomon_batch_size,
@@ -67,6 +68,13 @@ class PspoAdaptiveLauncherTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 resolve_target_margin(value, default=1.0)
 
+    def test_total_timesteps_override_and_validation(self) -> None:
+        self.assertEqual(resolve_total_timesteps("400000", default=200_000), 400_000)
+        self.assertEqual(resolve_total_timesteps("", default=200_000), 200_000)
+        for value in ("invalid", "0", "-1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                resolve_total_timesteps(value, default=200_000)
+
     def test_initial_set_cache_requires_every_requested_setting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             safe_set = Path(tmp)
@@ -109,6 +117,49 @@ class PspoAdaptiveLauncherTests(unittest.TestCase):
                     mismatch = dict(settings)
                     mismatch[name] = value
                     self.assertFalse(initial_safe_set_matches(safe_set, **mismatch))
+
+            entropy_settings = {
+                **settings,
+                "safe_action_entropy_weight": 1.0,
+                "min_safe_action_entropy": 0.95,
+            }
+            self.assertFalse(initial_safe_set_matches(safe_set, **entropy_settings))
+            summary = json.loads((safe_set / "summary.json").read_text())
+            summary["base_policy"].update(
+                {
+                    "safe_action_entropy_weight": 1.0,
+                    "min_safe_action_entropy": 0.95,
+                }
+            )
+            (safe_set / "summary.json").write_text(json.dumps(summary))
+            self.assertTrue(initial_safe_set_matches(safe_set, **entropy_settings))
+            entropy_settings["min_safe_action_entropy"] = 0.9
+            self.assertFalse(initial_safe_set_matches(safe_set, **entropy_settings))
+
+            summary = json.loads((safe_set / "summary.json").read_text())
+            summary["base_policy"].update(
+                {
+                    "initialisation_objective": "safe_mass",
+                    "unsafe_mass_target": 0.01,
+                    "max_unsafe_mass": 0.02,
+                    "safe_action_uniformity_weight": 1.0,
+                    "safe_action_entropy_weight": 0.0,
+                    "min_safe_action_entropy": 0.95,
+                }
+            )
+            (safe_set / "summary.json").write_text(json.dumps(summary))
+            safe_mass_settings = {
+                **settings,
+                "target_margin": 999.0,
+                "initialisation_objective": "safe_mass",
+                "unsafe_mass_target": 0.01,
+                "max_unsafe_mass": 0.02,
+                "safe_action_uniformity_weight": 1.0,
+                "min_safe_action_entropy": 0.95,
+            }
+            self.assertTrue(initial_safe_set_matches(safe_set, **safe_mass_settings))
+            safe_mass_settings["unsafe_mass_target"] = 0.015
+            self.assertFalse(initial_safe_set_matches(safe_set, **safe_mass_settings))
 
     def test_base_policy_only_skips_rashomon_and_writes_reusable_artifacts(self) -> None:
         from projects.safe_policy_optimisation.stages import compute_shield_rashomon_set
@@ -168,6 +219,82 @@ class PspoAdaptiveLauncherTests(unittest.TestCase):
                     state_representation="one_hot_discrete_observation",
                     margin_mode="all",
                     target_margin=2.0,
+                )
+            )
+            self.assertFalse(
+                base_policy_artifact_matches(
+                    base_dir,
+                    shield_path=shield_path,
+                    dataset_size=3,
+                    hidden_dim=64,
+                    n_hidden=0,
+                    state_representation="one_hot_discrete_observation",
+                    margin_mode="all",
+                    target_margin=2.0,
+                    safe_action_entropy_weight=1.0,
+                    min_safe_action_entropy=0.95,
+                )
+            )
+
+    def test_entropy_base_policy_only_writes_reusable_artifacts(self) -> None:
+        from projects.safe_policy_optimisation.stages import compute_shield_rashomon_set
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shield_path = root / "shield_q.pt"
+            torch.save(
+                {
+                    "shield": np.asarray(
+                        [[1, 1, 0], [1, 0, 0], [0, 1, 1]], dtype=np.int64
+                    )
+                },
+                shield_path,
+            )
+            args = compute_shield_rashomon_set.build_parser().parse_args(
+                [
+                    "--shield-path",
+                    str(shield_path),
+                    "--output-dir",
+                    str(root),
+                    "--run-id",
+                    "entropy_base",
+                    "--state-representation",
+                    "one_hot",
+                    "--n-hidden",
+                    "0",
+                    "--bc-margin-mode",
+                    "all",
+                    "--bc-target-margin",
+                    "2.0",
+                    "--linear-init-margin",
+                    "2.0",
+                    "--bc-safe-action-entropy-weight",
+                    "1.0",
+                    "--bc-min-safe-action-entropy",
+                    "0.95",
+                    "--base-policy-only",
+                ]
+            )
+
+            summary = compute_shield_rashomon_set.run(args)
+            base_dir = root / "entropy_base"
+
+            self.assertEqual(
+                summary["base_policy"]["final_normalized_safe_action_entropy_min"],
+                1.0,
+            )
+            self.assertTrue(
+                base_policy_artifact_matches(
+                    base_dir,
+                    shield_path=shield_path,
+                    dataset_size=3,
+                    hidden_dim=64,
+                    n_hidden=0,
+                    state_representation="one_hot_discrete_observation",
+                    margin_mode="all",
+                    target_margin=2.0,
+                    safe_action_entropy_weight=1.0,
+                    min_safe_action_entropy=0.95,
                 )
             )
 

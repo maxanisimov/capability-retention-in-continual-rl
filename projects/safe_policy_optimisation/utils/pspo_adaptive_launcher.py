@@ -113,6 +113,18 @@ def resolve_target_margin(value: str, *, default: float) -> float:
     return target_margin
 
 
+def resolve_total_timesteps(value: str, *, default: int) -> int:
+    """Resolve and validate an optional training-timestep override."""
+
+    try:
+        total_timesteps = int(value) if value else int(default)
+    except ValueError as exc:
+        raise ValueError("total timesteps must be a positive integer") from exc
+    if total_timesteps <= 0:
+        raise ValueError("total timesteps must be a positive integer")
+    return total_timesteps
+
+
 def base_policy_artifact_matches(
     base_dir: Path,
     *,
@@ -123,6 +135,12 @@ def base_policy_artifact_matches(
     state_representation: str,
     margin_mode: str,
     target_margin: float,
+    safe_action_entropy_weight: float = 0.0,
+    min_safe_action_entropy: float = 0.95,
+    initialisation_objective: str = "margin",
+    unsafe_mass_target: float = 0.01,
+    max_unsafe_mass: float = 0.02,
+    safe_action_uniformity_weight: float = 1.0,
 ) -> bool:
     """Return whether a prepared base policy exactly matches this experiment."""
 
@@ -146,6 +164,38 @@ def base_policy_artifact_matches(
     if not all(isinstance(value, dict) for value in (architecture, dataset, base_policy)):
         return False
     try:
+        stored_objective = str(base_policy.get("initialisation_objective", "margin"))
+        objective_settings_match = stored_objective == initialisation_objective
+        if initialisation_objective == "safe_mass":
+            objective_settings_match = objective_settings_match and all(
+                math.isclose(
+                    float(base_policy[key]),
+                    float(requested),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                for key, requested in (
+                    ("unsafe_mass_target", unsafe_mass_target),
+                    ("max_unsafe_mass", max_unsafe_mass),
+                    ("safe_action_uniformity_weight", safe_action_uniformity_weight),
+                    ("min_safe_action_entropy", min_safe_action_entropy),
+                )
+            )
+        requested_entropy_weight = float(safe_action_entropy_weight)
+        stored_entropy_weight = float(base_policy.get("safe_action_entropy_weight", 0.0))
+        entropy_settings_match = math.isclose(
+            stored_entropy_weight,
+            requested_entropy_weight,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        if requested_entropy_weight > 0.0:
+            entropy_settings_match = entropy_settings_match and math.isclose(
+                float(base_policy["min_safe_action_entropy"]),
+                float(min_safe_action_entropy),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
         return bool(
             summary.get("shield_sha256") == shield_sha256
             and int(dataset["dataset_size"]) == int(dataset_size)
@@ -154,11 +204,16 @@ def base_policy_artifact_matches(
             and architecture["state_representation"] == state_representation
             and base_policy["bc_margin_mode"] == margin_mode
             and bool(base_policy["reached_target"])
-            and math.isclose(
-                float(base_policy["target_margin"]),
-                float(target_margin),
-                rel_tol=0.0,
-                abs_tol=1e-12,
+            and objective_settings_match
+            and entropy_settings_match
+            and (
+                initialisation_objective == "safe_mass"
+                or math.isclose(
+                    float(base_policy["target_margin"]),
+                    float(target_margin),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
             )
         )
     except (KeyError, TypeError, ValueError):
@@ -173,6 +228,12 @@ def initial_safe_set_matches(
     target_margin: float,
     certificate_samples: int,
     n_iters: int,
+    safe_action_entropy_weight: float = 0.0,
+    min_safe_action_entropy: float = 0.95,
+    initialisation_objective: str = "margin",
+    unsafe_mass_target: float = 0.01,
+    max_unsafe_mass: float = 0.02,
+    safe_action_uniformity_weight: float = 1.0,
 ) -> bool:
     """Return whether an initial safe set matches every reusable setting."""
 
@@ -194,21 +255,58 @@ def initial_safe_set_matches(
     if not isinstance(base_policy, dict) or not isinstance(rashomon, dict):
         return False
     try:
+        stored_objective = str(base_policy.get("initialisation_objective", "margin"))
+        objective_settings_match = stored_objective == initialisation_objective
+        if initialisation_objective == "safe_mass":
+            objective_settings_match = objective_settings_match and all(
+                math.isclose(
+                    float(base_policy[key]),
+                    float(requested),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                for key, requested in (
+                    ("unsafe_mass_target", unsafe_mass_target),
+                    ("max_unsafe_mass", max_unsafe_mass),
+                    ("safe_action_uniformity_weight", safe_action_uniformity_weight),
+                    ("min_safe_action_entropy", min_safe_action_entropy),
+                )
+            )
         stored_target_margin = float(base_policy["target_margin"])
         stored_certificate_samples = int(rashomon["certificate_samples"])
         stored_n_iters = int(rashomon["n_iters"])
+        requested_entropy_weight = float(safe_action_entropy_weight)
+        stored_entropy_weight = float(base_policy.get("safe_action_entropy_weight", 0.0))
+        entropy_settings_match = math.isclose(
+            stored_entropy_weight,
+            requested_entropy_weight,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        if requested_entropy_weight > 0.0:
+            entropy_settings_match = entropy_settings_match and math.isclose(
+                float(base_policy["min_safe_action_entropy"]),
+                float(min_safe_action_entropy),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
     except (KeyError, TypeError, ValueError):
         return False
     return bool(
         base_policy.get("bc_margin_mode") == multi_label_mode
+        and objective_settings_match
         and rashomon.get("multi_label_mode") == multi_label_mode
         and rashomon.get("surrogate") == surrogate
-        and math.isclose(
-            stored_target_margin,
-            float(target_margin),
-            rel_tol=0.0,
-            abs_tol=1e-12,
+        and (
+            initialisation_objective == "safe_mass"
+            or math.isclose(
+                stored_target_margin,
+                float(target_margin),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
         )
         and stored_certificate_samples == int(certificate_samples)
         and stored_n_iters == int(n_iters)
+        and entropy_settings_match
     )
