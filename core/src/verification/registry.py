@@ -6,11 +6,11 @@ import dataclasses
 from typing import Any
 
 import torch
-
 from abstract_gradient_training.bounded_models import (
     BoundedModel,
     CROWNBoundedModel,
     IntervalBoundedModel,
+    StateIdLookupLinear,
 )
 
 
@@ -31,6 +31,7 @@ _IBP_SUPPORTED_MODULES = (
     torch.nn.Tanh,
     torch.nn.Flatten,
     torch.nn.Dropout,
+    StateIdLookupLinear,
 )
 
 _CROWN_SUPPORTED_MODULES = (torch.nn.Linear, torch.nn.ReLU, torch.nn.Tanh)

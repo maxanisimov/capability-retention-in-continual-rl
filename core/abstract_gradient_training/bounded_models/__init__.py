@@ -11,10 +11,14 @@ from abstract_gradient_training.bounded_models.crown_bounded_model import (
     CROWNBoundedModel,
 )
 from abstract_gradient_training.bounded_models.mip_bounded_model import MIPBoundedModel
+from abstract_gradient_training.bounded_models.state_id_lookup import (
+    StateIdLookupLinear,
+)
 
 __all__ = [
     "BoundedModel",
     "IntervalBoundedModel",
     "CROWNBoundedModel",
     "MIPBoundedModel",
+    "StateIdLookupLinear",
 ]
