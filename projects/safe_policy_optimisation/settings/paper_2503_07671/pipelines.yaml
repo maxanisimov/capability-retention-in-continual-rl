@@ -93,6 +93,35 @@ pipelines:
     monitoring: *monitoring
     stages: *stages
 
+  paper_2503_07671_media_streaming_b128:
+    description: Scaled-up Media Streaming experiment (16,512 states) for the certification-cost ladder.
+    module: *module
+    default_task: paper_2503_07671_media_streaming_b128
+    output:
+      output_dir: projects/safe_policy_optimisation/outputs/paper_2503_07671/media_streaming_b128
+      run_id: paper_2503_07671_media_streaming_b128
+    runtime: *runtime
+    shield_synthesis:
+      <<: *shield_synthesis
+      init_safety_bound: 0.001
+    safety:
+      <<: *safety
+      cost_limit: 0.001
+      shield_path: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/media_streaming_b128/shield_q.pt
+    safe_rl_baselines: *safe_rl_baselines
+    training:
+      <<: *training
+      total_timesteps: 50000
+    rashomon_set:
+      <<: *rashomon_set
+      rashomon_dir: projects/safe_policy_optimisation/artifacts/paper_2503_07671/inputs/media_streaming_b128/rashomon_fullcov
+    early_stopping:
+      <<: *early_stopping
+      success_reward_threshold: -0.5
+    evaluation: *evaluation
+    monitoring: *monitoring
+    stages: *stages
+
   paper_2503_07671_colour_bomb:
     description: Main-paper Colour Bomb v1 experiment from arXiv:2503.07671.
     module: *module

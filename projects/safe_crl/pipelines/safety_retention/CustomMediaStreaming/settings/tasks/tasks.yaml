@@ -48,3 +48,18 @@ custommediastreamingv2_paper_2503_07671:
     fast_rate: 0.9
     slow_rate: 0.1
     out_rate: 0.7
+
+# Scaled-up variant: |S| = buffer_size * (c_threshold + 2) = 128 * 129 = 16,512,
+# against 21 * 22 = 462 for the task above. The budget stays at half the episode
+# so the fast-action constraint keeps binding as the state space grows.
+custommediastreamingv2_paper_2503_07671_b128:
+  env: CustomMediaStreamingV2-v0
+  max_episode_steps: 254
+  env_kwargs:
+    buffer_size: 128
+    episode_length: 254
+    c_threshold: 127
+  stochasticity:
+    fast_rate: 0.9
+    slow_rate: 0.1
+    out_rate: 0.7
