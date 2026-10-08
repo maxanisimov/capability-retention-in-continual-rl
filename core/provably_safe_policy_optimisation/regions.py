@@ -187,9 +187,10 @@ def project_flat_to_zonotope(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Project a flat parameter vector onto a zonotope.
 
-    Returns ``(projected_flat_params, coefficients)``.  The solve starts with a
-    least-squares coefficient estimate and refines it with projected gradient
-    descent over the bounded coefficient vector.
+    Returns ``(projected_flat_params, coefficients)``.  Rank-one zonotopes (the
+    segment regions of :mod:`src.segment_rashomon`) are solved exactly in closed
+    form; higher ranks start from a least-squares coefficient estimate and refine
+    it with projected gradient descent over the bounded coefficient vector.
     """
 
     center = zonotope_flat_center(region).to(device=flat_params.device, dtype=flat_params.dtype)
@@ -200,6 +201,19 @@ def project_flat_to_zonotope(
         return center, torch.empty(0, device=flat_params.device, dtype=flat_params.dtype)
 
     delta = flat_params - center
+    if generators.shape[0] == 1:
+        # Rank one: the zonotope is a segment, so the Euclidean projection is the
+        # clamped scalar coefficient -- exact, and no iterative solve needed.
+        generator = generators[0]
+        squared_norm = torch.dot(generator, generator)
+        if float(squared_norm.item()) <= 0.0:
+            return center, torch.zeros(
+                1, device=flat_params.device, dtype=flat_params.dtype
+            )
+        z = (torch.dot(delta, generator) / squared_norm).reshape(1)
+        z = z.clamp(min=coeff_l, max=coeff_u)
+        return center + z @ generators, z
+
     # Solve generators.T @ z ~= delta.
     try:
         z0 = torch.linalg.lstsq(generators.T, delta.unsqueeze(1)).solution.squeeze(1)

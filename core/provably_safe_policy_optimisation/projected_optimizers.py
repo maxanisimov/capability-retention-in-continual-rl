@@ -75,7 +75,7 @@ class ProjectedAdam(torch.optim.Adam):
         super().__init__(self._projected_params, **adam_kwargs)
 
         # Optional callable invoked at the end of every step() (after any
-        # projection). Used by adaptive trainers to inspect/adjust parameters
+        # projection). Used by the PSPO trainers to inspect/adjust parameters
         # per gradient step. NOTE: step() runs under @torch.no_grad(), so hooks
         # that need autograd must re-enable it with torch.enable_grad().
         self.post_step_hook: Callable[[], None] | None = None
@@ -101,10 +101,15 @@ class ProjectedAdam(torch.optim.Adam):
         self._init_projection: ProjectionResult | None = None
         self._last_projection_result: ProjectionResult | None = None
         # Full optimizer proposal for the projected parameter subset, measured
-        # before safe-region projection changes it. Adaptive-v2 uses this to
+        # before safe-region projection changes it. Region-first PSPO uses this to
         # direct the next Rashomon region along the policy update.
         self._last_proposed_update_deltas: list[torch.Tensor] | None = None
         self._last_proposed_params: list[torch.Tensor] | None = None
+        # Record proposals without projecting. Segment regions (rank-one
+        # zonotopes spanning last-safe -> proposal) are enforcement-only: they
+        # must not clamp the next step, but the enforcement still needs the
+        # proposal the optimizer produced.
+        self._retain_proposals_only = False
 
     @property
     def has_bounds(self) -> bool:
@@ -212,12 +217,36 @@ class ProjectedAdam(torch.optim.Adam):
         if project_on_set:
             self._init_projection = self.project_now()
 
+    def retain_proposals(self, params: list[torch.nn.Parameter] | None = None) -> None:
+        """Record each step's proposal without projecting it.
+
+        The region-first caller still needs ``last_proposed_params`` to know the
+        direction of the update, but a safe region that is recomputed at every
+        enforcement (a segment) must not constrain the step that produced it.
+        """
+
+        target = self._projected_params if params is None else list(params)
+        if not target:
+            raise ValueError("retain_proposals requires at least one parameter.")
+        owned = {id(p) for p in self._projected_params}
+        if any(id(p) not in owned for p in target):
+            raise ValueError(
+                "Every parameter passed to retain_proposals(params=...) must belong "
+                "to this optimizer.",
+            )
+        self._projection_params = target
+        self._regions = None
+        self._bounds_l_sets = None
+        self._bounds_u_sets = None
+        self._retain_proposals_only = True
+
     def clear_bounds(self) -> None:
         """Disable projection (revert to plain Adam behaviour)."""
         self._projection_params = self._projected_params
         self._bounds_l_sets = None
         self._bounds_u_sets = None
         self._regions = None
+        self._retain_proposals_only = False
         self._last_proposed_update_deltas = None
         self._last_proposed_params = None
 
@@ -269,13 +298,14 @@ class ProjectedAdam(torch.optim.Adam):
     def step(self, closure: Any = None) -> Any:  # type: ignore[override]
         self._last_proposed_update_deltas = None
         self._last_proposed_params = None
+        track_proposal = self._regions is not None or self._retain_proposals_only
         before_step = (
             [param.detach().clone() for param in self._projection_params]
-            if self._regions is not None
+            if track_proposal
             else None
         )
         loss = super().step(closure)
-        if self._regions is not None:
+        if track_proposal:
             assert before_step is not None
             self._last_proposed_params = [
                 param.detach().clone() for param in self._projection_params
@@ -284,6 +314,7 @@ class ProjectedAdam(torch.optim.Adam):
                 param.detach().clone() - before
                 for param, before in zip(self._projection_params, before_step)
             ]
+        if self._regions is not None:
             result = project_to_region_union(
                 self._projection_params,
                 self._regions,
