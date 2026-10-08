@@ -63,6 +63,9 @@ from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
 )
 from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
+from projects.safe_policy_optimisation.utils.warm_start import (  # noqa: E402
+    warm_start_actor,
+)
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT
@@ -178,6 +181,15 @@ def build_parser(
         type=Path,
         default=None,
         help="Optional directory for per-algorithm worker logs when --jobs > 1.",
+    )
+    parser.add_argument(
+        "--init-policy-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional PSPO safe-initialisation base_policy.pt to warm-start the "
+            "actor with. Critics and optimizer state still start fresh."
+        ),
     )
     return parser
 
@@ -432,6 +444,16 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
             net_arch=tuple(job.get("net_arch") or (64, 64)),
             **dict(job["baseline_hyperparameters"]),
         )
+        warm_start = None
+        if job.get("init_policy_path"):
+            net_arch = tuple(job.get("net_arch") or (64, 64))
+            warm_start = warm_start_actor(
+                model,
+                Path(job["init_policy_path"]),
+                hidden_dim=int(net_arch[0]),
+                n_hidden=len(net_arch),
+            )
+            log_info(f"warm-started {algorithm} actor from {job['init_policy_path']}")
         shield_mask = job.get("shield_mask")
         if shield_mask is not None and hasattr(model, "set_exploration_action_callback"):
             model.set_exploration_action_callback(
@@ -682,6 +704,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "baseline_hyperparameters": _baseline_hyperparameters_from_args(args),
         "n_hidden": int(args.n_hidden),
         "hidden_dim": int(args.hidden_dim),
+        "init_policy_path": (
+            None if args.init_policy_path is None else str(Path(args.init_policy_path).resolve())
+        ),
     }
     write_json(output_dir / "config.json", config)
 
@@ -709,6 +734,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "torch_num_threads": torch_num_threads,
             "baseline_hyperparameters": _baseline_hyperparameters_from_args(args),
             "net_arch": net_arch_from_args(args),
+            "init_policy_path": (
+                None if args.init_policy_path is None else str(Path(args.init_policy_path).resolve())
+            ),
             "log_path": None if args.log_dir is None else str(Path(args.log_dir) / f"{algorithm}.log"),
         }
         for offset, algorithm in enumerate(args.algorithms)

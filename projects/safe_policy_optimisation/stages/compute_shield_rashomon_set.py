@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,11 +19,24 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+from abstract_gradient_training.bounded_models import StateIdLookupLinear
 from provably_safe_policy_optimisation.regions import zonotope_rank_default
 from torch.utils.data import DataLoader, TensorDataset
 
 from projects.safe_policy_optimisation.utils.io import write_json
 from projects.safe_policy_optimisation.utils.log import log_info
+from projects.safe_policy_optimisation.utils.pspo_defaults import (
+    BC_INITIALISATION_OBJECTIVE,
+    BC_MARGIN_MODE,
+    BC_MAX_UNSAFE_MASS,
+    BC_MIN_SAFE_ACTION_ENTROPY,
+    BC_SAFE_ACTION_ENTROPY_WEIGHT,
+    BC_SAFE_ACTION_UNIFORMITY_WEIGHT,
+    BC_TARGET_MARGIN,
+    BC_UNSAFE_MASS_TARGET,
+    RASHOMON_MULTI_LABEL_MODE,
+    RASHOMON_SURROGATE,
+)
 from projects.safe_policy_optimisation.utils.rashomon import (
     parse_rashomon_batch_size,
     resolve_rashomon_batch_size,
@@ -69,8 +83,9 @@ def parse_max_unsafe_mass(value: str) -> float:
 def load_shield_mask(shield_path: Path, *, risk_threshold: float | None = None) -> np.ndarray:
     """Load a float32 ``(state, action)`` shield mask, auto-detecting the source.
 
-    Rashomon-set construction needs the mask as float32 one-hot features, so this
-    delegates to :func:`...utils.shield.load_shield_mask` with ``source="auto"``.
+    Rashomon-set construction needs the mask as float32 safe-action indicators,
+    so this delegates to :func:`...utils.shield.load_shield_mask` with
+    ``source="auto"``.
     """
 
     return _load_shield_mask(
@@ -81,13 +96,18 @@ def load_shield_mask(shield_path: Path, *, risk_threshold: float | None = None) 
 def make_safe_behaviour_payload(
     mask: np.ndarray,
     state_to_features: Any = None,
+    *,
+    state_representation: str = "one_hot",
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
     """State features and multi-hot safe actions for the BC dataset.
 
     ``state_to_features`` (the env's ``state_to_features``) selects the state
     representation the base policy -- and hence the PSPO actor -- is fitted on:
 
-    * ``None``: one-hot over discrete state ids (the historical view).
+    * ``None`` with ``state_representation="one_hot"``: one-hot over discrete
+      state IDs (the historical view).
+    * ``None`` with ``state_representation="state_id_lookup"``: an int64 state
+      ID whose lookup layer is exactly equivalent to the one-hot linear layer.
     * a callable: the env's normalised decoded features, so the base policy has
       the same feature input the deployed PSPO actor receives.
     """
@@ -101,21 +121,40 @@ def make_safe_behaviour_payload(
     if safe_state_ids.size == 0:
         raise ValueError("Shield contains no states with at least one safe action.")
 
-    if state_to_features is None:
+    if state_representation not in {"one_hot", "features", "state_id_lookup"}:
+        raise ValueError(
+            "state_representation must be 'one_hot', 'features', or "
+            f"'state_id_lookup'; got {state_representation!r}."
+        )
+    if state_representation == "state_id_lookup" and state_to_features is not None:
+        raise ValueError(
+            "state_id_lookup and state_to_features are mutually exclusive."
+        )
+    if state_to_features is not None:
+        feature_rows = np.stack([np.asarray(state_to_features(int(s))) for s in safe_state_ids])
+        states = torch.as_tensor(feature_rows, dtype=torch.float32)
+        representation = "decoded_features"
+        input_dim = int(states.shape[1])
+    elif state_representation == "state_id_lookup":
+        states = torch.as_tensor(safe_state_ids, dtype=torch.long).reshape(-1, 1)
+        representation = "state_id_lookup_discrete_observation"
+        input_dim = int(n_states)
+    else:
         states = torch.nn.functional.one_hot(
             torch.as_tensor(safe_state_ids, dtype=torch.long),
             num_classes=int(n_states),
         ).to(torch.float32)
         representation = "one_hot_discrete_observation"
-    else:
-        feature_rows = np.stack([np.asarray(state_to_features(int(s))) for s in safe_state_ids])
-        states = torch.as_tensor(feature_rows, dtype=torch.float32)
-        representation = "decoded_features"
+        input_dim = int(n_states)
     actions = torch.as_tensor(mask[safe_state_ids], dtype=torch.float32)
     metadata = {
         "n_states": int(n_states),
         "n_actions": int(n_actions),
-        "feature_dim": int(states.shape[1]),
+        "feature_dim": input_dim,
+        "input_dim": input_dim,
+        "stored_state_shape": [int(value) for value in states.shape],
+        "stored_state_dtype": str(states.dtype),
+        "stored_state_bytes": int(states.numel() * states.element_size()),
         "dataset_size": int(safe_state_ids.size),
         "excluded_no_safe_action_states": int(n_states - safe_state_ids.size),
         "state_representation": representation,
@@ -130,16 +169,23 @@ def build_base_policy(
     *,
     hidden_dim: int,
     n_hidden: int,
+    state_id_lookup: bool = False,
 ) -> nn.Sequential:
     """Build a Sequential policy compatible with IntervalTrainer."""
 
     layers: list[nn.Module] = []
     last_dim = int(input_dim)
-    for _ in range(int(n_hidden)):
-        layers.append(nn.Linear(last_dim, int(hidden_dim)))
+    for hidden_index in range(int(n_hidden)):
+        if hidden_index == 0 and state_id_lookup:
+            layers.append(StateIdLookupLinear(last_dim, int(hidden_dim)))
+        else:
+            layers.append(nn.Linear(last_dim, int(hidden_dim)))
         layers.append(nn.Tanh())
         last_dim = int(hidden_dim)
-    layers.append(nn.Linear(last_dim, int(n_actions)))
+    if int(n_hidden) == 0 and state_id_lookup:
+        layers.append(StateIdLookupLinear(last_dim, int(n_actions)))
+    else:
+        layers.append(nn.Linear(last_dim, int(n_actions)))
     return nn.Sequential(*layers)
 
 
@@ -161,6 +207,7 @@ def load_base_policy_for_dataset(
     target_margin: float,
     margin_mode: str,
     device: str | torch.device,
+    margin_loss_weight: float = 1.0,
     safe_action_entropy_weight: float = 0.0,
     min_safe_action_entropy: float = 0.95,
     initialisation_objective: str = "margin",
@@ -178,6 +225,7 @@ def load_base_policy_for_dataset(
 
     _validate_base_policy_initialisation_settings(
         initialisation_objective=initialisation_objective,
+        margin_loss_weight=margin_loss_weight,
         safe_action_entropy_weight=safe_action_entropy_weight,
         min_safe_action_entropy=min_safe_action_entropy,
         unsafe_mass_target=unsafe_mass_target,
@@ -195,7 +243,7 @@ def load_base_policy_for_dataset(
 
     architecture = dict(payload["architecture"])
     expected = {
-        "input_dim": int(dataset["state"].shape[1]),
+        "input_dim": int(dataset_metadata.get("input_dim", dataset["state"].shape[1])),
         "n_actions": int(dataset["actions"].shape[1]),
         "hidden_dim": int(hidden_dim),
         "n_hidden": int(n_hidden),
@@ -218,6 +266,10 @@ def load_base_policy_for_dataset(
         expected["n_actions"],
         hidden_dim=expected["hidden_dim"],
         n_hidden=expected["n_hidden"],
+        state_id_lookup=(
+            expected["state_representation"]
+            == "state_id_lookup_discrete_observation"
+        ),
     )
     model.load_state_dict(dict(payload["state_dict"]), strict=True)
     model.to(torch.device(device))
@@ -251,6 +303,17 @@ def load_base_policy_for_dataset(
             except (KeyError, TypeError, ValueError):
                 settings_match = False
     else:
+        stored_margin_loss_weight = (
+            float(saved_metrics.get("margin_loss_weight", 1.0))
+            if isinstance(saved_metrics, dict)
+            else 1.0
+        )
+        settings_match = settings_match and math.isclose(
+            stored_margin_loss_weight,
+            float(margin_loss_weight),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
         requested_entropy_weight = float(safe_action_entropy_weight)
         stored_entropy_weight = (
             float(saved_metrics.get("safe_action_entropy_weight", 0.0))
@@ -308,7 +371,11 @@ def load_base_policy_for_dataset(
     else:
         reached_target = bool(
             final_accuracy >= 1.0
-            and final_margin >= float(target_margin)
+            and (
+                final_margin > 0.0
+                if float(margin_loss_weight) == 0.0
+                else final_margin >= float(target_margin)
+            )
             and entropy_reached
         )
     bc_metrics = {
@@ -324,6 +391,12 @@ def load_base_policy_for_dataset(
         "initial_min_all_margin": final_all_margin,
         "final_min_all_margin": final_all_margin,
         "target_margin": float(target_margin),
+        "margin_loss_weight": float(margin_loss_weight),
+        "stopping_criterion": (
+            _feasibility_criterion_name(margin_mode)
+            if initialisation_objective == "margin" and float(margin_loss_weight) == 0.0
+            else "target_margin"
+        ),
         "bc_margin_mode": margin_mode,
         "initialisation_objective": initialisation_objective,
         "unsafe_mass_target": float(unsafe_mass_target),
@@ -343,13 +416,17 @@ def load_base_policy_for_dataset(
 
 
 def initialise_linear_policy_from_masks(model: nn.Sequential, dataset: dict[str, torch.Tensor], *, margin: float) -> bool:
-    """Closed-form BC initializer for one-hot features and a single Linear layer."""
+    """Closed-form BC initializer for one-hot or lookup tabular policies."""
 
-    if len(model) != 1 or not isinstance(model[0], nn.Linear):
+    if len(model) != 1 or not isinstance(model[0], (nn.Linear, StateIdLookupLinear)):
         return False
     states = dataset["state"]
     actions = dataset["actions"]
-    state_ids = states.argmax(dim=1)
+    state_ids = (
+        states.reshape(-1).long()
+        if isinstance(model[0], StateIdLookupLinear)
+        else states.argmax(dim=1)
+    )
     with torch.no_grad():
         layer = model[0]
         layer.weight.zero_()
@@ -579,6 +656,14 @@ def safe_action_margins(
     return safe_logit - best_unsafe, contested
 
 
+def _feasibility_criterion_name(margin_mode: str) -> str:
+    """Name of the CE-only (no margin loss) stopping criterion for this mode."""
+
+    return (
+        "strict_all_safe_feasibility" if margin_mode == "all" else "any_safe_feasibility"
+    )
+
+
 def safe_action_margin_loss(
     logits: torch.Tensor, safe_actions: torch.Tensor, *, target_margin: float, mode: str = "any"
 ) -> torch.Tensor:
@@ -720,6 +805,7 @@ def minimum_safe_action_margin(
 def _validate_base_policy_initialisation_settings(
     *,
     initialisation_objective: str,
+    margin_loss_weight: float = 1.0,
     safe_action_entropy_weight: float,
     min_safe_action_entropy: float,
     unsafe_mass_target: float,
@@ -731,6 +817,8 @@ def _validate_base_policy_initialisation_settings(
             "initialisation_objective must be 'margin' or 'safe_mass', got "
             f"{initialisation_objective!r}."
         )
+    if not np.isfinite(margin_loss_weight) or margin_loss_weight < 0.0:
+        raise ValueError("margin_loss_weight must be finite and non-negative.")
     if not np.isfinite(safe_action_entropy_weight) or safe_action_entropy_weight < 0.0:
         raise ValueError("safe_action_entropy_weight must be finite and non-negative.")
     if not np.isfinite(min_safe_action_entropy) or not 0.0 <= min_safe_action_entropy <= 1.0:
@@ -785,6 +873,7 @@ def fit_base_policy(
         raise ValueError(f"Unknown BC margin mode: {margin_mode!r}. Expected 'any' or 'all'.")
     _validate_base_policy_initialisation_settings(
         initialisation_objective=initialisation_objective,
+        margin_loss_weight=margin_loss_weight,
         safe_action_entropy_weight=safe_action_entropy_weight,
         min_safe_action_entropy=min_safe_action_entropy,
         unsafe_mass_target=unsafe_mass_target,
@@ -818,7 +907,12 @@ def fit_base_policy(
         else float(safe_action_entropy_weight) > 0.0
     )
 
-    def reached_target(accuracy: float, margin: float, diagnostics: dict[str, Any]) -> bool:
+    def reached_target(
+        accuracy: float,
+        margin: float,
+        all_margin: float,
+        diagnostics: dict[str, Any],
+    ) -> bool:
         entropy_reached = (
             not entropy_enabled
             or diagnostics["normalized_safe_action_entropy_min"]
@@ -830,7 +924,12 @@ def fit_base_policy(
                 and diagnostics["max_unsafe_action_mass"] <= float(max_unsafe_mass)
                 and entropy_reached
             )
-        return bool(accuracy >= 1.0 and margin >= float(target_margin) and entropy_reached)
+        margin_reached = (
+            margin > 0.0
+            if float(margin_loss_weight) == 0.0
+            else margin >= float(target_margin)
+        )
+        return bool(accuracy >= 1.0 and margin_reached and entropy_reached)
 
     def metrics(
         *,
@@ -846,7 +945,7 @@ def fit_base_policy(
             "final_accuracy": final_accuracy,
             "epochs_run": int(epochs_run),
             "reached_target": reached_target(
-                final_accuracy, final_margin, final_diagnostics
+                final_accuracy, final_margin, final_all_margin, final_diagnostics
             ),
             "used_direct_linear_init": used_direct_init,
             "initial_min_margin": initial_margin,
@@ -856,6 +955,12 @@ def fit_base_policy(
             "initial_min_all_margin": initial_all_margin,
             "final_min_all_margin": final_all_margin,
             "target_margin": float(target_margin),
+            "margin_loss_weight": float(margin_loss_weight),
+            "stopping_criterion": (
+                _feasibility_criterion_name(margin_mode)
+                if initialisation_objective == "margin" and float(margin_loss_weight) == 0.0
+                else "target_margin"
+            ),
             "bc_margin_mode": margin_mode,
             "initialisation_objective": initialisation_objective,
             "unsafe_mass_target": float(unsafe_mass_target),
@@ -867,7 +972,9 @@ def fit_base_policy(
             **{f"final_{key}": value for key, value in final_diagnostics.items()},
         }
 
-    if reached_target(initial_accuracy, initial_margin, initial_diagnostics):
+    if reached_target(
+        initial_accuracy, initial_margin, initial_all_margin, initial_diagnostics
+    ):
         return metrics(
             final_accuracy=initial_accuracy,
             epochs_run=0,
@@ -924,7 +1031,9 @@ def fit_base_policy(
         final_diagnostics = safe_action_initialisation_diagnostics(
             model, dataset, device=device_t
         )
-        if reached_target(final_accuracy, final_margin, final_diagnostics):
+        if reached_target(
+            final_accuracy, final_margin, final_all_margin, final_diagnostics
+        ):
             break
 
     return metrics(
@@ -1164,9 +1273,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-kwargs", default=None)
     parser.add_argument(
         "--state-representation",
-        choices=("features", "one_hot"),
+        choices=("features", "one_hot", "state_id_lookup"),
         default="features",
-        help="BC input representation. 'features' requires --env-id.",
+        help=(
+            "BC/certificate input representation. 'features' requires --env-id; "
+            "'state_id_lookup' is exactly equivalent to one-hot but stores integer IDs."
+        ),
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--run-id", default=None)
@@ -1186,7 +1298,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Fit or validate the base policy and save its dataset artifacts, but "
             "do not calibrate a Rashomon temperature or grow a safe region. This "
-            "is intended for directional adaptive PSPO, whose first proposal "
+            "is intended for directional PSPO, whose first proposal "
             "determines the initial region-growth direction."
         ),
     )
@@ -1211,11 +1323,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bc-lr", type=float, default=3e-3)
     parser.add_argument("--bc-max-epochs", type=int, default=8000)
     parser.add_argument("--bc-batch-size", type=int, default=512)
-    parser.add_argument("--linear-init-margin", type=float, default=10.0)
+    parser.add_argument("--linear-init-margin", type=float, default=BC_TARGET_MARGIN)
     parser.add_argument(
         "--bc-initialisation-objective",
         choices=("margin", "safe_mass"),
-        default="margin",
+        default=BC_INITIALISATION_OBJECTIVE,
         help=(
             "Base-policy fitting objective. 'margin' preserves the legacy logit-"
             "margin loss. 'safe_mass' uses aggregate safe/unsafe probability-mass "
@@ -1225,7 +1337,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bc-target-margin",
         type=float,
-        default=10.0,
+        default=BC_TARGET_MARGIN,
         help=(
             "Minimum required gap between the best safe and best unsafe logit in "
             "every state when --bc-initialisation-objective=margin. Matches "
@@ -1238,14 +1350,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--bc-margin-loss-weight",
-        type=float,
+        type=parse_nonnegative_finite_float,
         default=1.0,
         help="Weight of the margin hinge added to the BC loss. 0 disables it.",
     )
     parser.add_argument(
         "--bc-margin-mode",
         choices=("any", "all"),
-        default="any",
+        default=BC_MARGIN_MODE,
         help=(
             "BC safety-margin semantics. 'any' requires the best safe action "
             "logit to beat the best unsafe action logit. 'all' requires every "
@@ -1255,17 +1367,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bc-safe-action-entropy-weight",
         type=parse_nonnegative_finite_float,
-        default=0.0,
+        default=BC_SAFE_ACTION_ENTROPY_WEIGHT,
         help=(
             "Weight of the reward-free entropy regularizer on the policy "
-            "distribution conditioned on safe actions. 0 preserves the legacy "
-            "base-policy objective."
+            "distribution conditioned on safe actions. Enabled by default."
         ),
     )
     parser.add_argument(
         "--bc-min-safe-action-entropy",
         type=parse_unit_interval_float,
-        default=0.95,
+        default=BC_MIN_SAFE_ACTION_ENTROPY,
         help=(
             "Minimum normalized conditional safe-action entropy required in every "
             "state with multiple safe actions when the entropy weight is positive."
@@ -1274,7 +1385,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bc-unsafe-mass-target",
         type=parse_unsafe_mass_target,
-        default=0.01,
+        default=BC_UNSAFE_MASS_TARGET,
         help=(
             "Finite target probability mass assigned to unsafe actions by the "
             "safe_mass objective. Must be strictly between 0 and 0.5."
@@ -1283,7 +1394,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bc-max-unsafe-mass",
         type=parse_max_unsafe_mass,
-        default=0.02,
+        default=BC_MAX_UNSAFE_MASS,
         help=(
             "Maximum unsafe probability mass allowed in every training state "
             "before safe_mass initialisation stops."
@@ -1292,7 +1403,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bc-safe-action-uniformity-weight",
         type=parse_nonnegative_finite_float,
-        default=1.0,
+        default=BC_SAFE_ACTION_UNIFORMITY_WEIGHT,
         help=(
             "Weight of KL(uniform || policy conditioned on safe actions) in the "
             "safe_mass objective."
@@ -1329,7 +1440,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rashomon-multi-label-mode",
         choices=("any", "all"),
-        default="any",
+        default=RASHOMON_MULTI_LABEL_MODE,
         help=(
             "Admissible-set certificate/surrogate used for the Rashomon safe "
             "parameter set. 'any' requires at least one safe action logit to "
@@ -1340,7 +1451,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rashomon-surrogate",
         choices=("auto", "probability", "logsumexp"),
-        default="auto",
+        default=RASHOMON_SURROGATE,
         help=(
             "Soft constraint used while growing the Rashomon region. 'auto' "
             "preserves the historical formula for each multi-label mode; "
@@ -1379,6 +1490,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    policy_initialisation_started = time.perf_counter()
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.output_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1399,9 +1511,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             env_kwargs=parse_env_kwargs(args.env_kwargs),
         ).unwrapped
         state_to_features = feature_env.state_to_features
-    dataset, dataset_metadata = make_safe_behaviour_payload(mask, state_to_features)
+    elif args.state_representation == "state_id_lookup":
+        unsupported = []
+        if args.growth_method != "IBP":
+            unsupported.append(f"growth_method={args.growth_method}")
+        if args.certification_method != "IBP":
+            unsupported.append(f"certification_method={args.certification_method}")
+        if args.safe_region_shape != "orthotope":
+            unsupported.append(f"safe_region_shape={args.safe_region_shape}")
+        if unsupported:
+            raise ValueError(
+                "state_id_lookup currently supports IBP orthotopes only; got "
+                + ", ".join(unsupported)
+                + "."
+            )
+    dataset, dataset_metadata = make_safe_behaviour_payload(
+        mask,
+        state_to_features,
+        state_representation=args.state_representation,
+    )
     rashomon_batch_size = resolve_rashomon_batch_size(args.rashomon_batch_size, mask)
-    input_dim = int(dataset["state"].shape[1])
+    input_dim = int(dataset_metadata["input_dim"])
     n_actions = int(dataset["actions"].shape[1])
 
     base_policy_source = None
@@ -1411,6 +1541,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             n_actions,
             hidden_dim=args.hidden_dim,
             n_hidden=args.n_hidden,
+            state_id_lookup=args.state_representation == "state_id_lookup",
         )
         bc_metrics = fit_base_policy(
             model,
@@ -1440,6 +1571,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             hidden_dim=args.hidden_dim,
             n_hidden=args.n_hidden,
             target_margin=args.bc_target_margin,
+            margin_loss_weight=args.bc_margin_loss_weight,
             margin_mode=args.bc_margin_mode,
             safe_action_entropy_weight=args.bc_safe_action_entropy_weight,
             min_safe_action_entropy=args.bc_min_safe_action_entropy,
@@ -1471,12 +1603,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 f"(maximum {bc_metrics['max_unsafe_mass']:.6f})"
             )
         else:
-            target_description = (
-                f"{bc_metrics['bc_margin_mode']!r} safety margin: "
-                f"final_accuracy={bc_metrics['final_accuracy']:.6f}, "
-                f"final_min_margin={bc_metrics['final_min_margin']:.4f} "
-                f"(target {bc_metrics['target_margin']:.4f})"
-            )
+            if float(bc_metrics["margin_loss_weight"]) == 0.0:
+                mode = str(bc_metrics["bc_margin_mode"])
+                label = "strict all-safe" if mode == "all" else "any-safe"
+                margin_key = "final_min_all_margin" if mode == "all" else "final_min_any_margin"
+                target_description = (
+                    f"{label} feasibility: "
+                    f"final_accuracy={bc_metrics['final_accuracy']:.6f}, "
+                    f"{margin_key}="
+                    f"{bc_metrics[margin_key]:.4f} (required > 0)"
+                )
+            else:
+                target_description = (
+                    f"{bc_metrics['bc_margin_mode']!r} safety margin: "
+                    f"final_accuracy={bc_metrics['final_accuracy']:.6f}, "
+                    f"final_min_margin={bc_metrics['final_min_margin']:.4f} "
+                    f"(target {bc_metrics['target_margin']:.4f})"
+                )
         raise RuntimeError(
             "Base policy did not reach 100% allowed-action accuracy at the required "
             f"{target_description}{entropy_requirement}. Raise --bc-max-epochs or "
@@ -1523,6 +1666,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "architecture": architecture,
         "dataset": dataset_metadata,
         "base_policy": bc_metrics,
+        "timing": {
+            "policy_initialisation_wall_time_s": float(
+                time.perf_counter() - policy_initialisation_started
+            ),
+        },
     }
     if args.base_policy_only:
         summary = {

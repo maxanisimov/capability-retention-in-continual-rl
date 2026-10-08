@@ -61,6 +61,8 @@ from projects.safe_policy_optimisation.utils.episode_recording import (
 )
 from projects.safe_policy_optimisation.stages.train_ppo_shield import (
     load_shield_mask,
+    make_continuous_state_shield,
+    resolve_continuous_shield_name,
     validate_shield_for_env,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (
@@ -149,6 +151,29 @@ class GenericShieldedPolicyTests(unittest.TestCase):
             mask = load_shield_mask(path, source="action_risk", risk_threshold=0.0)
 
             self.assertTrue(np.array_equal(mask, np.array([[1, 0], [0, 1]])))
+
+    def test_continuous_shield_factory_auto_selects_and_applies_config(self) -> None:
+        shield = make_continuous_state_shield(
+            "auto",
+            "MountainCar-v0",
+            {"unsafe_max_position": -1.05},
+        )
+
+        self.assertEqual(shield.n_actions, 3)
+        self.assertAlmostEqual(shield.config.unsafe_max_position, -1.05)
+        self.assertAlmostEqual(shield.config.critical_min_position, -1.05)
+
+    def test_continuous_shield_factory_rejects_environment_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "designed for CartPole-v1"):
+            resolve_continuous_shield_name("cartpole", "MountainCar-v0")
+
+    def test_validate_continuous_shield_for_mountaincar(self) -> None:
+        env = gym.make("MountainCar-v0")
+        try:
+            shield = make_continuous_state_shield("auto", "MountainCar-v0")
+            validate_shield_for_env(shield, env)
+        finally:
+            env.close()
 
     def test_validate_shield_shape_mismatch_raises(self) -> None:
         env = make_minipacman_env(max_episode_steps=5)

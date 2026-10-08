@@ -43,6 +43,9 @@ from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
 )
 from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
 from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
+from projects.safe_policy_optimisation.utils.warm_start import (  # noqa: E402
+    warm_start_actor,
+)
 
 
 ALGORITHM_NAME = "plain_ppo"
@@ -132,6 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-kwargs", default=None, help="JSON object passed to gym.make.")
     parser.add_argument("--max-episode-steps", type=int, default=None)
     parser.add_argument("--cost-limit", type=float, default=0.0)
+    parser.add_argument(
+        "--mountaincar-shaped-reward",
+        action="store_true",
+        help=(
+            "Use the existing potential-based MountainCar reward shaping during "
+            "training only. Evaluations retain the original environment reward."
+        ),
+    )
     parser.add_argument("--total-timesteps", type=int, default=10_000)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
@@ -169,11 +180,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--curve-eval-episodes", type=int, default=20)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--init-policy-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional PSPO safe-initialisation base_policy.pt to warm-start the "
+            "actor with. Critics and optimizer state still start fresh."
+        ),
+    )
     return parser
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     env_kwargs = parse_env_kwargs(args.env_kwargs)
+    mountaincar_shaped_reward = bool(
+        getattr(args, "mountaincar_shaped_reward", False)
+    )
+    if mountaincar_shaped_reward and args.env_id != "MountainCar-v0":
+        raise ValueError(
+            "--mountaincar-shaped-reward can only be used with MountainCar-v0."
+        )
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.output_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -191,13 +218,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             risk_threshold=args.risk_threshold,
         )
 
-    train_env = make_unshielded_env(
+    episode_recording_env = make_unshielded_env(
         args.env_id,
         env_kwargs=env_kwargs,
         max_episode_steps=args.max_episode_steps,
         cost_limit=args.cost_limit,
         record_episodes=True,
     )
+    train_env = episode_recording_env
+    if mountaincar_shaped_reward:
+        from projects.safe_crl.pipelines.envs.mountaincar.mountaincar_utils import (
+            MountainCarShapedReward,
+        )
+
+        train_env = MountainCarShapedReward(train_env, gamma=float(args.gamma))
     try:
         model = PPO(
             "MlpPolicy",
@@ -217,6 +251,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             device=args.device,
             verbose=1,
         )
+        warm_start = None
+        if args.init_policy_path is not None:
+            warm_start = warm_start_actor(
+                model,
+                args.init_policy_path,
+                hidden_dim=int(args.hidden_dim),
+                n_hidden=int(args.n_hidden),
+            )
+            log_info(f"warm-started actor from {args.init_policy_path}")
         reward_curve = UnshieldedRewardCurveCallback(
             env_factory=lambda: make_unshielded_env(
                 args.env_id,
@@ -253,7 +296,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
         final_curve_evaluation = reward_curve.record_final_evaluation()
-        training_records = list(train_env.episodes)
+        training_records = list(episode_recording_env.episodes)
         model.save(run_dir / "model.zip")
     finally:
         train_env.close()
@@ -272,6 +315,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             done = False
             while not done:
                 action, _ = model.predict(obs, deterministic=True)
+                if isinstance(action, np.ndarray) and action.ndim == 0:
+                    action = action.item()
                 obs, _reward, terminated, truncated, _info = eval_env.step(action)
                 done = bool(terminated or truncated)
         eval_records = list(eval_env.episodes)
@@ -280,10 +325,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     config = {
         "algorithm": ALGORITHM_NAME,
+        "warm_start": warm_start,
         "env_id": args.env_id,
         "env_kwargs": env_kwargs,
         "max_episode_steps": args.max_episode_steps,
         "cost_limit": float(args.cost_limit),
+        "mountaincar_shaped_reward": mountaincar_shaped_reward,
         "shield_path": None if args.shield_path is None else str(args.shield_path),
         "shield_source": args.shield_source,
         "shield_key": args.shield_key,

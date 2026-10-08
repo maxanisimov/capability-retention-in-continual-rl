@@ -1,13 +1,14 @@
-"""Train PPO on an unshielded env using a user-provided discrete shield."""
+"""Train PPO with either a tabular mask or a continuous-state safety shield."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
 
 import gymnasium as gym
 import numpy as np
@@ -15,7 +16,25 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from provably_safe_policy_optimisation import ProvablySafePPO, Shield  # noqa: E402
+from continuous_state_shields import (  # noqa: E402
+    CartPoleShield,
+    CartPoleShieldConfig,
+    LunarLanderDescentShield,
+    LunarLanderDescentShieldConfig,
+    LunarLanderShield,
+    LunarLanderShieldConfig,
+    LunarLanderViewportShield,
+    LunarLanderViewportShieldConfig,
+    MountainCarShield,
+    MountainCarShieldConfig,
+)
+from provably_safe_policy_optimisation import (  # noqa: E402
+    ContinuousStateShieldAdapter,
+    ProvablySafePPO,
+    Shield,
+    as_action_shield,
+    is_continuous_state_shield,
+)
 
 from projects.safe_policy_optimisation.utils import io  # noqa: E402
 from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
@@ -23,28 +42,32 @@ from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
     add_ppo_hyperparameter_args,
     net_arch_from_args,
 )
+from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
 from projects.safe_policy_optimisation.utils.episode_recording import (  # noqa: E402
     EpisodeRecorderWrapper,
 )
-from projects.safe_policy_optimisation.utils.envs import parse_env_kwargs  # noqa: E402
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
+    LearningCurveLogger,
+    UnshieldedRewardCurveCallback,
+    episode_success,
+)
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 from projects.safe_policy_optimisation.utils.metrics import (  # noqa: E402
     success_mode_for_env,
     summarise_evaluation,
-)
-from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E402
-    episode_success,
-    LearningCurveLogger,
-    UnshieldedRewardCurveCallback,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     EpisodeMetrics,
     aggregate_training_violations,
     aggregate_violations,
-    obs_state_id,
 )
-from projects.safe_policy_optimisation.utils.shield import load_shield_mask  # noqa: E402
-from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
+from projects.safe_policy_optimisation.utils.shield import (  # noqa: E402
+    load_shield_mask,
+)
+from projects.safe_policy_optimisation.utils.warm_start import (  # noqa: E402
+    warm_start_actor,
+)
 
 ALGORITHM_NAME = "shielded_ppo"
 DEFAULT_OUTPUT_DIR = (
@@ -95,9 +118,78 @@ def masa_state_count(env: gym.Env) -> int:
     )
 
 
-def validate_shield_for_env(mask: np.ndarray, env: gym.Env) -> None:
-    # The observation may be a Discrete id or a Box feature vector; either way
-    # the shield mask is indexed by the underlying integer state id.
+_CONTINUOUS_SHIELDS = {
+    "mountaincar": ("MountainCar-v0", MountainCarShieldConfig, MountainCarShield),
+    "cartpole": ("CartPole-v1", CartPoleShieldConfig, CartPoleShield),
+    "lunarlander": ("LunarLander-v3", LunarLanderShieldConfig, LunarLanderShield),
+    "lunarlander-descent": (
+        "LunarLander-v3",
+        LunarLanderDescentShieldConfig,
+        LunarLanderDescentShield,
+    ),
+    "lunarlander-viewport": (
+        "LunarLander-v3",
+        LunarLanderViewportShieldConfig,
+        LunarLanderViewportShield,
+    ),
+}
+# Several shields may target one environment, so ``auto`` resolves through an
+# explicit default rather than through the registry's insertion order.
+_CONTINUOUS_SHIELD_BY_ENV = {
+    "MountainCar-v0": "mountaincar",
+    "CartPole-v1": "cartpole",
+    "LunarLander-v3": "lunarlander",
+}
+
+
+def resolve_continuous_shield_name(name: str, env_id: str) -> str:
+    """Resolve ``auto`` and reject a shield selected for the wrong environment."""
+    resolved = _CONTINUOUS_SHIELD_BY_ENV.get(env_id) if name == "auto" else name
+    if resolved is None:
+        supported = ", ".join(sorted(_CONTINUOUS_SHIELD_BY_ENV))
+        raise ValueError(
+            f"No continuous-state shield is registered for {env_id!r}; supported envs: {supported}."
+        )
+    expected_env = _CONTINUOUS_SHIELDS[resolved][0]
+    if env_id != expected_env:
+        raise ValueError(
+            f"Continuous shield {resolved!r} is designed for {expected_env}, not {env_id}."
+        )
+    return resolved
+
+
+def _parse_continuous_shield_config(value: str | dict[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--continuous-shield-config is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--continuous-shield-config must be a JSON object.")
+    return parsed
+
+
+def make_continuous_state_shield(
+    name: str,
+    env_id: str,
+    config: str | dict[str, Any] | None = None,
+) -> Any:
+    """Build a registered observation-based shield with optional JSON overrides."""
+    resolved = resolve_continuous_shield_name(name, env_id)
+    _expected_env, config_type, shield_type = _CONTINUOUS_SHIELDS[resolved]
+    values = _parse_continuous_shield_config(config)
+    try:
+        return shield_type(config_type(**values))
+    except TypeError as exc:
+        raise ValueError(
+            f"Invalid configuration for the {resolved} continuous-state shield: {exc}"
+        ) from exc
+
+
+def validate_shield_for_env(shield: Any, env: gym.Env) -> None:
     if not isinstance(env.observation_space, gym.spaces.Discrete | gym.spaces.Box):
         raise ValueError(
             "Shielded PPO requires a Discrete or Box observation space. "
@@ -108,6 +200,21 @@ def validate_shield_for_env(mask: np.ndarray, env: gym.Env) -> None:
             "Shielded PPO requires a Discrete action space. "
             f"Got {type(env.action_space).__name__}."
         )
+
+    if is_continuous_state_shield(shield):
+        if not isinstance(env.observation_space, gym.spaces.Box):
+            raise ValueError(
+                "Continuous-state shields require a Box observation space; got "
+                f"{type(env.observation_space).__name__}."
+            )
+        if int(shield.n_actions) != int(env.action_space.n):
+            raise ValueError(
+                "Shield action count does not match env: "
+                f"shield={int(shield.n_actions)}, expected={int(env.action_space.n)}."
+            )
+        return
+
+    mask = np.asarray(shield)
     n_states = masa_state_count(env)
     if mask.shape != (n_states, int(env.action_space.n)):
         raise ValueError(
@@ -135,10 +242,30 @@ def _resolve_curve_eval_freq(args: argparse.Namespace) -> int:
     return int(args.n_steps)
 
 
+RuntimeShield = Shield | ContinuousStateShieldAdapter
+
+
+def _override_one(shield: RuntimeShield, obs: Any, proposed_action: int) -> int:
+    if isinstance(shield, ContinuousStateShieldAdapter):
+        executed, _unsafe = shield.override_observations(
+            np.asarray([obs]), np.asarray([proposed_action])
+        )
+        return int(executed[0])
+    state = shield.obs_to_state(np.asarray([obs]))
+    return int(shield.override(state, np.asarray([proposed_action]))[0])
+
+
+def _is_safe_one(shield: RuntimeShield, obs: Any, action: int) -> bool:
+    if isinstance(shield, ContinuousStateShieldAdapter):
+        return shield.is_safe_action(obs, action)
+    state = int(shield.obs_to_state(np.asarray([obs]))[0])
+    return shield.is_safe(state, action)
+
+
 def evaluate_shielded_policy(
     model: ProvablySafePPO,
     env: EpisodeRecorderWrapper,
-    shield: Shield,
+    shield: RuntimeShield,
     *,
     episodes: int,
     seed: int,
@@ -150,9 +277,9 @@ def evaluate_shielded_policy(
         done = False
         while not done:
             proposed, _ = model.predict(obs, deterministic=True)
-            state = shield.obs_to_state(np.asarray([obs]))
-            executed = shield.override(state, np.asarray([int(np.asarray(proposed).item())]))
-            obs, _reward, terminated, truncated, _info = env.step(int(executed[0]))
+            proposed_action = int(np.asarray(proposed).item())
+            executed = _override_one(shield, obs, proposed_action)
+            obs, _reward, terminated, truncated, _info = env.step(executed)
             done = bool(terminated or truncated)
     return list(env.episodes)
 
@@ -168,7 +295,7 @@ def _action_safety_row(checked: int, unsafe: int) -> dict[str, float | int]:
 def evaluate_unshielded_policy(
     model: ProvablySafePPO,
     env: EpisodeRecorderWrapper,
-    shield_mask: np.ndarray,
+    shield: RuntimeShield,
     *,
     episodes: int,
     seed: int,
@@ -183,9 +310,8 @@ def evaluate_unshielded_policy(
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             action_int = int(np.asarray(action).item())
-            state = obs_state_id(env, obs)
             checked += 1
-            unsafe += int(not bool(shield_mask[state, action_int]))
+            unsafe += int(not _is_safe_one(shield, obs, action_int))
             obs, _reward, terminated, truncated, _info = env.step(action_int)
             done = bool(terminated or truncated)
     return list(env.episodes), _action_safety_row(checked, unsafe)
@@ -308,9 +434,23 @@ def _records_to_metrics(records: list[dict[str, Any]]) -> list[EpisodeMetrics]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train PPO on an unshielded Gymnasium env with a user-provided shield mask.",
+        description=(
+            "Train PPO on an unshielded Gymnasium env with either a tabular shield "
+            "mask or a built-in continuous-state shield."
+        ),
     )
-    parser.add_argument("--shield-path", type=Path, required=True)
+    shield_source = parser.add_mutually_exclusive_group(required=True)
+    shield_source.add_argument("--shield-path", type=Path)
+    shield_source.add_argument(
+        "--continuous-shield",
+        choices=("auto", "mountaincar", "cartpole", "lunarlander"),
+        help="Observation-based shield; 'auto' selects it from --env-id.",
+    )
+    parser.add_argument(
+        "--continuous-shield-config",
+        default=None,
+        help="Optional JSON object overriding the selected shield's config dataclass.",
+    )
     parser.add_argument("--env-id", required=True)
     parser.add_argument("--env-kwargs", default=None, help="JSON object passed to gym.make.")
     parser.add_argument("--max-episode-steps", type=int, default=None)
@@ -327,6 +467,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--cost-limit", type=float, default=0.0)
+    parser.add_argument(
+        "--mountaincar-shaped-reward",
+        action="store_true",
+        help=(
+            "Use the existing potential-based MountainCar reward shaping during "
+            "training only. Final and learning-curve evaluations retain the "
+            "original environment reward."
+        ),
+    )
     parser.add_argument("--total-timesteps", type=int, default=10_000)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
@@ -367,17 +516,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--init-policy-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional PSPO safe-initialisation base_policy.pt to warm-start the "
+            "actor with. Critics and optimizer state still start fresh."
+        ),
+    )
     return parser
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     env_kwargs = parse_env_kwargs(args.env_kwargs)
-    mask = load_shield_mask(
-        args.shield_path,
-        shield_key=args.shield_key,
-        source=args.shield_source,
-        risk_threshold=args.risk_threshold,
+    shield_path = getattr(args, "shield_path", None)
+    continuous_selection = getattr(args, "continuous_shield", None)
+    continuous_config = getattr(args, "continuous_shield_config", None)
+    mountaincar_shaped_reward = bool(
+        getattr(args, "mountaincar_shaped_reward", False)
     )
+    if mountaincar_shaped_reward and args.env_id != "MountainCar-v0":
+        raise ValueError(
+            "--mountaincar-shaped-reward can only be used with MountainCar-v0."
+        )
+    if (shield_path is None) == (continuous_selection is None):
+        raise ValueError("Select exactly one of --shield-path or --continuous-shield.")
+
+    mask: np.ndarray | None
+    continuous_shield: Any | None
+    continuous_shield_name: str | None
+    if shield_path is not None:
+        if continuous_config is not None:
+            raise ValueError(
+                "--continuous-shield-config can only be used with --continuous-shield."
+            )
+        mask = load_shield_mask(
+            shield_path,
+            shield_key=args.shield_key,
+            source=args.shield_source,
+            risk_threshold=args.risk_threshold,
+        )
+        continuous_shield = None
+        continuous_shield_name = None
+        runtime_shield: Any = mask
+    else:
+        mask = None
+        continuous_shield_name = resolve_continuous_shield_name(
+            continuous_selection, args.env_id
+        )
+        continuous_shield = make_continuous_state_shield(
+            continuous_selection, args.env_id, continuous_config
+        )
+        runtime_shield = continuous_shield
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.output_dir / run_id
@@ -388,23 +579,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     curve_eval_freq = _resolve_curve_eval_freq(args)
 
-    train_env = make_unshielded_env(
+    episode_recording_env = make_unshielded_env(
         args.env_id,
         env_kwargs=env_kwargs,
         max_episode_steps=args.max_episode_steps,
         cost_limit=args.cost_limit,
         record_episodes=True,
     )
-    validate_shield_for_env(mask, train_env)
-    # In "features" mode the observation is a Box vector; the shield is indexed
-    # by state id, so it needs the env's exact features->state inverse. In
-    # "index" mode this is the identity cast (== the shield's own default).
-    obs_to_state = train_env.unwrapped.make_obs_to_state()
+    train_env = episode_recording_env
+    if mountaincar_shaped_reward:
+        from projects.safe_crl.pipelines.envs.mountaincar.mountaincar_utils import (
+            MountainCarShapedReward,
+        )
+
+        train_env = MountainCarShapedReward(train_env, gamma=float(args.gamma))
+    validate_shield_for_env(runtime_shield, train_env)
+    # Tabular feature observations need the env's exact features->state inverse.
+    # Continuous-state shields instead receive each raw observation directly.
+    obs_to_state = (
+        train_env.unwrapped.make_obs_to_state() if mask is not None else None
+    )
     try:
         model = ProvablySafePPO(
             "MlpPolicy",
             train_env,
-            shield=mask,
+            shield=runtime_shield,
             obs_to_state=obs_to_state,
             shield_seed=args.seed,
             shield_action_storage=args.shield_action_storage,
@@ -423,6 +622,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             device=args.device,
             verbose=1,
         )
+        warm_start = None
+        if args.init_policy_path is not None:
+            warm_start = warm_start_actor(
+                model,
+                args.init_policy_path,
+                hidden_dim=int(args.hidden_dim),
+                n_hidden=int(args.n_hidden),
+            )
+            log_info(f"warm-started actor from {args.init_policy_path}")
         model.set_exploration_unsafe_action_callback(curve_logger.log_exploration_unsafe)
         reward_curve = UnshieldedRewardCurveCallback(
             env_factory=lambda: make_unshielded_env(
@@ -438,6 +646,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed + 30_000,
             reward_threshold=args.success_reward_threshold,
             shield_mask=mask,
+            continuous_shield=continuous_shield,
         )
         # Second curve for the *deployed* system (shield overrides unsafe
         # actions). Paired with the unshielded curve above, this separates
@@ -458,6 +667,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed + 40_000,
             reward_threshold=args.success_reward_threshold,
             shield_mask=mask,
+            continuous_shield=continuous_shield,
             apply_shield=True,
         )
         early_stop = EarlyStopOnUnshieldedSuccessCallback(
@@ -478,7 +688,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         final_curve_evaluation = reward_curve.record_final_evaluation()
         shielded_reward_curve.record_final_evaluation()
-        training_records = list(train_env.episodes)
+        training_records = list(episode_recording_env.episodes)
         training_shield_diagnostics = model.shield_diagnostics()
         model.save(run_dir / "model.zip")
     finally:
@@ -497,8 +707,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         record_episodes=True,
     )
     try:
-        eval_shield = Shield(
-            mask, obs_to_state=eval_env_shielded.unwrapped.make_obs_to_state(), seed=args.seed,
+        eval_shield = (
+            Shield(
+                mask,
+                obs_to_state=eval_env_shielded.unwrapped.make_obs_to_state(),
+                seed=args.seed,
+            )
+            if mask is not None
+            else as_action_shield(continuous_shield)
         )
         eval_records_shielded = evaluate_shielded_policy(
             model,
@@ -523,10 +739,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         record_episodes=True,
     )
     try:
+        nominal_audit_shield = (
+            Shield(
+                mask,
+                obs_to_state=eval_env_nominal.unwrapped.make_obs_to_state(),
+                seed=args.seed,
+            )
+            if mask is not None
+            else as_action_shield(continuous_shield)
+        )
         eval_records_nominal, eval_action_safety_nominal = evaluate_unshielded_policy(
             model,
             eval_env_nominal,
-            mask,
+            nominal_audit_shield,
             episodes=args.eval_episodes,
             seed=args.seed + 10_000,
         )
@@ -535,16 +760,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     config = {
         "algorithm": ALGORITHM_NAME,
+        "warm_start": warm_start,
         "env_id": args.env_id,
         "env_kwargs": env_kwargs,
         "max_episode_steps": args.max_episode_steps,
-        "shield_path": str(args.shield_path),
-        "shield_source": args.shield_source,
-        "shield_key": args.shield_key,
-        "risk_threshold": args.risk_threshold,
+        "shield_type": "tabular" if mask is not None else "continuous_state",
+        "shield_path": str(shield_path) if shield_path is not None else None,
+        "shield_source": args.shield_source if mask is not None else None,
+        "shield_key": args.shield_key if mask is not None else None,
+        "risk_threshold": args.risk_threshold if mask is not None else None,
+        "continuous_shield": continuous_shield_name,
+        "continuous_shield_config": (
+            asdict(continuous_shield.config) if continuous_shield is not None else None
+        ),
         "shield_action_storage": args.shield_action_storage,
-        "shield_shape": list(mask.shape),
+        "shield_shape": list(mask.shape) if mask is not None else None,
         "cost_limit": float(args.cost_limit),
+        "mountaincar_shaped_reward": mountaincar_shaped_reward,
         "total_timesteps": int(args.total_timesteps),
         "training_hyperparameters": {
             "learning_rate": float(args.learning_rate),

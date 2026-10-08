@@ -589,7 +589,11 @@ def env_kwargs_with_state_representation(args: argparse.Namespace) -> dict[str, 
     if state_representation is not None:
         env_kwargs.setdefault(
             "observation_mode",
-            "index" if state_representation == "one_hot" else "features",
+            (
+                "index"
+                if state_representation in {"one_hot", "state_id_lookup"}
+                else "features"
+            ),
         )
     return env_kwargs
 
@@ -612,7 +616,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shield-path", type=Path, required=True)
     parser.add_argument("--env-id", default=None)
     parser.add_argument("--env-kwargs", default=None, help="JSON object passed to gym.make.")
-    parser.add_argument("--state-representation", choices=("one_hot", "features"), default=None)
+    parser.add_argument(
+        "--state-representation",
+        choices=("one_hot", "features", "state_id_lookup"),
+        default=None,
+    )
     parser.add_argument("--max-episode-steps", type=int, default=100)
     parser.add_argument("--shield-key", default="shield")
     parser.add_argument("--shield-source", choices=("shield", "action_risk"), default="shield")
@@ -684,6 +692,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         safe_region_shape=args.safe_region_shape,
     )
     architecture, base_state_dict = load_base_policy_payload(args.rashomon_dir)
+    lookup_tag = "state_id_lookup_discrete_observation"
+    artifact_representation = str(architecture.get("state_representation", ""))
+    if args.state_representation == "state_id_lookup" and artifact_representation != lookup_tag:
+        raise ValueError(
+            "state_id_lookup training requires a lookup-certified Rashomon artifact; "
+            f"got {artifact_representation!r}."
+        )
+    if artifact_representation == lookup_tag and args.state_representation != "state_id_lookup":
+        raise ValueError(
+            "A state_id_lookup Rashomon artifact must be trained with "
+            "--state-representation state_id_lookup."
+        )
     if isinstance(safe_region, OrthotopeRegion):
         param_bounds_l, param_bounds_u = align_rashomon_bounds_to_ppo_actor(
             architecture,
@@ -889,10 +909,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 ),
             }
         else:
+            # evaluate_unshielded_policy audits proposed actions through the
+            # shield interface, so it needs the Shield wrapper rather than the
+            # bare mask -- it never overrides, it only records what would have
+            # been unsafe.
             eval_records, eval_action_safety = evaluate_unshielded_policy(
                 model,
                 eval_env,
-                mask,
+                Shield(
+                    mask,
+                    obs_to_state=eval_env.unwrapped.make_obs_to_state(),
+                    seed=args.seed,
+                ),
                 episodes=args.eval_episodes,
                 seed=args.seed + 10_000,
             )
