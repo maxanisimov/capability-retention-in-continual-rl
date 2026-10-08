@@ -43,13 +43,13 @@ never reverts**. Each candidate update is still verified, so the run reports:
 **This configuration provides no safety guarantee** and exists only as a
 measurement baseline.
 
-It needs no pipeline file: it is the adaptive stage with
+It needs no pipeline file: it is the PSPO stage with
 `--unsafe-update-strategy none`, driven by the existing launcher:
 
 ```bash
-ADAPTIVE_STRATEGY=none \
-ADAPTIVE_OUT_BASE=projects/safe_policy_optimisation/artifacts/ablation_studies/bc_no_projection \
-  python projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
+UNSAFE_UPDATE_STRATEGY=none \
+PSPO_OUT_BASE=projects/safe_policy_optimisation/artifacts/ablation_studies/bc_no_projection \
+  python projects/safe_policy_optimisation/scripts/run_pspo_seed_experiments.py
 ```
 
 The base policy is the BC fit already produced by

@@ -1,24 +1,28 @@
 description: >
-  Canonical record of the best PSPO adaptive settings identified so far for the
-  environments discussed in the 2026-08 experiment review.
+  Canonical record of the best PSPO settings identified so far for the
+  environments discussed in the 2026-08 experiment review. These settings are
+  also the operational defaults used by the dedicated PSPO launchers.
 
 selection_notes:
+  historical_paths: >
+    Existing run names and paths below retain their pspo_adaptive prefix so
+    completed and active artifacts remain addressable after the code rename.
   mini_pacman: >
-    Uses the 2M-step safe-entropy run that made PSPO adaptive competitive with
+    Uses the 2M-step safe-entropy run that made PSPO competitive with
     PPO-Shield.
   bridge_crossing_v2: >
     Uses the later 1.6M-step safe-entropy run reusing the freq1 base policy.
     Only seeds [1, 5] were present in the run directory when this file was
     written.
   bridge_crossing_v1: >
-    Uses the same PSPO adaptive settings as Media Streaming, with Bridge
+    Uses the same PSPO settings as Media Streaming, with Bridge
     Crossing v1's own 200k-step training budget.
   colour_bomb_media_colour_bomb_v2: >
     Uses the recent freq1 default-budget run launched for Colour Bomb v1,
     Media Streaming, and Colour Bomb v2.
 
 shared:
-  algorithm: pspo_adaptive
+  algorithm: pspo
   architecture: &two_hidden_policy
     state_representation: one_hot_discrete_observation
     hidden_layers: [64, 64]
@@ -109,7 +113,7 @@ environments:
       nominal_total_timesteps: 2000000
       observed_final_timesteps: 2000896
       ppo: *ppo_defaults
-    pspo_adaptive:
+    pspo:
       <<: *adaptive_defaults
       user_facing_frequency: 100
       frequency_units: ppo_rollouts
@@ -157,7 +161,7 @@ environments:
       nominal_total_timesteps: 1600000
       observed_final_timesteps: 1601536
       ppo: *ppo_defaults
-    pspo_adaptive:
+    pspo:
       <<: *adaptive_defaults
       user_facing_frequency: 1
       frequency_units: ppo_rollouts
@@ -203,7 +207,7 @@ environments:
       nominal_total_timesteps: 200000
       observed_final_timesteps: 200704
       ppo: *ppo_defaults
-    pspo_adaptive:
+    pspo:
       <<: *adaptive_defaults
       user_facing_frequency: 1
       frequency_units: ppo_rollouts
@@ -248,7 +252,7 @@ environments:
       nominal_total_timesteps: 25000
       observed_final_timesteps: 26624
       ppo: *ppo_defaults
-    pspo_adaptive:
+    pspo:
       <<: *adaptive_defaults
       user_facing_frequency: 1
       frequency_units: ppo_rollouts
@@ -298,7 +302,7 @@ environments:
       nominal_total_timesteps: 25000
       observed_final_timesteps: 26624
       ppo: *ppo_defaults
-    pspo_adaptive:
+    pspo:
       <<: *adaptive_defaults
       user_facing_frequency: 1
       frequency_units: ppo_rollouts
@@ -344,7 +348,7 @@ environments:
       nominal_total_timesteps: 100000
       observed_final_timesteps: 100352
       ppo: *ppo_defaults
-    pspo_adaptive:
+    pspo:
       <<: *adaptive_defaults
       user_facing_frequency: 1
       frequency_units: ppo_rollouts

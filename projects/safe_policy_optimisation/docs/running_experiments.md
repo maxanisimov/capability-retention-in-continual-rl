@@ -109,10 +109,10 @@ ENVS=colour_bomb SEEDS=0,1 SMOKE_TIMESTEPS=2000 \
   python projects/safe_policy_optimisation/scripts/run_seed_experiments.py
 ```
 
-## 4. PSPO adaptive (`run_adaptive_seed_experiments.py`)
+## 4. PSPO (`run_pspo_seed_experiments.py`)
 
-PSPO adaptive exposes the former v1 and v2 update rules through one stage and
-one result name (`pspo_adaptive`). Region-first behavior is the default; use
+PSPO exposes the former v1 and v2 update rules through one stage and one result
+name (`pspo`). Region-first behavior is the default; use
 `--verify-first true` for verify-then-project behavior.
 
 The canonical stage arguments are:
@@ -138,7 +138,7 @@ final certification.
 The strongest-frequency region-first invocation is:
 
 ```bash
-.venv/bin/python projects/safe_policy_optimisation/stages/train_pspo_adaptive.py \
+.venv/bin/python projects/safe_policy_optimisation/stages/train_pspo.py \
   --base-policy-path PATH/base_policy.pt \
   --shield-path PATH/shield.pt \
   --env-id ENV_ID
@@ -148,7 +148,7 @@ To compute one non-directional safe region around the initial policy and use it
 for every projected optimizer update:
 
 ```bash
-.venv/bin/python projects/safe_policy_optimisation/stages/train_pspo_adaptive.py \
+.venv/bin/python projects/safe_policy_optimisation/stages/train_pspo.py \
   --base-policy-path PATH/base_policy.pt \
   --shield-path PATH/shield.pt \
   --env-id ENV_ID \
@@ -161,20 +161,20 @@ for every projected optimizer update:
 The multi-seed launcher pins one CPU core per job:
 
 ```bash
-python projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
+python projects/safe_policy_optimisation/scripts/run_pspo_seed_experiments.py
 ```
 
 | env var | default | meaning |
 |---|---|---|
 | `SEEDS` | `0..9` | comma list of seeds |
 | `ENVS` | all 6 | comma list of short env names |
-| `ADAPTIVE_VERIFY_FIRST` | `false` | unified equivalent of former v1 (`true`) or v2 (`false`) behavior |
-| `ADAPTIVE_FREQ` | `update` | canonical enforcement frequency |
-| `ADAPTIVE_DIRECTIONAL` | `true` | directional safe-region growth |
-| `ADAPTIVE_SURROGATE` | `logsumexp` | all-safe probability or log-sum-exp surrogate |
-| `ADAPTIVE_REGION_MODE` | `replace` | certified-region replacement/union behavior |
-| `ADAPTIVE_N_ITERS` | `100` | per-computation Rashomon budget |
-| `ADAPTIVE_OUT_BASE` | `artifacts/paper_2503_07671/runs/pspo_adaptive` | output root |
+| `VERIFY_FIRST` | `false` | unified equivalent of former v1 (`true`) or v2 (`false`) behavior; `ADAPTIVE_VERIFY_FIRST` is a deprecated alias |
+| `ADAPTIVE_FREQ` | per-environment best | MiniPacman: `100`; other paper environments: `1` |
+| `DIRECTIONAL` | `true` | directional safe-region growth; `ADAPTIVE_DIRECTIONAL` is a deprecated alias |
+| `RASHOMON_SURROGATE` | `logsumexp` | all-safe probability or log-sum-exp surrogate; `ADAPTIVE_SURROGATE` is a deprecated alias |
+| `REGION_MODE` | `replace` | certified-region replacement/union behavior; `ADAPTIVE_REGION_MODE` is a deprecated alias |
+| `RASHOMON_N_ITERS` | `200` | per-computation Rashomon budget; `ADAPTIVE_N_ITERS` is a deprecated alias |
+| `PSPO_OUT_BASE` | `artifacts/paper_2503_07671/runs/pspo` | output root; `ADAPTIVE_OUT_BASE` is a deprecated alias |
 | `SMOKE_TIMESTEPS` | off | override every env's timestep budget |
 | `NO_PIN` | off | `=1` disables per-job `taskset` core pinning |
 | `CPU_OFFSET` | `0` | shift core pinning so this launcher can share a machine with another concurrent sweep |
@@ -183,18 +183,20 @@ The one-environment launcher invokes the unified stage and additionally accepts:
 
 | env var | default | meaning |
 |---|---|---|
-| `BC_TARGET_MARGIN` | selected historical setting | required base-policy margin; also controls the direct tabular initialiser |
+| `BC_TARGET_MARGIN` | `2.0` | required base-policy margin; also controls the direct tabular initialiser |
+| `BC_SAFE_ACTION_ENTROPY_WEIGHT` | `1.0` | safe-action conditional-entropy weight; set to `0` for the legacy initializer |
+| `BC_MIN_SAFE_ACTION_ENTROPY` | `0.95` | minimum normalized safe-action entropy when entropy is enabled |
 | `RASHOMON_MULTI_LABEL_MODE` | `all` | hard safe-action-logit semantics; `any` is legacy |
 | `RASHOMON_SURROGATE` | `logsumexp` | `probability`, `logsumexp`, or legacy `auto` |
 | `RASHOMON_BATCH_SIZE` | `auto` | complete safe-behaviour demonstration dataset; a positive integer overrides it (`all` is a legacy alias) |
-| `RASHOMON_CERTIFICATE_SAMPLES` | selected historical setting | positive integer, or `all` for every shield state having a safe action |
-| `RASHOMON_N_ITERS` | selected setting | maximum iterations for every safe-region computation |
-| `ADAPTIVE_FREQ` | `update` | unified enforcement frequency |
+| `RASHOMON_CERTIFICATE_SAMPLES` | `all` | positive integer, or `all` for every shield state having a safe action |
+| `RASHOMON_N_ITERS` | `200` | maximum iterations for every safe-region computation |
+| `ADAPTIVE_FREQ` | per-environment best | MiniPacman: `100`; other paper environments: `1` |
 | `DIRECTIONAL_RASHOMON_GROWTH` | `1` | `=0` disables proposal-directed orthotope growth |
 | `CPU_IDS` | unset | explicit comma-separated, whitespace-separated, or ranged CPU allocation; supersedes `CORE_START` |
 
 When either Rashomon sample setting is `all`, the launcher derives the actual
-number of rows from the safety-demonstration dataset. Directional PSPO adaptive
+number of rows from the safety-demonstration dataset. Directional PSPO
 uses a validated base-policy-only artifact: it does not waste an undirected
 preliminary Rashomon computation before the first policy proposal is known.
 Compatible base-policy artifacts and completed seed runs are reused.
@@ -206,8 +208,8 @@ ENV_NAME=media_streaming \
 CORE_START=0 \
 SEEDS="0" \
 REGION_MODE=union \
-RUN_NAME=pspo_adaptive_media_streaming_directional \
-  projects/safe_policy_optimisation/scripts/run_pspo_adaptive_one_env.sh
+RUN_NAME=pspo_media_streaming_directional \
+  projects/safe_policy_optimisation/scripts/run_pspo_one_env.sh
 ```
 
 The following launcher runs the `replace`, directional,
@@ -221,14 +223,14 @@ utilisation for five seconds and launches only if 50 distinct cores are at least
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py
+  projects/safe_policy_optimisation/scripts/launch_pspo_multi_env.py
 ```
 
 The one-hidden-layer command is:
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  projects/safe_policy_optimisation/scripts/launch_pspo_multi_env.py \
   --architecture one_hidden
 ```
 
@@ -236,7 +238,7 @@ Inspect the resolved datasets, commands, and allocation without starting jobs:
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  projects/safe_policy_optimisation/scripts/launch_pspo_multi_env.py \
   --cpu-ids 0-49 \
   --dry-run
 ```
@@ -289,13 +291,13 @@ Keeps the BC-initialised base policy and shielded exploration, but never
 projects or reverts an unsafe candidate — every update is still verified, and
 the run reports `safe_update_fraction` (how often the policy would have stayed
 safe on its own). **This mode gives no safety guarantee**; it exists purely as
-a measurement baseline. It needs no pipeline file — it's `run_adaptive_seed_experiments.py`
+a measurement baseline. It needs no pipeline file — it's `run_pspo_seed_experiments.py`
 again, with the ablation strategy selected explicitly:
 
 ```bash
-ADAPTIVE_STRATEGY=none \
-ADAPTIVE_OUT_BASE=projects/safe_policy_optimisation/artifacts/ablation_studies/bc_no_projection \
-  python projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
+UNSAFE_UPDATE_STRATEGY=none \
+PSPO_OUT_BASE=projects/safe_policy_optimisation/artifacts/ablation_studies/bc_no_projection \
+  python projects/safe_policy_optimisation/scripts/run_pspo_seed_experiments.py
 ```
 
 ### 5.3 BC-margin sweep (masa_other + media_streaming)
@@ -305,7 +307,7 @@ BC-fit base policy's required logit margin trades off against the reward PSPO
 can subsequently recover, comparing the precomputed and adaptive-projection
 PSPO variants at each margin. `run_masa_bc_margin_sweep.py` builds a
 margin-tagged Rashomon set (`compute_shield_rashomon_set.py --bc-target-margin`)
-and then runs both `train_pspo_precomputed.py` and `train_pspo_adaptive.py`
+and then runs both `train_pspo_precomputed.py` and `train_pspo.py`
 (always with `--unsafe-update-strategy rashomon_project`, the only certified
 strategy available) against it, for every margin.
 
@@ -322,7 +324,7 @@ MARGINS=0.1,1,2,5,10 SEEDS=0,1,2,3,4,5,6,7,8,9 \
 | `PHASES` | `sets,precomputed,adaptive_project` | subset of `sets` (build the margin-tagged Rashomon sets), `precomputed`, `adaptive_project` |
 | `SET_PARALLEL` | `5` | max concurrent Rashomon-set builds |
 | `PSPO_PARALLEL` | `20` | max concurrent precomputed/adaptive training jobs |
-| `ADAPTIVE_N_ITERS` | `100` | per-computation Rashomon budget for the adaptive phase |
+| `RASHOMON_N_ITERS` | `100` | per-computation Rashomon budget for the adaptive phase; `ADAPTIVE_N_ITERS` is a deprecated alias |
 | `FORCE` | off | `=1` reruns jobs whose output already exists (default: resumable, skips completed jobs) |
 | `MASA_MARGIN_OUT_BASE` | `artifacts/bc_margin_sweep/masa_other` | output root |
 
@@ -384,7 +386,7 @@ Use `--env NAME` for one environment or `--envs a b c` for several; `--method`
 | `scripts/run_seed_sweep.py` | one or more pipelines × N seeds, aggregated | argparse |
 | `scripts/run_parallel_pipelines.py` | several independent pipelines, disjoint cores | argparse |
 | `scripts/run_seed_experiments.py` | paper baselines (safe-RL, shield, precomputed PSPO), all envs/seeds | env vars |
-| `scripts/run_adaptive_seed_experiments.py` | adaptive PSPO (`AdaptiveSafePPO`), all envs/seeds | env vars |
+| `scripts/run_pspo_seed_experiments.py` | PSPO (`AdaptiveSafePPO`), all envs/seeds | env vars |
 | `scripts/run_rashomon_iter_sweep.py` | Rashomon-set-size ablation | env vars |
 | `scripts/run_masa_bc_margin_sweep.py` | BC-margin ablation (masa_other envs) | env vars |
 | `scripts/run_pspo_hparam_sweep.py` | PSPO-only iteration × BC-margin sweep with core-isolated settings | argparse |

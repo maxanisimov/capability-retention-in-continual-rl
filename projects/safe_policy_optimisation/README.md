@@ -229,53 +229,56 @@ PAPER_OUT_BASE=/tmp/safe_rl_smoke \
   projects/safe_policy_optimisation/scripts/run_seed_experiments.py
 ```
 
-### PSPO adaptive
+### PSPO
 
-`stages/train_pspo_adaptive.py` is the canonical PSPO-adaptive training stage.
-For normal paper-scale runs, use `run_adaptive_seed_experiments.py`; it prepares
+`stages/train_pspo.py` is the canonical PSPO training stage. For normal
+paper-scale runs, use `run_pspo_seed_experiments.py`; it prepares
 or reuses the required all-safe, one-hot base policy and invokes the canonical
 stage once for every environment and seed.
 
-The default adaptive experiment is region-first, directional, uses the
+The former `*_pspo_adaptive*` modules and scripts remain as deprecated wrappers
+for existing automation. New runs and result metadata use `pspo`.
+
+The default PSPO experiment is region-first, directional, uses the
 all-safe-action LogSumExp certificate, replaces the previous certified region,
-and enforces every PPO optimizer update:
+enables safe-action entropy, and uses each environment's best recorded
+frequency and training budget:
 
 ```bash
 ENVS=bridge_crossing_v2 \
 SEEDS=0,1,2,3,4,5,6,7,8,9 \
-ADAPTIVE_VERIFY_FIRST=false \
-ADAPTIVE_FREQ=update \
-ADAPTIVE_DIRECTIONAL=true \
-ADAPTIVE_REGION_MODE=replace \
-ADAPTIVE_SURROGATE=logsumexp \
-ADAPTIVE_N_ITERS=100 \
-ADAPTIVE_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2 \
+VERIFY_FIRST=false \
+DIRECTIONAL=true \
+REGION_MODE=replace \
+RASHOMON_SURROGATE=logsumexp \
+RASHOMON_N_ITERS=200 \
+PSPO_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_bridge_v2 \
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
+  projects/safe_policy_optimisation/scripts/run_pspo_seed_experiments.py
 ```
 
-Adaptive launcher controls are:
+PSPO launcher controls are:
 
 | Environment variable | Default | Meaning |
 |---|---|---|
 | `ENVS` | all six | comma-separated environment names |
 | `SEEDS` | `0` through `9` | comma-separated seeds |
-| `ADAPTIVE_VERIFY_FIRST` | `false` | `false` for region-first; `true` for verify-then-project |
-| `ADAPTIVE_FREQ` | `update` | `update`, `rollout`, `once`, or a positive number of rollouts |
-| `ADAPTIVE_DIRECTIONAL` | `true` | grow the orthotope toward the proposed parameter update |
-| `ADAPTIVE_REGION_MODE` | `replace` | `replace` or `union` certified regions |
-| `ADAPTIVE_SURROGATE` | `logsumexp` | `logsumexp` or `probability` |
-| `ADAPTIVE_N_ITERS` | `100` | maximum iterations per region computation |
+| `VERIFY_FIRST` | `false` | `false` for region-first; `true` for verify-then-project; `ADAPTIVE_VERIFY_FIRST` is a deprecated alias |
+| `ADAPTIVE_FREQ` | per-environment best | MiniPacman: `100`; other paper environments: `1`; may be overridden with `update`, `rollout`, `once`, or a positive rollout count |
+| `DIRECTIONAL` | `true` | grow the orthotope toward the proposed parameter update; `ADAPTIVE_DIRECTIONAL` is a deprecated alias |
+| `REGION_MODE` | `replace` | `replace` or `union` certified regions; `ADAPTIVE_REGION_MODE` is a deprecated alias |
+| `RASHOMON_SURROGATE` | `logsumexp` | `logsumexp` or `probability`; `ADAPTIVE_SURROGATE` is a deprecated alias |
+| `RASHOMON_N_ITERS` | `200` | maximum iterations per region computation; `ADAPTIVE_N_ITERS` is a deprecated alias |
 | `CPU_OFFSET` | `0` | offset into the available CPU affinity set |
 | `NO_PIN` | unset | set to `1` to disable one-core-per-seed pinning |
 | `SMOKE_TIMESTEPS` | unset | replace each environment's training budget |
-| `ADAPTIVE_OUT_BASE` | `projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_adaptive` | adaptive result root |
+| `PSPO_OUT_BASE` | `projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo` | PSPO result root; `ADAPTIVE_OUT_BASE` is a deprecated alias |
 
 Numeric `ADAPTIVE_FREQ=N` aggregates N PPO rollouts before enforcing the
 candidate update. `ADAPTIVE_FREQ=once` computes one fixed, non-directional
-initial region, so it must be combined with `ADAPTIVE_DIRECTIONAL=false` and
-`ADAPTIVE_VERIFY_FIRST=false`. Directional growth and proposal-containment
-stopping require an orthotope region. `ADAPTIVE_N_ITERS` is a maximum: growth
+initial region, so it must be combined with `DIRECTIONAL=false` and
+`VERIFY_FIRST=false`. Directional growth and proposal-containment
+stopping require an orthotope region. `RASHOMON_N_ITERS` is a maximum: growth
 can finish earlier once the proposal lies inside a fully certified region.
 The canonical stage's `--rashomon-batch-size` defaults to `auto`, which resolves
 to the complete safe-behaviour demonstration dataset for every region
@@ -283,10 +286,30 @@ computation. Together with the default exhaustive certificate, this makes every
 safe-behaviour row participate in both growth and final certification. A
 positive integer remains available as an explicit override.
 
+Large discrete FrozenLake layouts can use
+`--state-representation state_id_lookup`. This preserves the exact one-hot
+actor and IBP certificate, but stores each certificate input as one integer and
+gathers the corresponding first-layer weight column. It is currently supported
+for discrete table shields with IBP orthotope regions. PPO rollouts and
+shielded exploration remain unchanged. The structured FrozenLake launcher uses
+a reward-agnostic safety-only initialization: every shield-permitted action has
+the same initial logit, every prohibited action has the same lower logit, and no
+goal, reward, witness policy, or goal-distance information is passed to the
+initializer. New artifacts use a `_safety_only` output suffix so they cannot be
+confused with the historical goal-aware runs. To prepare one:
+
+```bash
+.venv/bin/python \
+  projects/safe_policy_optimisation/scripts/run_stochastic_frozenlake_pspo.py \
+  --size 512 \
+  --state-representation state_id_lookup \
+  --prepare
+```
+
 Results are written to:
 
 ```text
-<ADAPTIVE_OUT_BASE>/
+<PSPO_OUT_BASE>/
   _base_policies/<environment>/
   _launch_logs/
   <environment>/seed<seed>/
@@ -303,8 +326,8 @@ CPU_IDS=0-9 \
 ARCHITECTURE=two_hidden \
 RASHOMON_N_ITERS=200 \
 RASHOMON_OBJECTIVE=projection_distance \
-RUN_NAME=pspo_adaptive_bridge_v2_two_hidden \
-  projects/safe_policy_optimisation/scripts/run_pspo_adaptive_one_env.sh
+RUN_NAME=pspo_bridge_v2_two_hidden \
+  projects/safe_policy_optimisation/scripts/run_pspo_one_env.sh
 ```
 
 For simultaneous one- or two-hidden runs across several environments, with
@@ -312,7 +335,7 @@ automatic idle-core selection, use:
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  projects/safe_policy_optimisation/scripts/launch_pspo_multi_env.py \
   --architecture two_hidden \
   --lid-n-iters 200 \
   --lid-objective projection_distance \
@@ -323,28 +346,29 @@ The former launcher spellings `--rashomon-n-iters` and
 `--rashomon-objective` are deprecated compatibility aliases. They emit a
 warning and will be removed in the next CLI-breaking cleanup. Use
 `--freq rollout` in place of the removed `--adaptive-granularity train_phase`;
-the default frequency is `update`.
+the default is the best recorded per-environment frequency: every 100 PPO
+rollouts for MiniPacman and every rollout for the other paper environments.
 
 Set `--verify-first true` for the verify-then-project ablation: each enforced
 PPO proposal is checked exactly and a Rashomon region is constructed only when
 the proposal itself is unsafe. The default remains region-first (`false`).
 
-Safe-action-entropy initialisation is an opt-in, reward-free variant. It keeps
+Safe-action-entropy initialisation is enabled by default. It keeps
 the existing safe-mass and margin objectives, while discouraging the initial
 policy from collapsing onto one action when several actions are certified safe.
-For example:
+The default weight is `1.0` with a minimum normalized entropy of `0.95`; set
+the weight to zero to reproduce the legacy initializer:
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  projects/safe_policy_optimisation/scripts/launch_pspo_multi_env.py \
   --envs bridge_crossing \
   --architecture two_hidden \
-  --bc-safe-action-entropy-weight 1.0 \
-  --bc-min-safe-action-entropy 0.95
+  --bc-safe-action-entropy-weight 0
 ```
 
 The normalized entropy target is enforced only when the weight is positive;
-the default weight of `0` exactly selects the previous initialization objective.
+weight `0` exactly selects the previous initialization objective.
 Base-policy summaries record mean, fifth-percentile, and minimum conditional
 safe-action entropy together with mean and maximum unsafe-action probability.
 
@@ -354,7 +378,7 @@ uniform distribution conditional on the safe actions:
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/launch_pspo_adaptive_multi_env.py \
+  projects/safe_policy_optimisation/scripts/launch_pspo_multi_env.py \
   --envs bridge_crossing bridge_crossing_v2 mini_pacman \
   --architecture two_hidden \
   --bc-initialisation-objective safe_mass \
@@ -382,7 +406,7 @@ base policy and shield already exist:
 
 ```bash
 .venv/bin/python \
-  projects/safe_policy_optimisation/stages/train_pspo_adaptive.py \
+  projects/safe_policy_optimisation/stages/train_pspo.py \
   --base-policy-path PATH/base_policy.pt \
   --shield-path PATH/shield_q.pt \
   --env-id ENV_ID \

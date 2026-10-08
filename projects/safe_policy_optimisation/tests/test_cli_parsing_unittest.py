@@ -23,6 +23,7 @@ from projects.safe_policy_optimisation.run_experiment import (
     build_parser as build_experiment_launcher_parser,
 )
 from projects.safe_policy_optimisation.scripts import run_pspo_hparam_sweep
+from projects.safe_policy_optimisation.stages import train_pspo
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     build_parser as build_shield_rashomon_parser,
 )
@@ -52,17 +53,21 @@ from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
     _pipeline_cpu_allocation,
     _rashomon_artifacts_reusable,
     _policy_optimisation_method_count,
+    _parse_stage_args,
     _rashomon_set_argv,
 )
 from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
     build_parser as build_deterministic_pipeline_parser,
 )
+from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
+    parse_args as parse_deterministic_pipeline_args,
+)
 from projects.safe_policy_optimisation.stages.train_ppo import (
     build_parser as build_ppo_parser,
 )
-from projects.safe_policy_optimisation.stages.train_pspo_adaptive import (
-    build_parser as build_adaptive_safe_ppo_parser,
-    parse_args as parse_adaptive_safe_ppo_args,
+from projects.safe_policy_optimisation.stages.train_pspo import (
+    build_parser as build_pspo_parser,
+    parse_args as parse_pspo_args,
 )
 from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (
     build_parser as build_rashomon_shielded_ppo_parser,
@@ -125,7 +130,7 @@ class CliParsingTests(unittest.TestCase):
             "pspo_precomputed": build_rashomon_shielded_ppo_parser().parse_args(
                 ["--rashomon-dir", "rashomon_run", "--shield-path", "shield_q.pt"]
             ),
-            "pspo_adaptive": build_adaptive_safe_ppo_parser().parse_args(
+            "pspo": build_pspo_parser().parse_args(
                 ["--base-policy-path", "base_policy.pt", "--shield-path", "shield_q.pt"]
             ),
             "pipeline": build_deterministic_pipeline_parser().parse_args([]),
@@ -605,6 +610,24 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.env_kwargs, '{"ghost_rand_prob": 0.0}')
         self.assertEqual(args.shield_action_storage, "proposed")
 
+    def test_generic_shielded_parser_accepts_continuous_shield(self) -> None:
+        args = build_generic_shielded_parser().parse_args(
+            [
+                "--continuous-shield",
+                "auto",
+                "--continuous-shield-config",
+                '{"unsafe_max_position": -1.05}',
+                "--env-id",
+                "MountainCar-v0",
+            ]
+        )
+
+        self.assertIsNone(args.shield_path)
+        self.assertEqual(args.continuous_shield, "auto")
+        self.assertEqual(
+            args.continuous_shield_config, '{"unsafe_max_position": -1.05}'
+        )
+
     def test_plain_ppo_parser_accepts_env_without_shield(self) -> None:
         args = build_ppo_parser().parse_args(
             [
@@ -772,6 +795,26 @@ class CliParsingTests(unittest.TestCase):
                 build_shield_rashomon_parser().parse_args(
                     ["--shield-path", "shield_q.pt", flag, value]
                 )
+
+    def test_pspo_initial_policy_defaults_to_best_safe_entropy_settings(self) -> None:
+        base_args = build_shield_rashomon_parser().parse_args(
+            ["--shield-path", "shield_q.pt", "--base-policy-only"]
+        )
+        self.assertEqual(base_args.linear_init_margin, 2.0)
+        self.assertEqual(base_args.bc_target_margin, 2.0)
+        self.assertEqual(base_args.bc_margin_mode, "all")
+        self.assertEqual(base_args.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(base_args.bc_min_safe_action_entropy, 0.95)
+        self.assertEqual(base_args.rashomon_multi_label_mode, "all")
+        self.assertEqual(base_args.rashomon_surrogate, "logsumexp")
+
+        pipeline_args = build_deterministic_pipeline_parser().parse_args([])
+        self.assertEqual(pipeline_args.bc_target_margin, 2.0)
+        self.assertEqual(pipeline_args.bc_margin_mode, "all")
+        self.assertEqual(pipeline_args.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(pipeline_args.rashomon_multi_label_mode, "all")
+        self.assertEqual(pipeline_args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(pipeline_args.adaptive_rashomon_n_iters, 200)
 
     def test_pipeline_forwards_bc_margin_mode_to_rashomon_set_stage(self) -> None:
         args = argparse.Namespace(
@@ -1007,7 +1050,7 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.evaluation_policy, "unshielded")
 
     def test_adaptive_safe_ppo_parser_accepts_base_policy_and_adaptive_settings(self) -> None:
-        args = build_adaptive_safe_ppo_parser().parse_args(
+        args = build_pspo_parser().parse_args(
             [
                 "--base-policy-path",
                 "rashomon_run/base_policy.pt",
@@ -1026,17 +1069,17 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.shield_path, Path("shield_q.pt"))
         self.assertEqual(args.adaptive_granularity, "gradient_step")
         self.assertEqual(args.unsafe_update_strategy, "rashomon_project")
-        self.assertEqual(args.rashomon_n_iters, 100)
+        self.assertEqual(args.rashomon_n_iters, 200)
         self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.zonotope_rank, 6)
-        self.assertIsNone(args.rashomon_checkpoint)
+        self.assertEqual(args.rashomon_checkpoint, 100)
         self.assertEqual(args.rashomon_batch_size, "auto")
         self.assertIsNone(args.certificate_samples)
         self.assertIsNone(args.rashomon_inverse_temp)
         self.assertEqual(args.shield_action_storage, "proposed")
         self.assertEqual(args.evaluation_policy, "unshielded")
 
-        overridden = build_adaptive_safe_ppo_parser().parse_args(
+        overridden = build_pspo_parser().parse_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -1057,8 +1100,8 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(overridden.rashomon_n_iters, 50)
         self.assertEqual(overridden.rashomon_checkpoint, 5)
 
-    def test_unified_pspo_adaptive_defaults_to_region_first_directional_all_lse(self) -> None:
-        args = parse_adaptive_safe_ppo_args(
+    def test_pspo_defaults_to_region_first_directional_all_lse(self) -> None:
+        args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -1068,15 +1111,61 @@ class CliParsingTests(unittest.TestCase):
         )
         self.assertFalse(args.verify_first)
         self.assertEqual(args.state_representation, "one_hot")
-        self.assertEqual(args.freq, "update")
-        self.assertEqual(args.adaptive_granularity, "gradient_step")
+        self.assertEqual(args.freq, "1")
+        self.assertEqual(args.adaptive_granularity, "train_phase")
+        self.assertEqual(args.total_timesteps, 100_000)
+        self.assertEqual(args.early_stop_eval_freq, 0)
         self.assertTrue(args.directional_rashomon_growth)
         self.assertEqual(args.rashomon_multi_label_mode, "all")
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
         self.assertEqual(args.rashomon_objective, "weighted_width")
         self.assertEqual(args.rashomon_batch_size, "auto")
 
-        projection_args = parse_adaptive_safe_ppo_args(
+        mini_pacman_args = parse_pspo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+            ]
+        )
+        self.assertEqual(mini_pacman_args.freq, "100")
+        self.assertEqual(mini_pacman_args.total_timesteps, 2_000_000)
+
+        overridden_mini_pacman_args = parse_pspo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+                "--freq",
+                "update",
+                "--total-timesteps",
+                "7",
+            ]
+        )
+        self.assertEqual(overridden_mini_pacman_args.freq, "update")
+        self.assertEqual(overridden_mini_pacman_args.total_timesteps, 7)
+
+        pipeline_stage_args = _parse_stage_args(
+            train_pspo,
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+            ],
+        )
+        self.assertEqual(pipeline_stage_args.adaptive_granularity, "train_phase")
+        self.assertEqual(pipeline_stage_args.adaptive_frequency, 100)
+
+        projection_args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -1088,8 +1177,8 @@ class CliParsingTests(unittest.TestCase):
         )
         self.assertEqual(projection_args.rashomon_objective, "projection_distance")
 
-    def test_unified_pspo_adaptive_accepts_static_initial_region_command(self) -> None:
-        args = parse_adaptive_safe_ppo_args(
+    def test_pspo_accepts_static_initial_region_command(self) -> None:
+        args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -1109,8 +1198,8 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.compute_region_once)
         self.assertFalse(args.directional_rashomon_growth)
 
-    def test_unified_pspo_adaptive_numeric_frequency_means_rollouts(self) -> None:
-        args = parse_adaptive_safe_ppo_args(
+    def test_pspo_numeric_frequency_means_rollouts(self) -> None:
+        args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -1474,6 +1563,135 @@ class CliParsingTests(unittest.TestCase):
                 },
                 task_settings={"env_kwargs": []},
             )
+
+
+class DeprecatedPspoOptionAliasTests(unittest.TestCase):
+    """The renamed PSPO flags keep their old spellings working for one release."""
+
+    def test_legacy_spellings_are_hidden_from_help(self) -> None:
+        help_text = build_deterministic_pipeline_parser().format_help()
+        self.assertNotIn("--adaptive-rashomon-n-iters", help_text)
+        self.assertNotIn("--adaptive-rashomon-objective", help_text)
+        self.assertIn("--pspo-rashomon-n-iters", help_text)
+        self.assertIn("--pspo-rashomon-objective", help_text)
+
+    def test_canonical_spellings_populate_the_shared_dest(self) -> None:
+        args = parse_deterministic_pipeline_args(
+            ["--pspo-rashomon-n-iters", "55", "--pspo-rashomon-objective", "projection_distance"]
+        )
+        self.assertEqual(args.adaptive_rashomon_n_iters, 55)
+        self.assertEqual(args.adaptive_rashomon_objective, "projection_distance")
+        self.assertFalse(hasattr(args, "legacy_adaptive_rashomon_n_iters"))
+        self.assertFalse(hasattr(args, "legacy_adaptive_rashomon_objective"))
+
+    def test_legacy_spelling_still_works_and_warns(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            args = parse_deterministic_pipeline_args(["--adaptive-rashomon-n-iters", "77"])
+        self.assertEqual(args.adaptive_rashomon_n_iters, 77)
+        self.assertIn("--adaptive-rashomon-n-iters is deprecated", stderr.getvalue())
+        self.assertIn("--pspo-rashomon-n-iters", stderr.getvalue())
+
+    def test_combining_both_spellings_is_an_error(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                parse_deterministic_pipeline_args(
+                    ["--adaptive-rashomon-n-iters", "1", "--pspo-rashomon-n-iters", "2"]
+                )
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_plot_script_adaptive_root_alias(self) -> None:
+        plots = importlib.import_module(
+            "projects.safe_policy_optimisation.scripts.plot_extended_budget_learning_curves"
+        )
+        canonical = plots.parse_args(["--pspo-root", "/tmp/pspo-root"])
+        self.assertEqual(canonical.adaptive_root, Path("/tmp/pspo-root"))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            legacy = plots.parse_args(["--adaptive-root", "/tmp/pspo-root"])
+        self.assertEqual(legacy.adaptive_root, Path("/tmp/pspo-root"))
+        self.assertIn("--adaptive-root is deprecated", stderr.getvalue())
+
+
+class PspoRashomonBudgetOptionTests(unittest.TestCase):
+    """Split Rashomon budgets are reachable from the CLI again."""
+
+    BASE = [
+        "--env-id",
+        "CustomMiniPacman-v0",
+        "--base-policy-path",
+        "base_policy.pt",
+        "--shield-path",
+        "shield_q.pt",
+    ]
+
+    def _parse(self, *extra: str) -> argparse.Namespace:
+        return parse_pspo_args([*self.BASE, *extra])
+
+    def test_default_budget_is_unchanged_per_computation(self) -> None:
+        args = self._parse()
+        self.assertEqual(args.rashomon_budget_mode, "per_computation")
+        self.assertIsNone(args.rashomon_total_iters)
+        self.assertEqual(args.rashomon_initial_n_iters, args.rashomon_n_iters)
+        self.assertEqual(args.rashomon_recompute_n_iters, args.rashomon_n_iters)
+
+    def test_total_iters_switches_the_budget_mode(self) -> None:
+        args = self._parse("--rashomon-total-iters", "5000")
+        self.assertEqual(args.rashomon_budget_mode, "total")
+        self.assertEqual(args.rashomon_total_iters, 5000)
+        self.assertEqual(args.rashomon_initial_n_iters, 5000)
+        self.assertEqual(args.rashomon_recompute_n_iters, 5000)
+
+    def test_matched_per_seed_budgets_survive_parsing(self) -> None:
+        args = self._parse(
+            "--rashomon-total-iters",
+            "5000",
+            "--rashomon-initial-n-iters",
+            "800",
+            "--rashomon-recompute-n-iters",
+            "200",
+        )
+        self.assertEqual(args.rashomon_budget_mode, "total")
+        self.assertEqual(args.rashomon_total_iters, 5000)
+        self.assertEqual(args.rashomon_initial_n_iters, 800)
+        self.assertEqual(args.rashomon_recompute_n_iters, 200)
+        self.assertGreater(args.rashomon_max_region_computations, 0)
+
+    def test_recompute_defaults_to_the_initial_budget(self) -> None:
+        args = self._parse("--rashomon-initial-n-iters", "300")
+        self.assertEqual(args.rashomon_budget_mode, "per_computation")
+        self.assertEqual(args.rashomon_initial_n_iters, 300)
+        self.assertEqual(args.rashomon_recompute_n_iters, 300)
+
+    def test_non_positive_and_over_total_budgets_are_rejected(self) -> None:
+        for extra in (
+            ("--rashomon-total-iters", "0"),
+            ("--rashomon-initial-n-iters", "0"),
+            ("--rashomon-recompute-n-iters", "-1"),
+            ("--rashomon-total-iters", "100", "--rashomon-initial-n-iters", "500"),
+            ("--rashomon-total-iters", "100", "--rashomon-recompute-n-iters", "500"),
+        ):
+            with self.subTest(extra=extra):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        self._parse(*extra)
+                self.assertEqual(caught.exception.code, 2)
+
+    def test_one_env_runner_forwards_the_budget_variables(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "run_pspo_one_env.sh"
+        ).read_text(encoding="utf-8")
+        for name, flag in (
+            ("RASHOMON_TOTAL_ITERS", "--rashomon-total-iters"),
+            ("RASHOMON_INITIAL_N_ITERS", "--rashomon-initial-n-iters"),
+            ("RASHOMON_RECOMPUTE_N_ITERS", "--rashomon-recompute-n-iters"),
+        ):
+            with self.subTest(name=name):
+                self.assertIn(f'{name}="${{{name}:-}}"', script)
+                self.assertIn(f'os.environ["{name}"]', script)
+                self.assertIn(flag, script)
 
 
 if __name__ == "__main__":

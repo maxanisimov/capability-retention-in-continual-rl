@@ -10,7 +10,7 @@ The sweep is intentionally limited to PSPO-specific hyperparameters:
 
 For precomputed PSPO, ``rashomon_n_iters`` is the offline budget used to build
 the fixed Rashomon set.  For adaptive PSPO, it is the per-update/on-demand
-Rashomon budget passed to ``train_pspo_adaptive.py``; the base policy artifact
+Rashomon budget passed to ``train_pspo.py``; the base policy artifact
 is built separately and does not vary with this value.
 """
 
@@ -25,14 +25,16 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from projects.safe_policy_optimisation.utils.config import compose_pipeline_settings
-from projects.safe_policy_optimisation.utils.cpu_allocation import apply_cpu_affinity, parse_cpu_ids
+from projects.safe_policy_optimisation.utils.cpu_allocation import (
+    apply_cpu_affinity,
+    parse_cpu_ids,
+)
 from projects.safe_policy_optimisation.utils.parallel import (
     Job,
     available_cores,
@@ -40,12 +42,11 @@ from projects.safe_policy_optimisation.utils.parallel import (
     run_core_slot_jobs,
 )
 
-
 REPO = Path(__file__).resolve().parents[3]
 PROJECT_ROOT = REPO / "projects" / "safe_policy_optimisation"
 SET_STAGE = PROJECT_ROOT / "stages" / "compute_shield_rashomon_set.py"
 PRECOMPUTED_STAGE = PROJECT_ROOT / "stages" / "train_pspo_precomputed.py"
-ADAPTIVE_STAGE = PROJECT_ROOT / "stages" / "train_pspo_adaptive.py"
+PSPO_STAGE = PROJECT_ROOT / "stages" / "train_pspo.py"
 
 ENV_PIPELINE = {
     "media_streaming": "paper_2503_07671_media_streaming",
@@ -193,7 +194,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--n-hidden", type=int, default=None)
     parser.add_argument("--hidden-dim", type=int, default=None)
-    parser.add_argument("--state-representation", choices=("one_hot", "features"), default=None)
+    parser.add_argument(
+        "--state-representation",
+        choices=("one_hot", "features", "state_id_lookup"),
+        default=None,
+    )
     parser.add_argument(
         "--adaptive-base-set-iters",
         type=int,
@@ -302,7 +307,9 @@ def safety_demo_size(cfg: dict[str, Any], *, shield_path: Path, state_representa
 
     state_to_features = None
     if state_representation == "features":
-        from projects.safe_policy_optimisation.utils.safe_crl_bridge import make_custom_masa_env
+        from projects.safe_policy_optimisation.utils.safe_crl_bridge import (
+            make_custom_masa_env,
+        )
 
         feature_env = make_custom_masa_env(
             cfg["env_id"],
@@ -312,7 +319,11 @@ def safety_demo_size(cfg: dict[str, Any], *, shield_path: Path, state_representa
         state_to_features = feature_env.state_to_features
 
     mask = load_shield_mask(shield_path)
-    _dataset, metadata = make_safe_behaviour_payload(mask, state_to_features)
+    _dataset, metadata = make_safe_behaviour_payload(
+        mask,
+        state_to_features,
+        state_representation=state_representation,
+    )
     return int(metadata["dataset_size"])
 
 
@@ -551,7 +562,7 @@ def build_adaptive_train_command(
     cfg = payload["config"]
     cmd = [
         sys.executable,
-        str(ADAPTIVE_STAGE),
+        str(PSPO_STAGE),
         "--base-policy-path",
         str(set_dir_for(Path(payload["sweep_root"]), setting) / "base_policy.pt"),
         "--shield-path",

@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 REPO = Path(__file__).resolve().parents[3]
 SET_STAGE = REPO / "projects/safe_policy_optimisation/stages/compute_shield_rashomon_set.py"
 TRAIN_STAGE = REPO / "projects/safe_policy_optimisation/stages/train_pspo_precomputed.py"
@@ -115,10 +114,11 @@ def load_adaptive_seed_spec(adaptive_run_dir: Path, seed: int) -> AdaptiveSeedSp
     algorithm = config.get("algorithm")
     adaptive = config.get("adaptive") or {}
     if algorithm != "adaptive_safe_ppo_v2" and not (
-        algorithm == "pspo_adaptive" and not adaptive.get("verify_first", False)
+        algorithm in {"pspo", "pspo_adaptive"}
+        and not adaptive.get("verify_first", False)
     ):
         raise ValueError(
-            f"Seed {seed} is not a region-first PSPO adaptive result: "
+            f"Seed {seed} is not a region-first PSPO result: "
             f"algorithm={config.get('algorithm')!r}."
         )
     return AdaptiveSeedSpec(
@@ -213,6 +213,7 @@ def _state_representation_for_cli(architecture: dict[str, Any]) -> str:
     mapping = {
         "one_hot": "one_hot",
         "one_hot_discrete_observation": "one_hot",
+        "state_id_lookup_discrete_observation": "state_id_lookup",
         "features": "features",
         "decoded_features": "features",
     }

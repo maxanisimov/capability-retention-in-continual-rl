@@ -1,4 +1,4 @@
-"""Tests for PSPO-adaptive launcher setting and cache validation."""
+"""Tests for PSPO launcher setting and cache validation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest import mock
 import numpy as np
 import torch
 
-from projects.safe_policy_optimisation.utils.pspo_adaptive_launcher import (
+from projects.safe_policy_optimisation.utils.pspo_launcher import (
     base_policy_artifact_matches,
     initial_safe_set_matches,
     parse_cpu_ids,
@@ -26,7 +26,7 @@ from projects.safe_policy_optimisation.utils.rashomon import (
 )
 
 
-class PspoAdaptiveLauncherTests(unittest.TestCase):
+class PspoLauncherTests(unittest.TestCase):
     def test_auto_rashomon_batch_uses_complete_safe_behaviour_dataset(self) -> None:
         mask = np.asarray([[1, 0], [0, 0], [1, 1], [0, 1]], dtype=np.float32)
 
@@ -219,6 +219,8 @@ class PspoAdaptiveLauncherTests(unittest.TestCase):
                     state_representation="one_hot_discrete_observation",
                     margin_mode="all",
                     target_margin=2.0,
+                    safe_action_entropy_weight=1.0,
+                    min_safe_action_entropy=0.95,
                 )
             )
             self.assertFalse(
@@ -231,7 +233,7 @@ class PspoAdaptiveLauncherTests(unittest.TestCase):
                     state_representation="one_hot_discrete_observation",
                     margin_mode="all",
                     target_margin=2.0,
-                    safe_action_entropy_weight=1.0,
+                    safe_action_entropy_weight=0.0,
                     min_safe_action_entropy=0.95,
                 )
             )

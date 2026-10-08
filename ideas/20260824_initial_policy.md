@@ -1,9 +1,9 @@
-# Initial Policy Quality and Reward Improvement in Adaptive PSPO
+# Initial Policy Quality and Reward Improvement in PSPO
 
 ## Status and scope
 
 This document collects ideas for assessing whether a safe initial policy is a useful
-starting point for reward optimization in adaptive PSPO. It also proposes alternative
+starting point for reward optimization in PSPO. It also proposes alternative
 ways to construct initial policies when rewards are unavailable before RL training.
 
 The central distinction is between:
@@ -13,7 +13,7 @@ The central distinction is between:
 2. **Safe optimization mobility:** how far, and in how many useful directions, policy
    parameters can move without losing the safety certificate.
 
-The second property is more closely related to whether adaptive PSPO can discover a
+The second property is more closely related to whether PSPO can discover a
 high-reward policy. None of the proposed metrics replaces exact safety verification.
 They are reward-free utility diagnostics for choosing among policies that satisfy the
 same safety requirement.
@@ -134,7 +134,7 @@ once per candidate initialization and not throughout full RL training. It is the
 a practical screening test.
 
 A policy with a slightly smaller output margin but a larger certified relative radius
-is normally the more promising initialization for adaptive PSPO.
+is normally the more promising initialization for PSPO.
 
 ### 3.4 Directional safe mobility
 

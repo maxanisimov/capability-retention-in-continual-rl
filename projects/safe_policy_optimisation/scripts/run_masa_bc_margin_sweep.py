@@ -22,13 +22,14 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+from projects.safe_policy_optimisation.utils.cli import env_with_legacy_alias
 
 REPO = Path(__file__).resolve().parents[3]
 PY = str(REPO / ".venv/bin/python")
 
 SET_STAGE = str(REPO / "projects/safe_policy_optimisation/stages/compute_shield_rashomon_set.py")
 PRECOMPUTED_STAGE = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_precomputed.py")
-ADAPTIVE_STAGE = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo_adaptive.py")
+PSPO_STAGE = str(REPO / "projects/safe_policy_optimisation/stages/train_pspo.py")
 
 OUT_BASE = Path(
     os.environ.get(
@@ -53,7 +54,9 @@ PHASES = [x for x in os.environ.get("PHASES", "sets,precomputed,adaptive_project
 
 FORCE = os.environ.get("FORCE") == "1"
 SMOKE = os.environ.get("SMOKE_TIMESTEPS")
-ADAPTIVE_N_ITERS = os.environ.get("ADAPTIVE_N_ITERS", "100")
+RASHOMON_N_ITERS = env_with_legacy_alias(
+    "RASHOMON_N_ITERS", "ADAPTIVE_N_ITERS", "100"
+)
 ADAPTIVE_GRANULARITY = os.environ.get("ADAPTIVE_GRANULARITY", "gradient_step")
 DEVICE = os.environ.get("DEVICE", "cpu")
 
@@ -220,7 +223,7 @@ def build_jobs() -> list[dict]:
                     terminal = run_root / f"seed{seed}" / "metrics.json"
                     cmd = [
                         PY,
-                        ADAPTIVE_STAGE,
+                        PSPO_STAGE,
                         "--base-policy-path",
                         str(set_dir / "base_policy.pt"),
                         "--shield-path",
@@ -231,7 +234,7 @@ def build_jobs() -> list[dict]:
                         "--unsafe-update-strategy",
                         "rashomon_project",
                         "--rashomon-n-iters",
-                        ADAPTIVE_N_ITERS,
+                        RASHOMON_N_ITERS,
                         "--output-dir",
                         str(run_root),
                         "--run-id",

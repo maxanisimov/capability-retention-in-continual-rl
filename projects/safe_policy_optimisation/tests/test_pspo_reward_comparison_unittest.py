@@ -1,4 +1,4 @@
-"""Tests for reproducible PSPO-adaptive reward and safety comparisons."""
+"""Tests for reproducible PSPO reward and safety comparisons."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import torch
 
-from projects.safe_policy_optimisation.scripts.compare_pspo_adaptive_initial_final_rewards import (
+from projects.safe_policy_optimisation.scripts.compare_pspo_initial_final_rewards import (
     BasePolicyPredictor,
     build_parser,
     exhaustive_shield_alignment,

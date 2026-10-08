@@ -1,4 +1,4 @@
-"""Tests for the multi-environment PSPO-adaptive launcher."""
+"""Tests for the multi-environment PSPO launcher."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-from projects.safe_policy_optimisation.scripts.launch_pspo_adaptive_multi_env import (
+from projects.safe_policy_optimisation.scripts.launch_pspo_multi_env import (
     DEFAULT_ENVS,
     build_launch_environment,
     build_parser,
@@ -16,9 +16,32 @@ from projects.safe_policy_optimisation.scripts.launch_pspo_adaptive_multi_env im
     safety_demo_sizes,
     select_idle_cpus,
 )
+from projects.safe_policy_optimisation.utils.pspo_defaults import (
+    environment_defaults,
+)
 
 
-class PspoAdaptiveMultiEnvLauncherTests(unittest.TestCase):
+class PspoMultiEnvLauncherTests(unittest.TestCase):
+    def test_environment_defaults_match_recorded_best_runs(self) -> None:
+        expected = {
+            "media_streaming": (25_000, "1"),
+            "colour_bomb": (25_000, "1"),
+            "colour_bomb_v2": (100_000, "1"),
+            "bridge_crossing": (200_000, "1"),
+            "bridge_crossing_v2": (1_600_000, "1"),
+            "mini_pacman": (2_000_000, "100"),
+        }
+        self.assertEqual(
+            {
+                environment: (
+                    environment_defaults(environment).total_timesteps,
+                    environment_defaults(environment).frequency,
+                )
+                for environment in DEFAULT_ENVS
+            },
+            expected,
+        )
+
     def test_cli_help_groups_related_arguments(self) -> None:
         help_text = build_parser().format_help()
 
@@ -180,7 +203,7 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         self.assertEqual(env["RASHOMON_CERTIFICATE_SAMPLES"], "all")
         self.assertEqual(env["RASHOMON_N_ITERS"], "200")
         self.assertEqual(env["BC_TARGET_MARGIN"], "2.0")
-        self.assertEqual(env["BC_SAFE_ACTION_ENTROPY_WEIGHT"], "0.0")
+        self.assertEqual(env["BC_SAFE_ACTION_ENTROPY_WEIGHT"], "1.0")
         self.assertEqual(env["BC_MIN_SAFE_ACTION_ENTROPY"], "0.95")
         self.assertEqual(env["BC_INITIALISATION_OBJECTIVE"], "margin")
         self.assertEqual(env["BC_UNSAFE_MASS_TARGET"], "0.01")
@@ -188,7 +211,8 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         self.assertEqual(env["BC_SAFE_ACTION_UNIFORMITY_WEIGHT"], "1.0")
         self.assertEqual(env["DIRECTIONAL_RASHOMON_GROWTH"], "1")
         self.assertNotIn("ADAPTIVE_GRANULARITY", env)
-        self.assertEqual(env["ADAPTIVE_FREQ"], "update")
+        self.assertEqual(env["ADAPTIVE_FREQ"], "100")
+        self.assertEqual(env["TOTAL_TIMESTEPS"], "2000000")
         self.assertEqual(env["STOP_WHEN_PROPOSAL_CONTAINED"], "1")
         self.assertEqual(env["DRY_RUN"], "1")
 
@@ -260,19 +284,19 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         self.assertEqual(safe_mass["BC_MAX_UNSAFE_MASS"], "0.03")
         self.assertEqual(safe_mass["BC_SAFE_ACTION_UNIFORMITY_WEIGHT"], "1.5")
 
-    def test_safe_action_entropy_cli_is_opt_in(self) -> None:
+    def test_safe_action_entropy_cli_is_enabled_by_default(self) -> None:
         defaults = build_parser().parse_args([])
-        self.assertEqual(defaults.bc_safe_action_entropy_weight, 0.0)
+        self.assertEqual(defaults.bc_safe_action_entropy_weight, 1.0)
         self.assertEqual(defaults.bc_min_safe_action_entropy, 0.95)
         self.assertEqual(defaults.bc_initialisation_objective, "margin")
         self.assertEqual(defaults.bc_unsafe_mass_target, 0.01)
         self.assertEqual(defaults.bc_max_unsafe_mass, 0.02)
         self.assertEqual(defaults.bc_safe_action_uniformity_weight, 1.0)
 
-        enabled = build_parser().parse_args(
+        overridden = build_parser().parse_args(
             [
                 "--bc-safe-action-entropy-weight",
-                "1.0",
+                "0.0",
                 "--bc-min-safe-action-entropy",
                 "0.97",
                 "--bc-initialisation-objective",
@@ -285,12 +309,12 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
                 "1.5",
             ]
         )
-        self.assertEqual(enabled.bc_safe_action_entropy_weight, 1.0)
-        self.assertEqual(enabled.bc_min_safe_action_entropy, 0.97)
-        self.assertEqual(enabled.bc_initialisation_objective, "safe_mass")
-        self.assertEqual(enabled.bc_unsafe_mass_target, 0.02)
-        self.assertEqual(enabled.bc_max_unsafe_mass, 0.03)
-        self.assertEqual(enabled.bc_safe_action_uniformity_weight, 1.5)
+        self.assertEqual(overridden.bc_safe_action_entropy_weight, 0.0)
+        self.assertEqual(overridden.bc_min_safe_action_entropy, 0.97)
+        self.assertEqual(overridden.bc_initialisation_objective, "safe_mass")
+        self.assertEqual(overridden.bc_unsafe_mass_target, 0.02)
+        self.assertEqual(overridden.bc_max_unsafe_mass, 0.03)
+        self.assertEqual(overridden.bc_safe_action_uniformity_weight, 1.5)
 
     def test_verify_first_cli_defaults_false_and_accepts_true(self) -> None:
         self.assertEqual(build_parser().parse_args([]).verify_first, "false")
@@ -300,7 +324,7 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
         )
 
     def test_frequency_cli_defaults_and_reaches_the_launcher(self) -> None:
-        self.assertEqual(build_parser().parse_args([]).freq, "update")
+        self.assertIsNone(build_parser().parse_args([]).freq)
         self.assertEqual(
             build_parser().parse_args(["--freq", "rollout"]).freq,
             "rollout",
@@ -317,6 +341,18 @@ Average:       2    0.00    0.00    0.00    0.00  100.00
             adaptive_freq="rollout",
         )
         self.assertEqual(env["ADAPTIVE_FREQ"], "rollout")
+
+        media_defaults = build_launch_environment(
+            environment="media_streaming",
+            seeds=[0],
+            cpu_ids=[17],
+            architecture="two_hidden",
+            run_name="media_defaults",
+            n_iters=200,
+            dry_run=True,
+        )
+        self.assertEqual(media_defaults["ADAPTIVE_FREQ"], "1")
+        self.assertEqual(media_defaults["TOTAL_TIMESTEPS"], "25000")
 
     def test_adaptive_granularity_cli_is_removed(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
