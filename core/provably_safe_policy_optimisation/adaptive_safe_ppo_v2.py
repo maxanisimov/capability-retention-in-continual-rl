@@ -18,6 +18,7 @@ delta from the last-safe policy to the phase-end candidate.
 
 from __future__ import annotations
 
+import time
 import warnings
 from typing import Any, Literal, Mapping
 
@@ -117,6 +118,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         stop_when_proposal_contained: bool = True,
         adaptive_frequency: int = 1,
         compute_region_once: bool = False,
+        audit_candidates_exactly: bool = False,
         **kwargs: Any,
     ) -> None:
         if region_update_mode not in ("union", "replace"):
@@ -138,23 +140,46 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         requested_strategy = kwargs.pop("unsafe_update_strategy", "rashomon_project")
         if requested_strategy != "rashomon_project":
             raise ValueError("AdaptiveSafePPOV2 always uses projection onto certified regions.")
-        if directional_rashomon_growth and kwargs.get("safe_region_shape", "orthotope") != "orthotope":
-            raise ValueError("Directional Rashomon growth requires safe_region_shape='orthotope'.")
-        if stop_when_proposal_contained and kwargs.get("safe_region_shape", "orthotope") != "orthotope":
+        region_shape = kwargs.get("safe_region_shape", "orthotope")
+        # A segment is directional by construction and stops at alpha = 1, so
+        # both flags are implied rather than rejected (see AdaptiveSafePPO).
+        if directional_rashomon_growth and region_shape == "zonotope":
             raise ValueError(
-                "Proposal-containment stopping requires safe_region_shape='orthotope'."
+                "Directional Rashomon growth requires safe_region_shape "
+                "'orthotope' or 'segment'."
+            )
+        if stop_when_proposal_contained and region_shape == "zonotope":
+            raise ValueError(
+                "Proposal-containment stopping requires safe_region_shape "
+                "'orthotope' or 'segment'."
+            )
+        if region_update_mode == "union" and region_shape == "segment":
+            raise ValueError(
+                "region_update_mode='union' is meaningless for a segment safe "
+                "region: each segment points at the proposal that produced it, so "
+                "accumulating stale segments would project onto an old direction."
+            )
+        if compute_region_once and region_shape == "segment":
+            raise ValueError(
+                "compute_region_once is meaningless for a segment safe region: the "
+                "segment has no volume, so it cannot absorb a later update in a "
+                "different direction and must be recomputed at every enforcement."
             )
         if int(adaptive_frequency) <= 0:
             raise ValueError(f"adaptive_frequency must be positive, got {adaptive_frequency}.")
-        if compute_region_once and requested_granularity != "gradient_step":
-            raise ValueError("compute_region_once requires gradient-step projection.")
         if compute_region_once and directional_rashomon_growth:
             raise ValueError("compute_region_once requires non-directional region growth.")
 
         self._region_update_mode: RegionUpdateMode = region_update_mode
         self._directional_rashomon_growth = bool(directional_rashomon_growth)
-        self._stop_when_proposal_contained = bool(stop_when_proposal_contained)
+        self._stop_when_proposal_contained = bool(
+            stop_when_proposal_contained and not compute_region_once
+        )
         self._compute_region_once = bool(compute_region_once)
+        self._audit_candidates_exactly = bool(audit_candidates_exactly)
+        self._candidate_audits = 0
+        self._audited_exactly_safe = 0
+        self._region_first_false_negatives = 0
         self._rashomon_budget_mode: BudgetMode = rashomon_budget_mode
         self._rashomon_total_iters = (
             int(rashomon_total_iters) if rashomon_total_iters is not None else None
@@ -260,14 +285,16 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
             adaptive_frequency=int(adaptive_frequency),
             unsafe_update_strategy="rashomon_project",
             directional_rashomon_growth=directional_rashomon_growth,
-            stop_when_proposal_contained=stop_when_proposal_contained,
+            stop_when_proposal_contained=self._stop_when_proposal_contained,
             **kwargs,
         )
 
-        if getattr(self, "policy", None) is not None and requested_granularity == "gradient_step":
-            if self._directional_initial_region_pending:
+        if getattr(self, "policy", None) is not None:
+            if self._compute_region_once:
+                self._install_initial_region()
+            elif requested_granularity == "gradient_step" and self._directional_initial_region_pending:
                 self._install_initial_safe_point()
-            else:
+            elif requested_granularity == "gradient_step":
                 self._install_initial_region()
 
     def _excluded_save_params(self) -> list[str]:
@@ -279,6 +306,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         ]
 
     def _install_initial_region(self) -> None:
+        enforcement_started = time.perf_counter()
         self._initial_region_computations += 1
         region = self._compute_rashomon_around_last_safe(
             self._rashomon_initial_n_iters,
@@ -289,6 +317,9 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
             raise ValueError("AdaptiveSafePPOV2 could not compute an initial certified region.")
         self._set_active_region(region, initial=True)
         self._attach_active_region()
+        self._safety_enforcement_wall_time_s += (
+            time.perf_counter() - enforcement_started
+        )
 
     def _install_initial_safe_point(self) -> None:
         """Protect the base policy until the first actor proposal gives a direction."""
@@ -317,6 +348,13 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
 
     def _attach_active_region(self) -> None:
         if self._adaptive_granularity == "train_phase":
+            return
+        if self._safe_region_shape == "segment":
+            # Enforcement-only: attaching a rank-one region would clamp the next
+            # raw gradient step onto the previous segment. The optimizer still
+            # records each proposal -- that is what gives the next segment its
+            # direction -- but projects nothing.
+            self.policy.optimizer.retain_proposals(params=self._live_actor_params)
             return
         self.policy.optimizer.set_regions(
             self._active_regions,
@@ -423,7 +461,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         proposed_params = getattr(self.policy.optimizer, "last_proposed_params", None)
         if proposed_params is None or len(proposed_params) != len(self._live_actor_params):
             warnings.warn(
-                "PSPO adaptive could not retain the proposed actor parameters; "
+                "PSPO could not retain the proposed actor parameters; "
                 "reverting to the previous safe policy.",
                 stacklevel=2,
             )
@@ -442,7 +480,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         ):
             if target.shape != snapshot.shape or not bool(th.isfinite(target).all()):
                 warnings.warn(
-                    f"PSPO adaptive received invalid proposed actor parameters at index {index}; "
+                    f"PSPO received invalid proposed actor parameters at index {index}; "
                     "reverting to the previous safe policy.",
                     stacklevel=2,
                 )
@@ -456,7 +494,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         param_l_mask = None
         param_u_mask = None
         param_objective_weights = None
-        if self._directional_rashomon_growth:
+        if self._directional_rashomon_growth and self._safe_region_shape != "segment":
             self._last_direction_counts = None
             try:
                 deltas = [
@@ -469,7 +507,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
                 )
             except (TypeError, ValueError) as exc:
                 warnings.warn(
-                    "PSPO adaptive could not construct directional safe-region masks "
+                    "PSPO could not construct directional safe-region masks "
                     f"({exc}); reverting to the previous safe policy.",
                     stacklevel=2,
                 )
@@ -503,7 +541,12 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
             param_l_mask=param_l_mask,
             param_u_mask=param_u_mask,
             param_objective_weights=param_objective_weights,
-            stop_target_params=(proposed_params if self._stop_when_proposal_contained else None),
+            stop_target_params=(
+                proposed_params
+                if self._stop_when_proposal_contained
+                or self._safe_region_shape == "segment"
+                else None
+            ),
         )
         if region is None:
             phase = (
@@ -512,7 +555,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
                 else "projection-triggered region recomputation"
             )
             warnings.warn(
-                f"PSPO adaptive {phase} failed; reverting to the previous safe policy.",
+                f"PSPO {phase} failed; reverting to the previous safe policy.",
                 stacklevel=2,
             )
             self._copy_live_actor_params_from(self._last_safe_params)
@@ -529,7 +572,11 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         else:
             self._region_recomputations += 1
         self._copy_live_actor_params_from(proposed_params)
-        if _orthotope_contains_params(region[0], proposed_params):
+        accepts_proposal = (
+            self._safe_region_shape == "segment"
+            and float(self._last_segment_alpha or 0.0) >= 1.0
+        ) or _orthotope_contains_params(region[0], proposed_params)
+        if accepts_proposal:
             self._proposed_updates_accepted_after_growth += 1
         else:
             distance_norm = getattr(self.policy.optimizer, "_distance_norm", "l2")
@@ -570,16 +617,114 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
                 raise ValueError(f"phase-end candidate tensor {index} contains non-finite values.")
         return candidate
 
+    def _audit_candidate(
+        self, candidate_params: list[th.Tensor]
+    ) -> tuple[bool | None, float]:
+        if not self._audit_candidates_exactly:
+            return None, 0.0
+        audit_started = time.perf_counter()
+        exact_safe = self._audit_params_greedy_safe(candidate_params)
+        elapsed = time.perf_counter() - audit_started
+        self._candidate_audits += 1
+        self._audited_exactly_safe += int(exact_safe)
+        self._diagnostic_audit_wall_time_s += elapsed
+        return exact_safe, elapsed
+
+    def _enforce_fixed_region_candidate(
+        self,
+        candidate_params: list[th.Tensor],
+        *,
+        exact_safe: bool | None,
+        audit_s: float,
+    ) -> None:
+        """Project one enforced candidate into the unchanged initial LID."""
+
+        enforcement_started = time.perf_counter()
+        distance_norm = getattr(self.policy.optimizer, "_distance_norm", "l2")
+        projection_started = time.perf_counter()
+        with th.no_grad():
+            result = project_to_region_union(
+                self._live_actor_params,
+                self._active_regions,
+                distance_norm=distance_norm,
+            )
+        projection_s = time.perf_counter() - projection_started
+        self._projection_wall_time_s += projection_s
+        self._n_projections += 1
+        self._phase_projections += 1
+        self._last_projection_result = result
+        self._last_phase_projection_result = result
+        accepted_unchanged = int(result.n_projected) == 0
+        decision = "accepted_contained" if accepted_unchanged else "projected"
+        false_negative = bool(exact_safe and not accepted_unchanged)
+        self._region_first_false_negatives += int(false_negative)
+        self._snapshot_last_safe()
+        enforcement_s = time.perf_counter() - enforcement_started
+        self._safety_enforcement_wall_time_s += enforcement_s
+        self._append_safety_update_event(
+            exact_safe=exact_safe,
+            decision=decision,
+            displacement_l2=float(result.displacement_l2),
+            projection_s=projection_s,
+            enforcement_s=enforcement_s,
+            diagnostic_audit_s=audit_s,
+            false_negative=false_negative,
+        )
+
+    def _record_region_first_event(
+        self,
+        *,
+        exact_safe: bool | None,
+        audit_s: float,
+        decision: str,
+        enforcement_started: float,
+        lid_time_before: float,
+        projection_s: float = 0.0,
+        displacement_l2: float = 0.0,
+    ) -> None:
+        accepted_unchanged = decision in {"accepted_contained"}
+        false_negative = bool(exact_safe and not accepted_unchanged)
+        self._region_first_false_negatives += int(false_negative)
+        enforcement_s = time.perf_counter() - enforcement_started
+        self._safety_enforcement_wall_time_s += enforcement_s
+        self._append_safety_update_event(
+            exact_safe=exact_safe,
+            decision=decision,
+            displacement_l2=displacement_l2,
+            lid_iterations=int(self._last_rashomon_iterations_run),
+            lid_s=self._rashomon_wall_time_s - lid_time_before,
+            projection_s=projection_s,
+            enforcement_s=enforcement_s,
+            diagnostic_audit_s=audit_s,
+            false_negative=false_negative,
+        )
+
     def _on_train_phase_end(self) -> None:
         candidate_params = self._phase_candidate_params()
+        exact_safe, audit_s = self._audit_candidate(candidate_params)
+        if self._compute_region_once:
+            self._enforce_fixed_region_candidate(
+                candidate_params,
+                exact_safe=exact_safe,
+                audit_s=audit_s,
+            )
+            return
+        enforcement_started = time.perf_counter()
+        lid_time_before = self._rashomon_wall_time_s
         building_initial_region = (
             len(self._active_regions) == 0 or self._directional_initial_region_pending
         )
         param_l_mask = None
         param_u_mask = None
         param_objective_weights = None
-        proposed_params = candidate_params if self._stop_when_proposal_contained else None
-        if self._directional_rashomon_growth:
+        # A segment always needs the proposal (it defines the direction), and
+        # never needs directional masks.
+        proposed_params = (
+            candidate_params
+            if self._stop_when_proposal_contained or self._safe_region_shape == "segment"
+            else None
+        )
+        if self._directional_rashomon_growth and self._safe_region_shape != "segment":
             self._last_direction_counts = None
             deltas = [
                 candidate.detach() - snapshot.detach()
@@ -603,6 +748,13 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
                     self._region_recompute_failures += 1
                 self._directional_growth_failures += 1
                 self._phase_projection_failures += 1
+                self._record_region_first_event(
+                    exact_safe=exact_safe,
+                    audit_s=audit_s,
+                    decision="reverted_direction_failure",
+                    enforcement_started=enforcement_started,
+                    lid_time_before=lid_time_before,
+                )
                 return
             self._last_direction_counts = counts
 
@@ -615,6 +767,13 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
                 self._region_recompute_failures += 1
             self._region_recompute_budget_exhaustions += 1
             self._phase_projection_failures += 1
+            self._record_region_first_event(
+                exact_safe=exact_safe,
+                audit_s=audit_s,
+                decision="reverted_budget_exhausted",
+                enforcement_started=enforcement_started,
+                lid_time_before=lid_time_before,
+            )
             return
 
         self._phase_region_computations += 1
@@ -648,6 +807,13 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
             else:
                 self._region_recompute_failures += 1
             self._phase_projection_failures += 1
+            self._record_region_first_event(
+                exact_safe=exact_safe,
+                audit_s=audit_s,
+                decision="reverted_lid_failure",
+                enforcement_started=enforcement_started,
+                lid_time_before=lid_time_before,
+            )
             return
 
         self._set_active_region(region, initial=building_initial_region)
@@ -659,29 +825,54 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         if self._directional_rashomon_growth and not building_initial_region:
             self._directional_region_recomputations += 1
 
-        if (
-            proposed_params is not None
-            and self._last_rashomon_target_contained_and_certified
-            and _orthotope_contains_params(region[0], proposed_params)
+        if proposed_params is not None and (
+            (
+                self._safe_region_shape == "segment"
+                and float(self._last_segment_alpha or 0.0) >= 1.0
+            )
+            or (
+                self._last_rashomon_target_contained_and_certified
+                and _orthotope_contains_params(region[0], proposed_params)
+            )
         ):
             self._copy_live_actor_params_from(proposed_params)
             self._snapshot_last_safe()
             self._proposed_updates_accepted_after_growth += 1
             self._phase_exact_candidate_accepts += 1
+            self._record_region_first_event(
+                exact_safe=exact_safe,
+                audit_s=audit_s,
+                decision="accepted_contained",
+                enforcement_started=enforcement_started,
+                lid_time_before=lid_time_before,
+            )
             return
 
         distance_norm = getattr(self.policy.optimizer, "_distance_norm", "l2")
+        projection_started = time.perf_counter()
         with th.no_grad():
             result = project_to_region_union(
                 self._live_actor_params,
                 self._active_regions,
                 distance_norm=distance_norm,
             )
+        projection_s = time.perf_counter() - projection_started
+        self._projection_wall_time_s += projection_s
         self._n_projections += 1
         self._phase_projections += 1
         self._last_projection_result = result
         self._last_phase_projection_result = result
         self._snapshot_last_safe()
+        decision = "accepted_contained" if int(result.n_projected) == 0 else "projected"
+        self._record_region_first_event(
+            exact_safe=exact_safe,
+            audit_s=audit_s,
+            decision=decision,
+            enforcement_started=enforcement_started,
+            lid_time_before=lid_time_before,
+            projection_s=projection_s,
+            displacement_l2=float(result.displacement_l2),
+        )
 
     def train(self, *args: Any, **kwargs: Any) -> Any:
         if self._adaptive_granularity != "train_phase":
@@ -717,7 +908,7 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
             self._on_train_phase_end()
         except ValueError as exc:
             warnings.warn(
-                f"PSPO adaptive final projection failed ({exc}); reverting to the "
+                f"PSPO final projection failed ({exc}); reverting to the "
                 "previous certified policy.",
                 stacklevel=2,
             )
@@ -732,6 +923,18 @@ class AdaptiveSafePPOV2(AdaptiveSafePPO):
         base.update(
             {
                 "compute_region_once": self._compute_region_once,
+                "region_refresh": "fixed" if self._compute_region_once else "adaptive",
+                "audit_candidates_exactly": self._audit_candidates_exactly,
+                "candidate_audits": int(self._candidate_audits),
+                "audited_exactly_safe": int(self._audited_exactly_safe),
+                "region_first_false_negatives": int(
+                    self._region_first_false_negatives
+                ),
+                "region_first_false_negative_rate": (
+                    float(self._region_first_false_negatives / self._audited_exactly_safe)
+                    if self._audited_exactly_safe
+                    else 0.0
+                ),
                 "region_update_mode": self._region_update_mode,
                 "directional_rashomon_growth": self._directional_rashomon_growth,
                 "stop_when_proposal_contained": self._stop_when_proposal_contained,

@@ -328,3 +328,166 @@ def as_shield(shield: Any, obs_to_state: ObsToState | None = None, *, seed: int 
             shield.obs_to_state = obs_to_state
         return shield
     return Shield(shield, obs_to_state, seed=seed)
+
+
+class ContinuousStateShieldAdapter:
+    """Batch adapter for observation-based, discrete-action safety shields.
+
+    The wrapped object must expose ``n_actions``, ``get_safe_actions(state)``,
+    ``is_safe_action(state, action)``, and ``shield_action(state, action)``.  In
+    contrast to :class:`Shield`, observations are passed to it directly rather
+    than being converted to integer table indices.
+    """
+
+    def __init__(self, shield: Any) -> None:
+        if not _has_continuous_state_shield_api(shield):
+            raise TypeError(
+                "Continuous-state shields must define n_actions, get_safe_actions(), "
+                "is_safe_action(), and shield_action()."
+            )
+        self.shield = shield
+        self.n_actions = int(shield.n_actions)
+        if self.n_actions <= 0:
+            raise ValueError(f"Shield n_actions must be positive; got {self.n_actions}.")
+        self.reset_diagnostics()
+
+    @staticmethod
+    def _as_observation_batch(observations: Any) -> np.ndarray:
+        if hasattr(observations, "detach"):
+            observations = observations.detach().cpu().numpy()
+        batch = np.asarray(observations)
+        if batch.ndim == 1:
+            batch = batch.reshape(1, -1)
+        if batch.ndim != 2:
+            raise ValueError(
+                "Continuous-state shield observations must be a vector or a batch "
+                f"of vectors; got shape {batch.shape}."
+            )
+        return batch
+
+    def is_safe_action(self, observation: Any, action: int) -> bool:
+        """Audit one action without modifying intervention diagnostics."""
+        return bool(self.shield.is_safe_action(observation, int(action)))
+
+    def override_observations(
+        self,
+        observations: Any,
+        actions: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return executed actions and an unsafe-proposal mask for a batch."""
+        batch = self._as_observation_batch(observations)
+        proposed = np.asarray(actions).astype(np.int64).reshape(-1)
+        if batch.shape[0] != proposed.size:
+            raise ValueError(
+                "Observation and action batches must have equal length; got "
+                f"{batch.shape[0]} and {proposed.size}."
+            )
+        if proposed.size and (proposed.min() < 0 or proposed.max() >= self.n_actions):
+            raise ValueError(
+                f"Actions must be in [0, {self.n_actions}); got {proposed.tolist()}."
+            )
+
+        started = time.perf_counter()
+        executed = proposed.copy()
+        unsafe = np.zeros(proposed.shape, dtype=bool)
+        for index, (observation, action) in enumerate(zip(batch, proposed)):
+            self._n_checked += 1
+            safe_actions = tuple(
+                int(candidate) for candidate in self.shield.get_safe_actions(observation)
+            )
+            if int(action) in safe_actions:
+                continue
+            unsafe[index] = True
+            if not safe_actions:
+                self._n_no_safe_state += 1
+                raise RuntimeError(
+                    "Continuous-state shield produced no safe action for observation "
+                    f"{observation.tolist()}."
+                )
+            replacement = int(self.shield.shield_action(observation, int(action)))
+            if replacement not in safe_actions:
+                raise RuntimeError(
+                    f"Continuous-state shield returned unsafe action {replacement}; "
+                    f"safe actions are {list(safe_actions)}."
+                )
+            executed[index] = replacement
+            self._n_overridden += 1
+        self._record_latency(time.perf_counter() - started, int(proposed.size))
+        return executed, unsafe
+
+    def reset_diagnostics(self) -> None:
+        self._n_checked = 0
+        self._n_overridden = 0
+        self._n_no_safe_state = 0
+        self._n_override_calls = 0
+        self._override_seconds_total = 0.0
+        self._override_seconds_max_call = 0.0
+        self._max_call_actions = 0
+
+    def _record_latency(self, elapsed: float, n_actions: int) -> None:
+        self._n_override_calls += 1
+        self._override_seconds_total += float(elapsed)
+        if elapsed > self._override_seconds_max_call:
+            self._override_seconds_max_call = float(elapsed)
+            self._max_call_actions = int(n_actions)
+
+    @property
+    def intervention_rate(self) -> float:
+        return (self._n_overridden / self._n_checked) if self._n_checked else 0.0
+
+    def latency_diagnostics(self) -> dict[str, float]:
+        calls = int(self._n_override_calls)
+        actions = int(self._n_checked)
+        total = float(self._override_seconds_total)
+        return {
+            "override_calls": calls,
+            "actions_checked": actions,
+            "total_seconds": total,
+            "mean_seconds_per_call": (total / calls) if calls else 0.0,
+            "mean_seconds_per_action": (total / actions) if actions else 0.0,
+            "max_call_seconds": float(self._override_seconds_max_call),
+            "max_call_actions": int(self._max_call_actions),
+        }
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "checked": int(self._n_checked),
+            "overridden": int(self._n_overridden),
+            "no_safe_state": int(self._n_no_safe_state),
+            "intervention_rate": self.intervention_rate,
+            "latency": self.latency_diagnostics(),
+        }
+
+
+def _has_continuous_state_shield_api(shield: Any) -> bool:
+    return (
+        hasattr(shield, "n_actions")
+        and callable(getattr(shield, "get_safe_actions", None))
+        and callable(getattr(shield, "is_safe_action", None))
+        and callable(getattr(shield, "shield_action", None))
+    )
+
+
+def is_continuous_state_shield(shield: Any) -> bool:
+    """Whether ``shield`` follows the raw-observation safety-shield API."""
+    return isinstance(shield, ContinuousStateShieldAdapter) or (
+        not isinstance(shield, Shield) and _has_continuous_state_shield_api(shield)
+    )
+
+
+def as_action_shield(
+    shield: Any,
+    obs_to_state: ObsToState | None = None,
+    *,
+    seed: int | None = None,
+) -> Shield | ContinuousStateShieldAdapter:
+    """Coerce table masks and observation-based shields to a common runtime API."""
+    if isinstance(shield, ContinuousStateShieldAdapter):
+        if obs_to_state is not None:
+            raise ValueError("obs_to_state is not used by continuous-state shields.")
+        return shield
+    if is_continuous_state_shield(shield):
+        if obs_to_state is not None:
+            raise ValueError("obs_to_state is not used by continuous-state shields.")
+        return ContinuousStateShieldAdapter(shield)
+    return as_shield(shield, obs_to_state, seed=seed)

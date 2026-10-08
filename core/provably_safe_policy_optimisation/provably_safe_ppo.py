@@ -40,7 +40,11 @@ from provably_safe_policy_optimisation.policy_introspection import (
 )
 from provably_safe_policy_optimisation.projected_ppo import ProjectedPPO
 from provably_safe_policy_optimisation.safe_init import SafeInitReport, run_safe_init
-from provably_safe_policy_optimisation.shield import Shield, as_shield
+from provably_safe_policy_optimisation.shield import (
+    ContinuousStateShieldAdapter,
+    Shield,
+    as_action_shield,
+)
 
 ShieldActionStorage = Literal["proposed", "executed"]
 
@@ -62,7 +66,7 @@ class ProvablySafePPO(ProjectedPPO):
                 "shield_action_storage must be either 'proposed' or 'executed', "
                 f"got {shield_action_storage!r}.",
             )
-        self._shield: Shield | None = None
+        self._shield: Shield | ContinuousStateShieldAdapter | None = None
         self._exploration_unsafe_action_callback: Any | None = None
         self.shield_action_storage: ShieldActionStorage = shield_action_storage
         # _setup_model runs inside super().__init__; attaching the shield afterwards
@@ -79,7 +83,7 @@ class ProvablySafePPO(ProjectedPPO):
 
     def set_shield(self, shield: Any, obs_to_state: Any = None, *, seed: int | None = None) -> None:
         """Attach (or re-attach) the safety shield, validating it against the action space."""
-        shield = as_shield(shield, obs_to_state, seed=seed)
+        shield = as_action_shield(shield, obs_to_state, seed=seed)
         if not isinstance(self.action_space, spaces.Discrete):
             raise ValueError("ProvablySafePPO requires a Discrete action space.")
         if shield.n_actions != int(self.action_space.n):
@@ -145,10 +149,15 @@ class ProvablySafePPO(ProjectedPPO):
             log_probs = proposed_log_probs
 
             if isinstance(self.action_space, spaces.Discrete):
-                states = np.asarray(self._shield.obs_to_state(obs_tensor)).astype(np.int64).reshape(-1)
                 proposed_flat = np.asarray(proposed_actions_np).astype(np.int64).reshape(-1)
-                unsafe_proposed_actions = ~self._shield.mask[states, proposed_flat]
-                executed_flat = self._shield.override(states, proposed_flat)
+                if isinstance(self._shield, ContinuousStateShieldAdapter):
+                    executed_flat, unsafe_proposed_actions = self._shield.override_observations(
+                        self._last_obs, proposed_flat
+                    )
+                else:
+                    states = np.asarray(self._shield.obs_to_state(obs_tensor)).astype(np.int64).reshape(-1)
+                    unsafe_proposed_actions = ~self._shield.mask[states, proposed_flat]
+                    executed_flat = self._shield.override(states, proposed_flat)
                 env_actions = executed_flat
                 if self.shield_action_storage == "executed":
                     executed_actions = th.as_tensor(
@@ -231,6 +240,11 @@ class ProvablySafePPO(ProjectedPPO):
         attached, parameters are re-projected afterwards. See :func:`run_safe_init` for
         keyword arguments.
         """
+        if isinstance(self._shield, ContinuousStateShieldAdapter):
+            raise NotImplementedError(
+                "pretrain_on_shield() currently requires a finite table/region mask; "
+                "observation-dependent continuous-state shields have no finite mask to clone."
+            )
         # copy_modules=False: the returned Sequential shares the live actor parameters.
         _, actor_seq = extract_feature_actor_parameters_and_network(self, copy_modules=False)
         report = run_safe_init(
@@ -244,7 +258,7 @@ class ProvablySafePPO(ProjectedPPO):
             self.policy.optimizer.project_now()
         return report
 
-    def shield_diagnostics(self) -> dict[str, float]:
+    def shield_diagnostics(self) -> dict[str, Any]:
         """Cumulative shield intervention diagnostics (see ``Shield.diagnostics``)."""
         return self._shield.diagnostics() if self._shield is not None else {}
 

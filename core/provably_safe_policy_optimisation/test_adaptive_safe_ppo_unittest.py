@@ -12,6 +12,7 @@ import torch as th
 from provably_safe_policy_optimisation import AdaptiveSafePPO
 from provably_safe_policy_optimisation import adaptive_safe_ppo as asp
 from provably_safe_policy_optimisation.adaptive_safe_ppo import (
+    verifier_compatible_actor,
     calibrate_inverse_temperature,
     select_certified_box,
     shield_safe_behaviour_dataset,
@@ -83,7 +84,7 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         extra.setdefault("n_epochs", 1)
         extra.setdefault("learning_rate", 1e-6)
         # Most tests below exercise the historical verify-first mechanics.
-        # Canonical PSPO-adaptive defaults are covered by the stage parser tests.
+        # Canonical PSPO defaults are covered by the stage parser tests.
         extra.setdefault("rashomon_multi_label_mode", "any")
         extra.setdefault("rashomon_surrogate", "auto")
         extra.setdefault("directional_rashomon_growth", False)
@@ -476,3 +477,52 @@ class HelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerifierCompatibleActorTests(unittest.TestCase):
+    """Leading no-op Flatten layers block CROWN, which has no Flatten node."""
+
+    def _actor(self) -> th.nn.Sequential:
+        return th.nn.Sequential(
+            th.nn.Flatten(), th.nn.Linear(8, 4), th.nn.Tanh(), th.nn.Linear(4, 3)
+        )
+
+    def test_ibp_keeps_the_model_untouched(self) -> None:
+        actor = self._actor()
+        self.assertIs(
+            verifier_compatible_actor(actor, "IBP", input_ndim=2), actor
+        )
+
+    def test_crown_drops_the_identity_flatten(self) -> None:
+        actor = self._actor()
+        stripped = verifier_compatible_actor(actor, "CROWN", input_ndim=2)
+        self.assertNotIsInstance(stripped[0], th.nn.Flatten)
+        self.assertEqual(len(stripped), len(actor) - 1)
+
+    def test_stripped_actor_shares_parameters_with_the_original(self) -> None:
+        actor = self._actor()
+        stripped = verifier_compatible_actor(actor, "CROWN", input_ndim=2)
+        originals = list(actor.parameters())
+        self.assertEqual(len(list(stripped.parameters())), len(originals))
+        for a, b in zip(stripped.parameters(), originals):
+            self.assertIs(a, b)
+
+    def test_stripped_actor_is_numerically_identical(self) -> None:
+        actor = self._actor()
+        stripped = verifier_compatible_actor(actor, "CROWN", input_ndim=2)
+        x = th.randn(5, 8)
+        self.assertTrue(th.equal(actor(x), stripped(x)))
+
+    def test_non_flat_input_keeps_the_flatten(self) -> None:
+        # There the Flatten genuinely reshapes, so removing it would be unsound;
+        # the verifier must be allowed to reject the model instead.
+        actor = self._actor()
+        self.assertIs(
+            verifier_compatible_actor(actor, "CROWN", input_ndim=3), actor
+        )
+
+    def test_reshaping_flatten_is_kept(self) -> None:
+        actor = th.nn.Sequential(th.nn.Flatten(start_dim=0), th.nn.Linear(8, 3))
+        self.assertIs(
+            verifier_compatible_actor(actor, "CROWN", input_ndim=2), actor
+        )

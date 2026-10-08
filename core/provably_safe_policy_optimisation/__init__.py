@@ -10,10 +10,9 @@ Public API
   parameters each step.
 * :class:`ProjectedDQN` / :class:`ProjectedPPO` -- SB3 DQN/PPO subclasses that
   wire ``ProjectedAdam`` in and attach caller-supplied bounds.
-* :class:`AdaptiveSafePPO` -- verify-first implementation used by unified PSPO
-  adaptive.
+* :class:`AdaptiveSafePPO` -- verify-first implementation used by PSPO.
 * :class:`AdaptiveSafePPOV2` -- compatibility implementation for region-first
-  PSPO adaptive; new experiments select it through the unified stage rather
+  PSPO; new experiments select it through the unified stage rather
   than a separate v2 method.
 * :func:`projection_target_parameter_names` -- resolve the ordered parameter
   names a ``ProjectedPPO`` would project (to align bounds).
@@ -23,6 +22,13 @@ Public API
 """
 
 from __future__ import annotations
+
+from provably_safe_policy_optimisation.policy_introspection import (
+    extract_feature_actor_parameters_and_network,
+    resolve_feature_actor_names_for_policy,
+    resolve_policy,
+)
+from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
 
 # Pure-torch primitives (no Stable-Baselines3 dependency).
 from provably_safe_policy_optimisation.projection import (
@@ -37,14 +43,15 @@ from provably_safe_policy_optimisation.regions import (
     ZonotopeRegion,
     project_to_region_union,
 )
-from provably_safe_policy_optimisation.projected_optimizers import ProjectedAdam
-from provably_safe_policy_optimisation.policy_introspection import (
-    extract_feature_actor_parameters_and_network,
-    resolve_feature_actor_names_for_policy,
-    resolve_policy,
-)
 from provably_safe_policy_optimisation.safe_init import SafeInitReport
-from provably_safe_policy_optimisation.shield import RegionShield, Shield, as_shield
+from provably_safe_policy_optimisation.shield import (
+    ContinuousStateShieldAdapter,
+    RegionShield,
+    Shield,
+    as_action_shield,
+    as_shield,
+    is_continuous_state_shield,
+)
 
 # SB3-dependent training classes (optional: only if stable-baselines3 installed).
 try:
@@ -68,6 +75,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
 
 __all__ = [
     "ActorParamBounds",
+    "ContinuousStateShieldAdapter",
     "AdaptiveSafePPO",
     "AdaptiveSafePPOV2",
     "ProjectedAdam",
@@ -82,7 +90,9 @@ __all__ = [
     "SafeInitReport",
     "Shield",
     "ZonotopeRegion",
+    "as_action_shield",
     "as_shield",
+    "is_continuous_state_shield",
     "extract_feature_actor_parameters_and_network",
     "project_to_interval_union",
     "project_to_region_union",

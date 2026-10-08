@@ -311,7 +311,9 @@ class AdaptiveSafePPOV2Tests(unittest.TestCase):
     def test_directional_growth_rejects_zonotope_regions(self) -> None:
         env = gym.make("FrozenLake-v1")
         self.addCleanup(env.close)
-        with self.assertRaisesRegex(ValueError, "requires safe_region_shape='orthotope'"):
+        # Segments are directional by construction and are accepted; the
+        # learned-zonotope region still has no direction to grow along.
+        with self.assertRaisesRegex(ValueError, "requires safe_region_shape"):
             AdaptiveSafePPOV2(
                 "MlpPolicy",
                 env,

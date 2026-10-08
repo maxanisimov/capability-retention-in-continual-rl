@@ -7,12 +7,33 @@ import unittest
 import gymnasium as gym
 import numpy as np
 
-from provably_safe_policy_optimisation import ProvablySafeDQN, ProvablySafePPO, RegionShield
+from provably_safe_policy_optimisation import (
+    ContinuousStateShieldAdapter,
+    ProvablySafeDQN,
+    ProvablySafePPO,
+    RegionShield,
+)
 
 
 def _mountaincar_shield() -> RegionShield:
     # When position < 0.3, only "push right" (action 2) is safe; elsewhere all safe.
     return RegionShield(regions=[(lambda o: o[0] < 0.3, [2])], n_actions=3, seed=0)
+
+
+class _OnlyRightContinuousShield:
+    """Minimal raw-observation shield implementing the continuous-state API."""
+
+    n_actions = 3
+
+    def get_safe_actions(self, state):  # type: ignore[no-untyped-def]
+        np.asarray(state, dtype=float).reshape(2)
+        return [2]
+
+    def is_safe_action(self, state, action):  # type: ignore[no-untyped-def]
+        return int(action) in self.get_safe_actions(state)
+
+    def shield_action(self, state, proposed_action):  # type: ignore[no-untyped-def]
+        return int(proposed_action) if self.is_safe_action(state, proposed_action) else 2
 
 
 class _RecordObsActions(gym.Wrapper):
@@ -60,6 +81,31 @@ class ContinuousShieldDQNTests(unittest.TestCase):
 
 
 class ContinuousShieldPPOTests(unittest.TestCase):
+    def test_observation_based_shield_executes_only_safe_actions(self) -> None:
+        recorder = _RecordObsActions(gym.make("MountainCar-v0"))
+        model = ProvablySafePPO(
+            "MlpPolicy",
+            recorder,
+            shield=_OnlyRightContinuousShield(),
+            seed=0,
+            device="cpu",
+            verbose=0,
+            n_steps=32,
+            batch_size=16,
+            n_epochs=1,
+            policy_kwargs={"net_arch": [16]},
+        )
+        self.addCleanup(model.get_env().close)
+        self.assertIsInstance(model._shield, ContinuousStateShieldAdapter)
+
+        model.learn(total_timesteps=64)
+
+        self.assertTrue(recorder.records)
+        self.assertTrue(all(action == 2 for _obs, action in recorder.records))
+        diagnostics = model.shield_diagnostics()
+        self.assertEqual(diagnostics["checked"], 64)
+        self.assertGreater(diagnostics["overridden"], 0)
+
     def test_executed_actions_safe(self) -> None:
         shield = _mountaincar_shield()
         recorder = _RecordObsActions(gym.make("MountainCar-v0"))

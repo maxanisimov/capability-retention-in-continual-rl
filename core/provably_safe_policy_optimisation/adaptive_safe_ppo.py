@@ -70,6 +70,7 @@ from typing import Any, Literal, Mapping
 import numpy as np
 import torch as th
 import torch.nn.functional as F
+from abstract_gradient_training.bounded_models import StateIdLookupLinear
 from gymnasium import spaces
 from torch.utils.data import TensorDataset
 
@@ -82,16 +83,19 @@ from provably_safe_policy_optimisation.projected_ppo import (
 from provably_safe_policy_optimisation.projection import (
     ProjectionResult,
 )
+from provably_safe_policy_optimisation.provably_safe_ppo import ProvablySafePPO
 from provably_safe_policy_optimisation.regions import (
     OrthotopeRegion,
     SafeParameterRegion,
     project_to_region_union,
 )
-from provably_safe_policy_optimisation.provably_safe_ppo import ProvablySafePPO
 from provably_safe_policy_optimisation.safe_init import _greedy_safe_rate
 
 AdaptiveGranularity = Literal["gradient_step", "train_phase"]
 UnsafeUpdateStrategy = Literal["rashomon_project", "none"]
+# "segment" is the rank-one zonotope spanning [last safe params, proposal]; see
+# src.segment_rashomon and docs/methodology/pspo_segment_lid.tex.
+SafeRegionShapeOption = Literal["orthotope", "zonotope", "segment"]
 
 
 def directional_masks_from_update_deltas(
@@ -100,7 +104,9 @@ def directional_masks_from_update_deltas(
     """Freeze each parameter bound opposite to the proposed update direction."""
 
     if not deltas:
-        raise ValueError("Directional safe-region growth requires at least one update tensor.")
+        raise ValueError(
+            "Directional safe-region growth requires at least one update tensor."
+        )
     param_l_mask: list[th.Tensor] = []
     param_u_mask: list[th.Tensor] = []
     counts = {"positive": 0, "negative": 0, "zero": 0}
@@ -111,7 +117,9 @@ def directional_masks_from_update_deltas(
                 f"got {type(delta).__name__}."
             )
         if not bool(th.isfinite(delta).all()):
-            raise ValueError(f"Proposed update delta {index} contains non-finite values.")
+            raise ValueError(
+                f"Proposed update delta {index} contains non-finite values."
+            )
         detached = delta.detach()
         positive = detached > 0
         negative = detached < 0
@@ -130,7 +138,9 @@ def directional_objective_weights_from_update_deltas(
     """Return ``abs(delta)`` weights aligned with actor parameters."""
 
     if not deltas:
-        raise ValueError("Directional safe-region growth requires at least one update tensor.")
+        raise ValueError(
+            "Directional safe-region growth requires at least one update tensor."
+        )
     weights = []
     for index, delta in enumerate(deltas):
         if not isinstance(delta, th.Tensor):
@@ -139,7 +149,9 @@ def directional_objective_weights_from_update_deltas(
                 f"got {type(delta).__name__}."
             )
         if not bool(th.isfinite(delta).all()):
-            raise ValueError(f"Proposed update delta {index} contains non-finite values.")
+            raise ValueError(
+                f"Proposed update delta {index} contains non-finite values."
+            )
         weights.append(delta.detach().abs().clone())
     return weights
 
@@ -160,36 +172,128 @@ def orthotope_contains_params(
 
 
 def shield_safe_behaviour_dataset(
-    mask: Any, state_to_features: Any = None
+    mask: Any,
+    state_to_features: Any = None,
+    *,
+    state_id_lookup: bool = False,
 ) -> tuple[TensorDataset, np.ndarray]:
     """Build the shield's safe-behaviour dataset for verification / calibration.
 
-    Returns ``(dataset, safe_state_ids)`` where the dataset yields
-    ``(state_representation, multi_hot_safe_actions)`` float32 rows, one per
-    state with at least one safe action (states without any safe action are
-    excluded, mirroring the offline ``compute_shield_rashomon_set`` stage).
+    Returns ``(dataset, safe_state_ids)`` where the dataset yields one
+    ``(state_representation, multi_hot_safe_actions)`` row per state with at
+    least one safe action. Actions are float32; states are float32 one-hot or
+    feature rows, or int64 ``(state_id,)`` rows in lookup mode. States without
+    any safe action are excluded, mirroring the offline
+    ``compute_shield_rashomon_set`` stage.
 
     ``state_to_features`` selects the representation, matching the policy input:
-    ``None`` gives one-hot state ids; a callable gives the env's decoded feature
-    vectors (features mode), so the exact greedy verifier feeds the same feature
-    input the live policy consumes.
+    ``None`` gives one-hot state IDs by default; ``state_id_lookup=True`` keeps
+    those IDs sparse. A callable gives the env's decoded feature vectors
+    (features mode), so the exact greedy verifier feeds the same feature input
+    the live policy consumes.
     """
     mask_arr = np.asarray(mask, dtype=np.float32)
     if mask_arr.ndim != 2:
-        raise ValueError(f"Expected shield mask shape (n_states, n_actions), got {mask_arr.shape}.")
+        raise ValueError(
+            f"Expected shield mask shape (n_states, n_actions), got {mask_arr.shape}."
+        )
     n_states = int(mask_arr.shape[0])
     safe_state_ids = np.flatnonzero(mask_arr.sum(axis=1) > 0)
     if safe_state_ids.size == 0:
         raise ValueError("Shield contains no states with at least one safe action.")
-    if state_to_features is None:
+    if state_to_features is not None and state_id_lookup:
+        raise ValueError("state_to_features and state_id_lookup are mutually exclusive.")
+    if state_id_lookup:
+        states = th.as_tensor(safe_state_ids, dtype=th.long).reshape(-1, 1)
+    elif state_to_features is None:
         states = F.one_hot(
             th.as_tensor(safe_state_ids, dtype=th.long), num_classes=n_states
         ).to(th.float32)
     else:
-        feature_rows = np.stack([np.asarray(state_to_features(int(s))) for s in safe_state_ids])
+        feature_rows = np.stack(
+            [np.asarray(state_to_features(int(s))) for s in safe_state_ids]
+        )
         states = th.as_tensor(feature_rows, dtype=th.float32)
     actions = th.as_tensor(mask_arr[safe_state_ids], dtype=th.float32)
     return TensorDataset(states, actions), safe_state_ids
+
+
+def state_id_lookup_actor(
+    actor: th.nn.Sequential,
+    *,
+    share_parameters: bool,
+) -> th.nn.Sequential:
+    """Replace the first dense affine layer with its exact state-ID lookup."""
+
+    modules: list[th.nn.Module] = []
+    replaced = False
+    for module in actor:
+        if not replaced and isinstance(module, th.nn.Linear):
+            modules.append(
+                StateIdLookupLinear.from_linear(
+                    module, share_parameters=share_parameters
+                )
+            )
+            replaced = True
+        else:
+            if not replaced and any(True for _ in module.parameters()):
+                raise ValueError(
+                    "state_id_lookup requires the actor's first parameterized "
+                    "module to be nn.Linear."
+                )
+            modules.append(module)
+    if not replaced:
+        raise ValueError("state_id_lookup requires an actor containing nn.Linear.")
+    lookup_actor = th.nn.Sequential(*modules)
+    lookup_actor.train(actor.training)
+    return lookup_actor
+
+
+def validate_interval_certificate_dataset(
+    dataset: TensorDataset,
+    *,
+    observation_shape: tuple[int, ...],
+    n_actions: int,
+) -> TensorDataset:
+    """Validate and detach a ``(X_l, X_u, safe_mask)`` certificate dataset."""
+
+    if not isinstance(dataset, TensorDataset) or len(dataset.tensors) != 3:
+        raise ValueError(
+            "interval_certificate_dataset must be a TensorDataset containing "
+            "exactly (X_l, X_u, safe_mask)."
+        )
+    x_l, x_u, safe_mask = dataset.tensors
+    if x_l.ndim < 2 or x_l.shape[0] == 0:
+        raise ValueError(
+            "The interval certificate dataset must contain at least one box."
+        )
+    expected_input_shape = (x_l.shape[0], *observation_shape)
+    if tuple(x_l.shape) != tuple(x_u.shape):
+        raise ValueError(
+            f"X_l and X_u shapes differ: {tuple(x_l.shape)} != {tuple(x_u.shape)}."
+        )
+    if tuple(x_l.shape) != expected_input_shape:
+        raise ValueError(
+            "Interval input shape does not match the observation space: "
+            f"dataset={tuple(x_l.shape[1:])}, observation={observation_shape}."
+        )
+    if tuple(safe_mask.shape) != (x_l.shape[0], int(n_actions)):
+        raise ValueError(
+            "safe_mask must have shape (n_boxes, n_actions): "
+            f"got {tuple(safe_mask.shape)}, expected {(x_l.shape[0], int(n_actions))}."
+        )
+    if not bool(th.isfinite(x_l).all()) or not bool(th.isfinite(x_u).all()):
+        raise ValueError("Interval certificate bounds must be finite.")
+    if bool((x_l > x_u).any()):
+        raise ValueError("Every interval lower bound must be <= its upper bound.")
+    mask = safe_mask.bool()
+    if not bool(mask.any(dim=1).all()):
+        raise ValueError("Every certificate box must admit at least one action.")
+    return TensorDataset(
+        x_l.detach().to(dtype=th.float32, device="cpu").clone(),
+        x_u.detach().to(dtype=th.float32, device="cpu").clone(),
+        mask.detach().to(dtype=th.float32, device="cpu").clone(),
+    )
 
 
 def calibrate_inverse_temperature(
@@ -213,8 +317,7 @@ def calibrate_inverse_temperature(
         raise ValueError(f"start must be <= cap; got start={start}, cap={cap}.")
     if multi_label_mode not in ("any", "all"):
         raise ValueError(
-            "multi_label_mode must be either 'any' or 'all', "
-            f"got {multi_label_mode!r}."
+            f"multi_label_mode must be either 'any' or 'all', got {multi_label_mode!r}."
         )
     from src.IntervalTensor import IntervalTensor
     from src.verification import verify
@@ -250,6 +353,34 @@ def calibrate_inverse_temperature(
     )
 
 
+def verifier_compatible_actor(
+    actor: th.nn.Sequential, method: str, *, input_ndim: int
+) -> th.nn.Sequential:
+    """Drop leading no-op ``Flatten`` layers for verifiers that lack a node for them.
+
+    SB3's feature extractor contributes ``Flatten(start_dim=1)`` at the head of
+    the actor.  For an already-flat ``(batch, features)`` certificate input that
+    layer is the identity, but the CROWN backends have no Flatten node and
+    reject the model outright.  Removing an identity is sound; anything that
+    would actually reshape is left in place so the verifier still refuses it.
+
+    The returned sequential reuses the original module objects, so parameters
+    (and their order) are shared with ``actor``.
+    """
+
+    if method == "IBP" or input_ndim != 2:
+        return actor
+    modules = list(actor)
+    while modules and isinstance(modules[0], th.nn.Flatten):
+        flatten = modules[0]
+        if flatten.start_dim not in (1, -1) or flatten.end_dim != -1:
+            break
+        modules = modules[1:]
+    if len(modules) == len(list(actor)):
+        return actor
+    return th.nn.Sequential(*modules)
+
+
 def _run_rashomon_engine(
     model: th.nn.Sequential,
     dataset: TensorDataset,
@@ -258,17 +389,27 @@ def _run_rashomon_engine(
     checkpoint: int,
     batch_size: int,
     certificate_samples: int,
-    inverse_temp: int,
+    inverse_temp: int | None,
+    has_input_intervals: bool = False,
     seed: int,
     multi_label_mode: str = "any",
     surrogate: str = "auto",
-    rashomon_objective: Literal["weighted_width", "projection_distance"] = "weighted_width",
+    rashomon_objective: Literal[
+        "weighted_width", "projection_distance"
+    ] = "weighted_width",
     param_l_mask: list[th.Tensor] | None = None,
     param_u_mask: list[th.Tensor] | None = None,
     param_objective_weights: list[th.Tensor] | None = None,
     stop_target_params: list[th.Tensor] | None = None,
+    growth_method: str = "IBP",
+    certification_method: str = "IBP",
 ) -> Any:
-    """Run the IBP Rashomon-set engine around ``model``'s current parameters.
+    """Run the Rashomon-set engine around ``model``'s current parameters.
+
+    ``growth_method`` bounds the region during the Cooper loop and
+    ``certification_method`` decides whether a box is accepted; a tighter
+    verifier than IBP admits larger certified regions at more cost per
+    iteration.
 
     Module-level indirection so tests can monkeypatch the expensive Cooper
     loop. The import is lazy to keep the ``cooper`` dependency optional.
@@ -283,19 +424,22 @@ def _run_rashomon_engine(
         certificate_samples=int(certificate_samples),
         n_iters=int(n_iters),
         checkpoint=int(checkpoint),
-        temperatures={None: 1.0 / float(inverse_temp)},
+        temperatures=(
+            None if inverse_temp is None else {None: 1.0 / float(inverse_temp)}
+        ),
+        has_input_intervals=bool(has_input_intervals),
         seed=int(seed),
         multi_label_mode=multi_label_mode,
         surrogate=surrogate,
         param_l_mask=param_l_mask,
         param_u_mask=param_u_mask,
         param_objective_weights=(
-            param_objective_weights
-            if rashomon_objective == "weighted_width"
-            else None
+            param_objective_weights if rashomon_objective == "weighted_width" else None
         ),
         stop_target_params=stop_target_params,
         rashomon_objective=rashomon_objective,
+        growth_method=str(growth_method),
+        certification_method=str(certification_method),
     )
 
 
@@ -332,6 +476,40 @@ def _run_zonotope_rashomon_engine(
     )
 
 
+def _run_segment_engine(
+    model: th.nn.Sequential,
+    dataset: TensorDataset,
+    *,
+    delta: list[th.Tensor],
+    tolerance: float,
+    splits: int,
+    max_splits: int,
+    batch_size: int,
+    multi_label_mode: str = "all",
+    has_input_intervals: bool = False,
+) -> Any:
+    """Certify the longest safe step from ``model``'s parameters along ``delta``.
+
+    Unlike the orthotope and learned-zonotope engines this one needs no
+    gradients, no differentiable surrogate and no temperature calibration: it
+    only ever evaluates the hard certificate. Module-level indirection so tests
+    can monkeypatch it.
+    """
+    from src.segment_rashomon import compute_segment_rashomon_set
+
+    return compute_segment_rashomon_set(
+        model,
+        dataset,
+        delta=delta,
+        tolerance=float(tolerance),
+        splits=int(splits),
+        max_splits=int(max_splits),
+        batch_size=int(batch_size),
+        multi_label_mode=multi_label_mode,  # type: ignore[arg-type]
+        has_input_intervals=bool(has_input_intervals),
+    )
+
+
 def select_certified_box(
     result: Any,
 ) -> tuple[list[th.Tensor], list[th.Tensor], int] | None:
@@ -344,7 +522,10 @@ def select_certified_box(
     when no checkpoint is fully certified (caller must fall back).
     """
     cert_values = [
-        min((certificate.min_hard_acc for certificate in certificates), default=float("-inf"))
+        min(
+            (certificate.min_hard_acc for certificate in certificates),
+            default=float("-inf"),
+        )
         for certificates in result.certificates
     ]
     valid_indices = [idx for idx, value in enumerate(cert_values) if value >= 1.0]
@@ -360,7 +541,7 @@ def select_certified_box(
 def select_certified_region(
     result: Any,
     *,
-    safe_region_shape: Literal["orthotope", "zonotope"],
+    safe_region_shape: SafeRegionShapeOption,
 ) -> tuple[SafeParameterRegion, int] | None:
     """Select the last fully certified safe region."""
 
@@ -370,6 +551,10 @@ def select_certified_region(
             return None
         lower, upper, idx = selected
         return OrthotopeRegion(lower=lower, upper=upper), idx
+    if safe_region_shape == "segment":
+        from src.segment_rashomon import select_certified_segment
+
+        return select_certified_segment(result)
     from src.zonotope_rashomon import select_certified_zonotope
 
     return select_certified_zonotope(result)
@@ -395,13 +580,20 @@ class AdaptiveSafePPO(ProvablySafePPO):
         rashomon_objective: Literal[
             "weighted_width", "projection_distance"
         ] = "weighted_width",
-        safe_region_shape: Literal["orthotope", "zonotope"] = "orthotope",
+        rashomon_growth_method: str = "IBP",
+        rashomon_certification_method: str = "IBP",
+        safe_region_shape: SafeRegionShapeOption = "orthotope",
         zonotope_rank: int | None = None,
+        segment_tolerance: float = 1e-3,
+        segment_splits: int = 4,
+        segment_max_splits: int = 8,
         rashomon_seed: int | None = None,
         directional_rashomon_growth: bool = True,
         stop_when_proposal_contained: bool = True,
         verify_base_policy: bool = True,
         state_to_features: Any = None,
+        discrete_state_representation: Literal["one_hot", "state_id_lookup"] = "one_hot",
+        interval_certificate_dataset: TensorDataset | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -456,10 +648,22 @@ class AdaptiveSafePPO(ProvablySafePPO):
         verify_base_policy:
             Verify the (possibly loaded) initial policy is greedy-safe and
             raise ``ValueError`` otherwise.
+        interval_certificate_dataset:
+            Optional exhaustive ``TensorDataset(X_l, X_u, safe_mask)`` for a
+            continuous Box observation space. Candidate policies and Rashomon
+            regions are then certified over every complete input box instead
+            of a finite table of sampled points.
         """
         # Forward feature map (state id -> feature vector) for the exact verifier
         # when the observation space is a feature Box; None means one-hot states.
         self._state_to_features = state_to_features
+        if discrete_state_representation not in {"one_hot", "state_id_lookup"}:
+            raise ValueError(
+                "discrete_state_representation must be 'one_hot' or "
+                f"'state_id_lookup'; got {discrete_state_representation!r}."
+            )
+        self._discrete_state_representation = discrete_state_representation
+        self._interval_certificate_dataset = interval_certificate_dataset
         if adaptive_granularity not in ("gradient_step", "train_phase"):
             raise ValueError(
                 "adaptive_granularity must be 'gradient_step' or 'train_phase', "
@@ -475,7 +679,9 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 f"{unsafe_update_strategy!r}.",
             )
         if int(rashomon_n_iters) <= 0:
-            raise ValueError(f"rashomon_n_iters must be positive; got {rashomon_n_iters}.")
+            raise ValueError(
+                f"rashomon_n_iters must be positive; got {rashomon_n_iters}."
+            )
         if rashomon_multi_label_mode not in ("any", "all"):
             raise ValueError(
                 "rashomon_multi_label_mode must be either 'any' or 'all', "
@@ -491,23 +697,68 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 "rashomon_objective must be 'weighted_width' or "
                 f"'projection_distance', got {rashomon_objective!r}."
             )
-        if safe_region_shape not in ("orthotope", "zonotope"):
+        from src.verification.registry import available_methods
+
+        for label, method in (
+            ("rashomon_growth_method", rashomon_growth_method),
+            ("rashomon_certification_method", rashomon_certification_method),
+        ):
+            if method not in available_methods():
+                raise ValueError(
+                    f"{label} must be one of {available_methods()}, got {method!r}."
+                )
+        if safe_region_shape not in ("orthotope", "zonotope", "segment"):
             raise ValueError(
-                "safe_region_shape must be either 'orthotope' or 'zonotope', "
+                "safe_region_shape must be 'orthotope', 'zonotope' or 'segment', "
                 f"got {safe_region_shape!r}.",
             )
+        if interval_certificate_dataset is not None and safe_region_shape == "zonotope":
+            raise ValueError(
+                "Continuous input-interval certificates are not supported by the "
+                "learned-zonotope safe region; use 'orthotope' or 'segment'."
+            )
+        if safe_region_shape == "segment":
+            if not 0.0 < float(segment_tolerance) < 1.0:
+                raise ValueError(
+                    "segment_tolerance must lie in (0, 1), got "
+                    f"{segment_tolerance}."
+                )
+            if int(segment_splits) <= 0:
+                raise ValueError(
+                    f"segment_splits must be positive, got {segment_splits}."
+                )
+            if int(segment_max_splits) < int(segment_splits):
+                raise ValueError(
+                    f"segment_max_splits ({segment_max_splits}) must be at least "
+                    f"segment_splits ({segment_splits})."
+                )
         if zonotope_rank is not None and int(zonotope_rank) <= 0:
-            raise ValueError(f"zonotope_rank must be positive when set, got {zonotope_rank}.")
-        if directional_rashomon_growth and safe_region_shape != "orthotope":
-            raise ValueError("Directional safe-region growth requires an orthotope region.")
-        if stop_when_proposal_contained and safe_region_shape != "orthotope":
-            raise ValueError("Proposal-containment stopping requires an orthotope region.")
-        if rashomon_objective == "projection_distance" and not directional_rashomon_growth:
+            raise ValueError(
+                f"zonotope_rank must be positive when set, got {zonotope_rank}."
+            )
+        # A segment runs from the last safe params to the proposal, so it is
+        # directional by construction and stops as soon as the proposal itself
+        # certifies (alpha = 1). Both flags are implied rather than configurable.
+        if directional_rashomon_growth and safe_region_shape == "zonotope":
+            raise ValueError(
+                "Directional safe-region growth requires an orthotope or segment region."
+            )
+        if stop_when_proposal_contained and safe_region_shape == "zonotope":
+            raise ValueError(
+                "Proposal-containment stopping requires an orthotope or segment region."
+            )
+        if (
+            rashomon_objective == "projection_distance"
+            and not directional_rashomon_growth
+        ):
             raise ValueError(
                 "rashomon_objective='projection_distance' requires directional "
                 "Rashomon growth."
             )
-        if rashomon_objective == "projection_distance" and not stop_when_proposal_contained:
+        if (
+            rashomon_objective == "projection_distance"
+            and not stop_when_proposal_contained
+        ):
             raise ValueError(
                 "rashomon_objective='projection_distance' requires "
                 "stop_when_proposal_contained=True."
@@ -527,25 +778,57 @@ class AdaptiveSafePPO(ProvablySafePPO):
         )
         self._rashomon_batch_size = int(rashomon_batch_size)
         self._rashomon_certificate_samples = (
-            int(rashomon_certificate_samples) if rashomon_certificate_samples is not None else None
+            int(rashomon_certificate_samples)
+            if rashomon_certificate_samples is not None
+            else None
         )
         self._rashomon_inverse_temperature = (
-            int(rashomon_inverse_temperature) if rashomon_inverse_temperature is not None else None
+            int(rashomon_inverse_temperature)
+            if rashomon_inverse_temperature is not None
+            else None
         )
-        self._rashomon_multi_label_mode: Literal["any", "all"] = rashomon_multi_label_mode
-        self._rashomon_surrogate: Literal[
-            "auto", "probability", "logsumexp"
-        ] = rashomon_surrogate
-        self._rashomon_objective: Literal[
-            "weighted_width", "projection_distance"
-        ] = rashomon_objective
+        self._rashomon_multi_label_mode: Literal["any", "all"] = (
+            rashomon_multi_label_mode
+        )
+        self._rashomon_surrogate: Literal["auto", "probability", "logsumexp"] = (
+            rashomon_surrogate
+        )
+        self._rashomon_objective: Literal["weighted_width", "projection_distance"] = (
+            rashomon_objective
+        )
+        self._rashomon_growth_method = str(rashomon_growth_method)
+        self._rashomon_certification_method = str(rashomon_certification_method)
+        if self._discrete_state_representation == "state_id_lookup":
+            unsupported = []
+            if self._rashomon_growth_method != "IBP":
+                unsupported.append(f"growth_method={self._rashomon_growth_method}")
+            if self._rashomon_certification_method != "IBP":
+                unsupported.append(
+                    f"certification_method={self._rashomon_certification_method}"
+                )
+            if safe_region_shape != "orthotope":
+                unsupported.append(f"safe_region_shape={safe_region_shape}")
+            if interval_certificate_dataset is not None:
+                unsupported.append("interval_certificate_dataset")
+            if unsupported:
+                raise ValueError(
+                    "state_id_lookup currently supports discrete IBP orthotopes "
+                    "only; got " + ", ".join(unsupported) + "."
+                )
         from src.verification import verify
 
         self._rashomon_resolved_surrogate = verify.resolve_surrogate_form(
             rashomon_multi_label_mode, rashomon_surrogate
         )
-        self._safe_region_shape: Literal["orthotope", "zonotope"] = safe_region_shape
+        self._safe_region_shape: SafeRegionShapeOption = safe_region_shape
         self._zonotope_rank = int(zonotope_rank) if zonotope_rank is not None else None
+        self._segment_tolerance = float(segment_tolerance)
+        self._segment_splits = int(segment_splits)
+        self._segment_max_splits = int(segment_max_splits)
+        self._last_segment_alpha: float | None = None
+        self._last_segment_splits_used: int | None = None
+        self._segment_alpha_sum = 0.0
+        self._segment_alpha_count = 0
         self._rashomon_seed = rashomon_seed
         self._directional_rashomon_growth = bool(directional_rashomon_growth)
         self._stop_when_proposal_contained = bool(stop_when_proposal_contained)
@@ -561,6 +844,15 @@ class AdaptiveSafePPO(ProvablySafePPO):
         self._n_fallback_reverts = 0
         self._n_accepted_unsafe = 0
         self._rashomon_wall_time_s = 0.0
+        self._rashomon_engine_wall_time_s = 0.0
+        self._rashomon_calibration_wall_time_s = 0.0
+        self._exact_verification_wall_time_s = 0.0
+        self._projection_wall_time_s = 0.0
+        self._safety_enforcement_wall_time_s = 0.0
+        self._diagnostic_audit_wall_time_s = 0.0
+        self._proposal_information_lid_computations = 0
+        self._safety_update_events: list[dict[str, Any]] = []
+        self._last_exact_verification_time_s = 0.0
         self._last_selected_checkpoint_index: int | None = None
         self._last_projection_result: ProjectionResult | None = None
         self._last_rashomon_iterations_run = 0
@@ -587,10 +879,20 @@ class AdaptiveSafePPO(ProvablySafePPO):
     ) -> None:
         if self._shield is None:
             raise ValueError("AdaptiveSafePPO requires a shield.")
-        # The exact greedy verifier enumerates every state. With a Discrete
-        # observation it feeds one-hot rows; with a feature Box it feeds each
-        # state's feature vector, which requires state_to_features.
-        if isinstance(self.observation_space, spaces.Box):
+        # Discrete/table shields enumerate states. Continuous shields instead
+        # provide complete input boxes and are verified by interval propagation.
+        if self._interval_certificate_dataset is not None:
+            if not isinstance(self.observation_space, spaces.Box):
+                raise ValueError(
+                    "Input-interval certificates require a Box observation space."
+                )
+            self._rashomon_dataset = validate_interval_certificate_dataset(
+                self._interval_certificate_dataset,
+                observation_shape=tuple(self.observation_space.shape),
+                n_actions=int(self.action_space.n),
+            )
+            self._certificate_has_input_intervals = True
+        elif isinstance(self.observation_space, spaces.Box):
             if self._state_to_features is None:
                 raise ValueError(
                     "AdaptiveSafePPO with a Box (feature) observation space needs "
@@ -610,6 +912,14 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 f"{type(self.observation_space).__name__}.",
             )
 
+        if (
+            self._discrete_state_representation == "state_id_lookup"
+            and not isinstance(self.observation_space, spaces.Discrete)
+        ):
+            raise ValueError(
+                "state_id_lookup requires a Discrete observation space."
+            )
+
         if base_policy_state_dict is not None:
             self._load_base_policy_state_dict(base_policy_state_dict)
 
@@ -621,29 +931,61 @@ class AdaptiveSafePPO(ProvablySafePPO):
         _, self._live_actor_seq = extract_feature_actor_parameters_and_network(
             self, copy_modules=False
         )
+        if self._discrete_state_representation == "state_id_lookup":
+            self._live_actor_seq = state_id_lookup_actor(
+                self._live_actor_seq, share_parameters=True
+            )
         self._live_actor_params = list(self._live_actor_seq.parameters())
         _, self._frozen_actor_seq = extract_feature_actor_parameters_and_network(
             self, copy_modules=True
         )
+        if self._discrete_state_representation == "state_id_lookup":
+            self._frozen_actor_seq = state_id_lookup_actor(
+                self._frozen_actor_seq, share_parameters=True
+            )
         self._frozen_actor_params = list(self._frozen_actor_seq.parameters())
 
-        # Shield dataset for the engine + cached exact-verification tensors.
-        self._rashomon_dataset, self._safe_state_ids = shield_safe_behaviour_dataset(
-            self._shield.mask, self._state_to_features
-        )
-        self._dataset_states = self._rashomon_dataset.tensors[0]
-        self._dataset_actions = self._rashomon_dataset.tensors[1]
-        if self._state_to_features is None:
-            # Discrete: obs_to_tensor one-hots the integer ids.
-            verify_obs, _ = self.policy.obs_to_tensor(self._safe_state_ids)
+        # Shield dataset for safe-region growth and candidate verification.
+        if self._interval_certificate_dataset is not None:
+            self._certificate_x_l = self._rashomon_dataset.tensors[0]
+            self._certificate_x_u = self._rashomon_dataset.tensors[1]
+            self._dataset_actions = self._rashomon_dataset.tensors[2]
+            self._safe_state_ids = np.arange(len(self._rashomon_dataset))
+            self._dataset_states = self._certificate_x_l
+            self._verify_mask = self._dataset_actions.to(
+                device=self.device, dtype=th.bool
+            )
+            self._verify_obs = None
         else:
-            # Features: the dataset already holds each state's feature vector;
-            # feed it straight through as the verifier's observation batch.
-            verify_obs, _ = self.policy.obs_to_tensor(self._dataset_states.cpu().numpy())
-        self._verify_obs = verify_obs
-        self._verify_mask = th.as_tensor(
-            self._shield.mask[self._safe_state_ids], dtype=th.bool, device=self.device
-        )
+            self._certificate_has_input_intervals = False
+            self._rashomon_dataset, self._safe_state_ids = (
+                shield_safe_behaviour_dataset(
+                    self._shield.mask,
+                    self._state_to_features,
+                    state_id_lookup=(
+                        self._discrete_state_representation == "state_id_lookup"
+                    ),
+                )
+            )
+            self._dataset_states = self._rashomon_dataset.tensors[0]
+            self._dataset_actions = self._rashomon_dataset.tensors[1]
+            if self._discrete_state_representation == "state_id_lookup":
+                verify_obs = None
+            elif self._state_to_features is None:
+                # Discrete: obs_to_tensor one-hots the integer ids.
+                verify_obs, _ = self.policy.obs_to_tensor(self._safe_state_ids)
+            else:
+                # Features: the dataset already holds each state's feature vector;
+                # feed it straight through as the verifier's observation batch.
+                verify_obs, _ = self.policy.obs_to_tensor(
+                    self._dataset_states.cpu().numpy()
+                )
+            self._verify_obs = verify_obs
+            self._verify_mask = th.as_tensor(
+                self._shield.mask[self._safe_state_ids],
+                dtype=th.bool,
+                device=self.device,
+            )
 
         if verify_base_policy:
             rate = self._greedy_safe_rate_now()
@@ -705,6 +1047,8 @@ class AdaptiveSafePPO(ProvablySafePPO):
             "_dataset_actions",
             "_verify_obs",
             "_verify_mask",
+            "_certificate_x_l",
+            "_certificate_x_u",
         ]
 
     # ------------------------------------------------------ safety invariant
@@ -712,22 +1056,61 @@ class AdaptiveSafePPO(ProvablySafePPO):
     @th.no_grad()
     def _greedy_safe_rate_now(self) -> float:
         """Fraction of states satisfying the configured hard safety invariant."""
-        logits = self.policy.get_distribution(self._verify_obs).distribution.logits
+        if self._certificate_has_input_intervals:
+            return self._interval_certified_fraction(self._live_actor_seq)
+        if self._discrete_state_representation == "state_id_lookup":
+            logits = self._live_actor_seq(
+                self._dataset_states.to(next(self._live_actor_seq.parameters()).device)
+            )
+        else:
+            logits = self.policy.get_distribution(self._verify_obs).distribution.logits
         if self._rashomon_multi_label_mode == "all":
             safe_mask = self._verify_mask
             unsafe_mask = ~safe_mask
             has_unsafe = unsafe_mask.any(dim=1)
             least_safe = logits.masked_fill(~safe_mask, float("inf")).min(dim=1).values
-            greatest_unsafe = logits.masked_fill(
-                ~unsafe_mask, float("-inf")
-            ).max(dim=1).values
+            greatest_unsafe = (
+                logits.masked_fill(~unsafe_mask, float("-inf")).max(dim=1).values
+            )
             safe = (~has_unsafe) | (least_safe > greatest_unsafe)
             return float(safe.float().mean().item())
         return _greedy_safe_rate(logits, self._verify_mask)
 
+    @th.no_grad()
+    def _interval_certified_fraction(self, actor: th.nn.Sequential) -> float:
+        """Sound fraction of complete input boxes certified for ``actor``."""
+
+        from src.verification.api import build_bounded_model, verify_dataset
+
+        device = next(actor.parameters()).device
+        # The base-policy check and the final certificate must be stated under
+        # the same verifier the regions were accepted with, or the reported
+        # certified fraction would not describe the region PSPO actually used.
+        bounded_model = build_bounded_model(
+            verifier_compatible_actor(
+                actor,
+                self._rashomon_certification_method,
+                input_ndim=self._certificate_x_l.ndim,
+            ),
+            self._rashomon_certification_method,
+        )
+        result = verify_dataset(
+            bounded_model,
+            self._dataset_actions.to(device=device, dtype=th.bool),
+            X_l=self._certificate_x_l.to(device),
+            X_u=self._certificate_x_u.to(device),
+            mode=self._rashomon_multi_label_mode,
+            surrogate=self._rashomon_surrogate,
+        )
+        return float(result.certified_fraction)
+
     def _verify_greedy_safe(self) -> bool:
         """Exact greedy safety check of the current policy, with diagnostics."""
+        started = time.perf_counter()
         rate = self._greedy_safe_rate_now()
+        elapsed = time.perf_counter() - started
+        self._last_exact_verification_time_s = elapsed
+        self._exact_verification_wall_time_s += elapsed
         safe = rate >= 1.0
         self._n_verifications += 1
         if safe:
@@ -735,6 +1118,73 @@ class AdaptiveSafePPO(ProvablySafePPO):
         else:
             self._n_verified_unsafe += 1
         return safe
+
+    @th.no_grad()
+    def _audit_params_greedy_safe(self, params: list[th.Tensor]) -> bool:
+        """Exactly audit candidate actor tensors without mutating the live policy."""
+
+        if len(params) != len(self._frozen_actor_params):
+            raise ValueError("candidate audit parameter count does not match the actor")
+        for index, (frozen, candidate) in enumerate(
+            zip(self._frozen_actor_params, params)
+        ):
+            if frozen.shape != candidate.shape or not bool(
+                th.isfinite(candidate).all()
+            ):
+                raise ValueError(f"invalid candidate audit tensor at index {index}")
+            frozen.data.copy_(candidate.to(device=frozen.device, dtype=frozen.dtype))
+        if self._certificate_has_input_intervals:
+            return self._interval_certified_fraction(self._frozen_actor_seq) >= 1.0
+        logits = self._frozen_actor_seq(
+            self._dataset_states.to(next(self._frozen_actor_seq.parameters()).device)
+        )
+        safe_mask = self._dataset_actions.to(logits.device).bool()
+        if self._rashomon_multi_label_mode == "all":
+            unsafe_mask = ~safe_mask
+            has_unsafe = unsafe_mask.any(dim=1)
+            least_safe = logits.masked_fill(~safe_mask, float("inf")).min(dim=1).values
+            greatest_unsafe = (
+                logits.masked_fill(~unsafe_mask, float("-inf")).max(dim=1).values
+            )
+            safe = (~has_unsafe) | (least_safe > greatest_unsafe)
+            return bool(safe.all().item())
+        return bool(_greedy_safe_rate(logits, safe_mask) >= 1.0)
+
+    def _append_safety_update_event(
+        self,
+        *,
+        exact_safe: bool | None,
+        decision: str,
+        displacement_l2: float = 0.0,
+        lid_iterations: int = 0,
+        exact_verification_s: float = 0.0,
+        lid_s: float = 0.0,
+        projection_s: float = 0.0,
+        enforcement_s: float = 0.0,
+        diagnostic_audit_s: float = 0.0,
+        false_negative: bool = False,
+    ) -> None:
+        self._safety_update_events.append(
+            {
+                "update": len(self._safety_update_events),
+                "timestep": int(getattr(self, "num_timesteps", 0)),
+                "exact_safe": exact_safe,
+                "decision": decision,
+                "accepted_unchanged": decision
+                in {
+                    "accepted_exactly_safe",
+                    "accepted_contained",
+                },
+                "false_negative": bool(false_negative),
+                "projection_displacement_l2": float(displacement_l2),
+                "lid_iterations": int(lid_iterations),
+                "exact_verification_s": float(exact_verification_s),
+                "lid_s": float(lid_s),
+                "projection_s": float(projection_s),
+                "safety_enforcement_s": float(enforcement_s),
+                "diagnostic_audit_s": float(diagnostic_audit_s),
+            }
+        )
 
     @th.no_grad()
     def _snapshot_last_safe(self) -> None:
@@ -769,7 +1219,28 @@ class AdaptiveSafePPO(ProvablySafePPO):
         stop_target_params: list[th.Tensor] | None = None,
     ) -> tuple[SafeParameterRegion, int] | None:
         """Compute a certified safe parameter region around iterate ``k``."""
-        if self._safe_region_shape != "orthotope" and (
+        computation_started = time.perf_counter()
+        if any(
+            value is not None
+            for value in (
+                param_l_mask,
+                param_u_mask,
+                param_objective_weights,
+                stop_target_params,
+            )
+        ):
+            self._proposal_information_lid_computations += 1
+        if self._safe_region_shape == "segment":
+            if stop_target_params is None:
+                raise ValueError(
+                    "A segment safe region needs the proposed parameters to define "
+                    "its direction; pass stop_target_params."
+                )
+            if param_l_mask is not None or param_u_mask is not None:
+                raise ValueError(
+                    "Directional masks do not apply to a segment safe region."
+                )
+        elif self._safe_region_shape != "orthotope" and (
             param_l_mask is not None
             or param_u_mask is not None
             or param_objective_weights is not None
@@ -780,16 +1251,30 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 "stopping require an orthotope safe region."
             )
         with th.no_grad():
-            for frozen, snapshot in zip(self._frozen_actor_params, self._last_safe_params):
+            for frozen, snapshot in zip(
+                self._frozen_actor_params, self._last_safe_params
+            ):
                 frozen.data.copy_(snapshot)
 
-        if self._rashomon_inverse_temperature is not None:
+        if self._safe_region_shape == "segment":
+            # The segment search evaluates only the hard certificate, so no
+            # softmax temperature is involved -- and its calibration failure
+            # mode (no admissible beta) cannot reject the update here.
+            inverse_temp = None
+        elif self._rashomon_inverse_temperature is not None:
             inverse_temp = self._rashomon_inverse_temperature
+        elif self._certificate_has_input_intervals:
+            # The Rashomon engine performs interval-aware calibration from the
+            # complete (X_l, X_u, mask) certificate dataset.
+            inverse_temp = None
         else:
+            calibration_started = time.perf_counter()
             try:
                 with th.no_grad():
                     logits = self._frozen_actor_seq(
-                        self._dataset_states.to(next(self._frozen_actor_seq.parameters()).device)
+                        self._dataset_states.to(
+                            next(self._frozen_actor_seq.parameters()).device
+                        )
                     )
                 inverse_temp = calibrate_inverse_temperature(
                     logits,
@@ -798,12 +1283,19 @@ class AdaptiveSafePPO(ProvablySafePPO):
                     surrogate=self._rashomon_surrogate,
                 )
             except ValueError as exc:
+                self._rashomon_calibration_wall_time_s += (
+                    time.perf_counter() - calibration_started
+                )
+                self._rashomon_wall_time_s += time.perf_counter() - computation_started
                 warnings.warn(
                     f"Inverse-temperature calibration failed ({exc}); falling back to "
                     "reverting the candidate to the last safe iterate.",
                     stacklevel=2,
                 )
                 return None
+            self._rashomon_calibration_wall_time_s += (
+                time.perf_counter() - calibration_started
+            )
 
         certificate_samples = (
             self._rashomon_certificate_samples
@@ -815,42 +1307,81 @@ class AdaptiveSafePPO(ProvablySafePPO):
             seed = self.seed if self.seed is not None else 0
 
         started = time.perf_counter()
-        # Gradient-step mode invokes this from inside ProjectedAdam.step's
-        # @torch.no_grad(); the engine needs autograd for its Cooper loop.
-        with th.enable_grad():
-            if self._safe_region_shape == "orthotope":
-                result = _run_rashomon_engine(
+        if self._safe_region_shape == "segment":
+            assert stop_target_params is not None
+            delta = [
+                target.detach().to(device=snapshot.device, dtype=snapshot.dtype)
+                - snapshot
+                for target, snapshot in zip(stop_target_params, self._last_safe_params)
+            ]
+            with th.no_grad():
+                result = _run_segment_engine(
                     self._frozen_actor_seq,
                     self._rashomon_dataset,
-                    n_iters=self._rashomon_n_iters,
-                    checkpoint=self._rashomon_checkpoint,
+                    delta=delta,
+                    tolerance=self._segment_tolerance,
+                    splits=self._segment_splits,
+                    max_splits=self._segment_max_splits,
                     batch_size=self._rashomon_batch_size,
-                    certificate_samples=certificate_samples,
-                    inverse_temp=inverse_temp,
-                    seed=int(seed),
                     multi_label_mode=self._rashomon_multi_label_mode,
-                    surrogate=self._rashomon_surrogate,
-                    rashomon_objective=self._rashomon_objective,
-                    param_l_mask=param_l_mask,
-                    param_u_mask=param_u_mask,
-                    param_objective_weights=param_objective_weights,
-                    stop_target_params=stop_target_params,
+                    has_input_intervals=self._certificate_has_input_intervals,
                 )
-            else:
-                result = _run_zonotope_rashomon_engine(
-                    self._frozen_actor_seq,
-                    self._rashomon_dataset,
-                    n_iters=self._rashomon_n_iters,
-                    checkpoint=self._rashomon_checkpoint,
-                    batch_size=self._rashomon_batch_size,
-                    certificate_samples=certificate_samples,
-                    inverse_temp=inverse_temp,
-                    seed=int(seed),
-                    zonotope_rank=self._zonotope_rank,
-                    multi_label_mode=self._rashomon_multi_label_mode,
-                    surrogate=self._rashomon_surrogate,
-                )
-        self._rashomon_wall_time_s += time.perf_counter() - started
+            self._last_segment_alpha = float(getattr(result, "alpha", 0.0))
+            self._last_segment_splits_used = int(getattr(result, "splits_used", 0))
+            self._segment_alpha_sum += self._last_segment_alpha
+            self._segment_alpha_count += 1
+        else:
+            # Gradient-step mode invokes this from inside ProjectedAdam.step's
+            # @torch.no_grad(); the engine needs autograd for its Cooper loop.
+            with th.enable_grad():
+                if self._safe_region_shape == "orthotope":
+                    result = _run_rashomon_engine(
+                        verifier_compatible_actor(
+                            self._frozen_actor_seq,
+                            # The engine builds bounded models with both methods.
+                            "IBP"
+                            if self._rashomon_growth_method == "IBP"
+                            and self._rashomon_certification_method == "IBP"
+                            else self._rashomon_certification_method,
+                            input_ndim=(
+                                self._certificate_x_l.ndim
+                                if self._certificate_has_input_intervals
+                                else 2
+                            ),
+                        ),
+                        self._rashomon_dataset,
+                        n_iters=self._rashomon_n_iters,
+                        checkpoint=self._rashomon_checkpoint,
+                        batch_size=self._rashomon_batch_size,
+                        certificate_samples=certificate_samples,
+                        inverse_temp=inverse_temp,
+                        has_input_intervals=self._certificate_has_input_intervals,
+                        seed=int(seed),
+                        multi_label_mode=self._rashomon_multi_label_mode,
+                        surrogate=self._rashomon_surrogate,
+                        rashomon_objective=self._rashomon_objective,
+                        param_l_mask=param_l_mask,
+                        param_u_mask=param_u_mask,
+                        param_objective_weights=param_objective_weights,
+                        stop_target_params=stop_target_params,
+                        growth_method=self._rashomon_growth_method,
+                        certification_method=self._rashomon_certification_method,
+                    )
+                else:
+                    result = _run_zonotope_rashomon_engine(
+                        self._frozen_actor_seq,
+                        self._rashomon_dataset,
+                        n_iters=self._rashomon_n_iters,
+                        checkpoint=self._rashomon_checkpoint,
+                        batch_size=self._rashomon_batch_size,
+                        certificate_samples=certificate_samples,
+                        inverse_temp=inverse_temp,
+                        seed=int(seed),
+                        zonotope_rank=self._zonotope_rank,
+                        multi_label_mode=self._rashomon_multi_label_mode,
+                        surrogate=self._rashomon_surrogate,
+                    )
+        self._rashomon_engine_wall_time_s += time.perf_counter() - started
         self._n_rashomon_computations += 1
         self._last_rashomon_iterations_run = int(
             getattr(result, "iterations_run", self._rashomon_n_iters)
@@ -859,16 +1390,31 @@ class AdaptiveSafePPO(ProvablySafePPO):
             getattr(result, "target_contained_and_certified", False)
         )
 
-        selected = select_certified_region(result, safe_region_shape=self._safe_region_shape)
+        selected = select_certified_region(
+            result, safe_region_shape=self._safe_region_shape
+        )
         if selected is not None:
             self._last_selected_checkpoint_index = selected[1]
+        self._rashomon_wall_time_s += time.perf_counter() - computation_started
         return selected
 
     def _accept_or_project_candidate(self) -> None:
         """The iterate k -> k+1 transition: verify, else project."""
-        if self._verify_greedy_safe():
+        enforcement_started = time.perf_counter()
+        lid_time_before = self._rashomon_wall_time_s
+        exact_safe = self._verify_greedy_safe()
+        exact_time = self._last_exact_verification_time_s
+        if exact_safe:
             self._n_accepted_without_rashomon += 1
             self._snapshot_last_safe()
+            enforcement_s = time.perf_counter() - enforcement_started
+            self._safety_enforcement_wall_time_s += enforcement_s
+            self._append_safety_update_event(
+                exact_safe=True,
+                decision="accepted_exactly_safe",
+                exact_verification_s=exact_time,
+                enforcement_s=enforcement_s,
+            )
             return
 
         if self._unsafe_update_strategy == "none":
@@ -880,6 +1426,14 @@ class AdaptiveSafePPO(ProvablySafePPO):
             # last-safe snapshot is deliberately not advanced onto an unsafe
             # iterate, though nothing consumes it in this mode.
             self._n_accepted_unsafe += 1
+            enforcement_s = time.perf_counter() - enforcement_started
+            self._safety_enforcement_wall_time_s += enforcement_s
+            self._append_safety_update_event(
+                exact_safe=False,
+                decision="accepted_unsafe_monitor_only",
+                exact_verification_s=exact_time,
+                enforcement_s=enforcement_s,
+            )
             return
 
         candidate_params = [param.detach().clone() for param in self._live_actor_params]
@@ -887,14 +1441,20 @@ class AdaptiveSafePPO(ProvablySafePPO):
         param_u_mask = None
         param_objective_weights = None
         stop_target_params = None
-        if self._directional_rashomon_growth:
+        if self._safe_region_shape == "segment":
+            # The proposal defines the segment's direction, so it is always
+            # forwarded -- there are no masks or width weights to build.
+            stop_target_params = candidate_params
+        elif self._directional_rashomon_growth:
             try:
                 deltas = [
                     candidate - snapshot
-                    for candidate, snapshot in zip(candidate_params, self._last_safe_params)
+                    for candidate, snapshot in zip(
+                        candidate_params, self._last_safe_params
+                    )
                 ]
-                param_l_mask, param_u_mask, counts = directional_masks_from_update_deltas(
-                    deltas
+                param_l_mask, param_u_mask, counts = (
+                    directional_masks_from_update_deltas(deltas)
                 )
                 param_objective_weights = (
                     directional_objective_weights_from_update_deltas(deltas)
@@ -915,6 +1475,14 @@ class AdaptiveSafePPO(ProvablySafePPO):
                     ):
                         param.data.copy_(snapshot)
                 self._n_fallback_reverts += 1
+                enforcement_s = time.perf_counter() - enforcement_started
+                self._safety_enforcement_wall_time_s += enforcement_s
+                self._append_safety_update_event(
+                    exact_safe=False,
+                    decision="reverted_direction_failure",
+                    exact_verification_s=exact_time,
+                    enforcement_s=enforcement_s,
+                )
                 return
 
         region_with_index = self._compute_rashomon_around_last_safe(
@@ -926,30 +1494,72 @@ class AdaptiveSafePPO(ProvablySafePPO):
         if region_with_index is None:
             # Degenerate projection: revert to iterate k (snapshot unchanged).
             with th.no_grad():
-                for param, snapshot in zip(self._live_actor_params, self._last_safe_params):
+                for param, snapshot in zip(
+                    self._live_actor_params, self._last_safe_params
+                ):
                     param.data.copy_(snapshot)
             self._n_fallback_reverts += 1
+            enforcement_s = time.perf_counter() - enforcement_started
+            self._safety_enforcement_wall_time_s += enforcement_s
+            self._append_safety_update_event(
+                exact_safe=False,
+                decision="reverted_lid_failure",
+                lid_iterations=int(self._last_rashomon_iterations_run),
+                exact_verification_s=exact_time,
+                lid_s=self._rashomon_wall_time_s - lid_time_before,
+                enforcement_s=enforcement_s,
+            )
             return
 
         region, _ = region_with_index
-        if stop_target_params is not None and orthotope_contains_params(
-            region, stop_target_params
-        ):
+        # A segment certified all the way to alpha = 1 contains the proposal, so
+        # the candidate stands unchanged; otherwise the projection below lands on
+        # theta_k + alpha_hat * delta, the segment's far endpoint.
+        accepts_proposal = (
+            self._safe_region_shape == "segment"
+            and float(self._last_segment_alpha or 0.0) >= 1.0
+        ) or orthotope_contains_params(region, stop_target_params or [])
+        if stop_target_params is not None and accepts_proposal:
             with th.no_grad():
                 for param, target in zip(self._live_actor_params, stop_target_params):
                     param.data.copy_(target)
             self._snapshot_last_safe()
+            enforcement_s = time.perf_counter() - enforcement_started
+            self._safety_enforcement_wall_time_s += enforcement_s
+            self._append_safety_update_event(
+                exact_safe=False,
+                decision="accepted_contained",
+                lid_iterations=int(self._last_rashomon_iterations_run),
+                exact_verification_s=exact_time,
+                lid_s=self._rashomon_wall_time_s - lid_time_before,
+                enforcement_s=enforcement_s,
+            )
             return
         distance_norm = getattr(self.policy.optimizer, "_distance_norm", "l2")
+        projection_started = time.perf_counter()
         with th.no_grad():
             result = project_to_region_union(
                 self._live_actor_params, [region], distance_norm=distance_norm
             )
+        projection_s = time.perf_counter() - projection_started
+        self._projection_wall_time_s += projection_s
         self._n_projections += 1
         self._last_projection_result = result
         # The box is IBP-certified: every policy inside it is greedy-safe, so
         # the projected candidate is iterate k+1 by construction.
         self._snapshot_last_safe()
+        enforcement_s = time.perf_counter() - enforcement_started
+        self._safety_enforcement_wall_time_s += enforcement_s
+        self._append_safety_update_event(
+            exact_safe=False,
+            decision="projected",
+            displacement_l2=float(result.displacement_l2),
+            lid_iterations=int(self._last_rashomon_iterations_run),
+            exact_verification_s=exact_time,
+            lid_s=self._rashomon_wall_time_s - lid_time_before,
+            projection_s=projection_s,
+            enforcement_s=enforcement_s,
+        )
 
     def _on_gradient_step(self) -> None:
         self._accept_or_project_candidate()
@@ -970,7 +1580,10 @@ class AdaptiveSafePPO(ProvablySafePPO):
         """Enforce a pending aggregate train-phase update before save/evaluation."""
 
         self._ensure_adaptive_state()
-        if self._adaptive_granularity != "train_phase" or not self._pending_adaptive_update:
+        if (
+            self._adaptive_granularity != "train_phase"
+            or not self._pending_adaptive_update
+        ):
             return
         self._accept_or_project_candidate()
         self._train_phases_since_enforcement = 0
@@ -987,14 +1600,14 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 "n_projected": int(self._last_projection_result.n_projected),
                 "n_boundary": int(self._last_projection_result.n_boundary),
                 "displacement_l2": float(self._last_projection_result.displacement_l2),
-                "displacement_linf": float(self._last_projection_result.displacement_linf),
+                "displacement_linf": float(
+                    self._last_projection_result.displacement_linf
+                ),
             }
         return {
             "granularity": self._adaptive_granularity,
             "frequency": int(self._adaptive_frequency),
-            "train_phases_since_enforcement": int(
-                self._train_phases_since_enforcement
-            ),
+            "train_phases_since_enforcement": int(self._train_phases_since_enforcement),
             "pending_adaptive_update": bool(self._pending_adaptive_update),
             "final_flushes": int(self._final_flushes),
             "unsafe_update_strategy": self._unsafe_update_strategy,
@@ -1004,6 +1617,8 @@ class AdaptiveSafePPO(ProvablySafePPO):
             "rashomon_surrogate": self._rashomon_surrogate,
             "rashomon_resolved_surrogate": self._rashomon_resolved_surrogate,
             "rashomon_objective": self._rashomon_objective,
+            "rashomon_growth_method": self._rashomon_growth_method,
+            "rashomon_certification_method": self._rashomon_certification_method,
             "directional_rashomon_growth": self._directional_rashomon_growth,
             "stop_when_proposal_contained": self._stop_when_proposal_contained,
             "directional_growth_failures": int(self._directional_growth_failures),
@@ -1013,6 +1628,20 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 else dict(self._last_direction_counts)
             ),
             "safe_region_shape": self._safe_region_shape,
+            "segment_tolerance": float(self._segment_tolerance),
+            "segment_splits": int(self._segment_splits),
+            "segment_max_splits": int(self._segment_max_splits),
+            "segment_last_alpha": self._last_segment_alpha,
+            "segment_last_splits_used": self._last_segment_splits_used,
+            "segment_mean_alpha": (
+                float(self._segment_alpha_sum / self._segment_alpha_count)
+                if self._segment_alpha_count
+                else None
+            ),
+            "certificate_input_mode": (
+                "intervals" if self._certificate_has_input_intervals else "points"
+            ),
+            "certificate_regions": int(len(self._rashomon_dataset)),
             "zonotope_rank": self._zonotope_rank,
             "verifications_run": int(self._n_verifications),
             "candidates_verified_safe": int(self._n_verified_safe),
@@ -1024,9 +1653,33 @@ class AdaptiveSafePPO(ProvablySafePPO):
             "accepted_unsafe": int(self._n_accepted_unsafe),
             "safe_update_fraction": (
                 float(self._n_verified_safe / self._n_verifications)
-                if self._n_verifications else 0.0
+                if self._n_verifications
+                else 0.0
             ),
             "rashomon_wall_time_total_s": float(self._rashomon_wall_time_s),
+            "rashomon_engine_wall_time_total_s": float(
+                self._rashomon_engine_wall_time_s
+            ),
+            "rashomon_calibration_wall_time_total_s": float(
+                self._rashomon_calibration_wall_time_s
+            ),
+            "exact_verification_wall_time_total_s": float(
+                self._exact_verification_wall_time_s
+            ),
+            "projection_wall_time_total_s": float(self._projection_wall_time_s),
+            "safety_enforcement_wall_time_total_s": float(
+                self._safety_enforcement_wall_time_s
+            ),
+            "diagnostic_audit_wall_time_total_s": float(
+                self._diagnostic_audit_wall_time_s
+            ),
+            "proposal_information_lid_computations": int(
+                self._proposal_information_lid_computations
+            ),
+            "proposal_information_used": bool(
+                self._proposal_information_lid_computations > 0
+            ),
+            "safety_update_events": list(self._safety_update_events),
             "last_selected_checkpoint_index": self._last_selected_checkpoint_index,
             "last_projection": last_projection,
         }
