@@ -17,10 +17,10 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from _aamas_reward_safety import BarMethod, BarPanel, compact_figure, save_compact_figure
 
-REPO = Path("/vol/bitbucket/ma5923/_projects/CertifiedContinualLearning")
-OUT_DIR = REPO / "projects/safe_policy_optimisation/figures"
+REPO = Path(__file__).resolve().parents[3]
+OUT_DIR = REPO / "projects/safe_policy_optimisation/figures/aamas"
 
 SWEEPS = {
     "Media Streaming": [
@@ -55,23 +55,6 @@ METHODS = [
     ("ppo_shield/nominal", "PPO-Shield-Nominal", "lightblue"),
     ("rashomon_policy", "PSPO", "green"),
 ]
-COLORS = [color for _key, _label, color in METHODS]
-
-plt.rcParams.update({
-    "font.size": 11,
-    "font.family": "sans-serif",
-    "axes.titlesize": 12,
-    "axes.labelsize": 11,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.fontsize": 10,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-})
-
-
 def load_metrics(paths: list[Path]) -> dict:
     merged: dict = {}
     for path in paths:
@@ -80,18 +63,8 @@ def load_metrics(paths: list[Path]) -> dict:
     return merged
 
 
-def bottom_with_slack(means: list[float], errs: list[float], slack_frac: float = 0.05) -> float:
-    los = [m - e for m, e in zip(means, errs)]
-    min_lo = min(los)
-    magnitude = abs(min_lo) if abs(min_lo) > 1e-9 else 1.0
-    return min_lo - slack_frac * magnitude
-
-
-n_envs = len(SWEEPS)
-fig, axes = plt.subplots(n_envs, 2, figsize=(9.6, 2.8 * n_envs))
-x = list(range(len(METHODS)))
-
-for row, (env_name, paths) in enumerate(SWEEPS.items()):
+panels = []
+for env_name, paths in SWEEPS.items():
     agg = load_metrics(paths)
     means_r, err_r, means_s, err_s = [], [], [], []
     for key, _label, _color in METHODS:
@@ -103,42 +76,14 @@ for row, (env_name, paths) in enumerate(SWEEPS.items()):
         means_s.append(s["mean"])
         err_s.append(s["std"] / math.sqrt(n) if n > 1 else 0.0)
 
-    ax = axes[row, 0]
-    bottom_r = bottom_with_slack(means_r, err_r)
-    ax.bar(x, [m - bottom_r for m in means_r], bottom=bottom_r, yerr=err_r, capsize=3,
-           color=COLORS, edgecolor="black", linewidth=0.5,
-           error_kw={"linewidth": 1.0, "ecolor": "black"})
-    ax.set_ylim(bottom=bottom_r)
-    ax.set_ylabel("Total reward")
-    ax.set_title(f"{env_name} - Total Reward", fontsize=11)
-    ax.set_xticks(x)
-    ax.set_xticklabels([])
+    panels.append(BarPanel(env_name, means_r, err_r, means_s, err_s))
 
-    ax = axes[row, 1]
-    ax.bar(x, means_s, yerr=err_s, capsize=3, color=COLORS,
-           edgecolor="black", linewidth=0.5, error_kw={"linewidth": 1.0, "ecolor": "black"})
-    ax.axhline(1.0, color="grey", linestyle="--", linewidth=1.0, zorder=0)
-    ax.set_ylim(bottom=bottom_with_slack(means_s, err_s), top=1.05)
-    ax.set_ylabel("Safety rate")
-    ax.set_title(f"{env_name} - Safety Rate", fontsize=11)
-    ax.set_xticks(x)
-    ax.set_xticklabels([])
-
-handles_all = [
-    plt.Rectangle((0, 0), 1, 1, facecolor=COLORS[i], edgecolor="black", linewidth=0.5)
-    for i in range(len(METHODS))
-]
-labels_all = [label for _key, label, _color in METHODS]
-row_major_order = [0, 4, 1, 5, 2, 6, 3]
-handles = [handles_all[i] for i in row_major_order]
-labels = [labels_all[i] for i in row_major_order]
-fig.legend(handles, labels, loc="lower center", ncol=4, frameon=False,
-           bbox_to_anchor=(0.5, -0.012), columnspacing=1.4, handletextpad=0.6)
-
-fig.suptitle("Tabular Actor-Critic, Index Encoding: Total Reward and Safety Rate (mean +/- s.e., n=10 seeds)",
-             fontsize=13, y=0.998)
-fig.tight_layout(rect=[0, 0.043, 1, 0.978])
-
-fig.savefig(OUT_DIR / "tabular_reward_safety.pdf", bbox_inches="tight")
-fig.savefig(OUT_DIR / "tabular_reward_safety.png", bbox_inches="tight", dpi=300)
+methods = [BarMethod(*method) for method in METHODS]
+fig = compact_figure(panels, methods)
+save_compact_figure(
+    fig, OUT_DIR / "tabular_reward_safety", panels=panels, methods=methods,
+    se_multiplier=1.0,
+    caption=("Tabular actor--critic, index encoding: total reward and safety rate "
+             "(mean $\\pm$ one standard error across seeds)."),
+)
 print("Saved to", OUT_DIR)

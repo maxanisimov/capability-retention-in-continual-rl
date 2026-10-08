@@ -26,12 +26,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from projects.safe_policy_optimisation.scripts import plot_architecture_results as precomputed_results  # noqa: E402
-
+from projects.safe_policy_optimisation.scripts import (
+    plot_architecture_results as precomputed_results,  # noqa: E402
+)
 
 DEFAULT_ADAPTIVE_ROOTS = (
     REPO / "projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs",
@@ -150,7 +150,7 @@ def classify_adaptive(config: dict[str, Any]) -> str | None:
         update_mode = adaptive.get("region_update_mode", "union")
         if update_mode in {"union", "replace"}:
             return f"adaptive_v2_{update_mode}"
-    if algorithm == "pspo_adaptive":
+    if algorithm in {"pspo", "pspo_adaptive"}:
         if adaptive.get("verify_first", False):
             return "adaptive_v1_projection"
         update_mode = adaptive.get("region_update_mode", "replace")
