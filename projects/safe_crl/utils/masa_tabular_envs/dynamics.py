@@ -163,6 +163,7 @@ def create_advanced_transition_matrix(
                         y,
                         x,
                         action,
+                        action,
                         walls,
                         state,
                         offset,
@@ -182,6 +183,7 @@ def create_advanced_transition_matrix(
                             n_coloured_zones,
                             y,
                             x,
+                            action,
                             random_action,
                             walls,
                             state,
@@ -216,13 +218,20 @@ def _add_advanced_grid_transition(
     y: int,
     x: int,
     action: int,
+    move: int,
     wall_states: set[int],
     state: int,
     offset: int,
     coloured_states: set[int],
     prob: float,
 ) -> None:
-    next_state = _grid_next_state(grid, grid_size, y, x, action, wall_states, state - offset) + offset
+    """Add ``prob`` of executing ``move`` to the column of the chosen ``action``.
+
+    ``move`` differs from ``action`` only when the agent slips. Keeping them
+    separate matters: writing a slip into the ``move`` column instead leaves
+    every column summing to 1 but makes every action deterministic.
+    """
+    next_state = _grid_next_state(grid, grid_size, y, x, move, wall_states, state - offset) + offset
     if state in coloured_states:
         zone_prob = prob / float(n_coloured_zones - 1)
         base_next_state = next_state - offset

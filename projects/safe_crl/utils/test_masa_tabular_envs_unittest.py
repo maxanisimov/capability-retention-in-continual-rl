@@ -188,6 +188,26 @@ class CustomMasaTabularEnvTests(unittest.TestCase):
             deterministic_env.close()
             stochastic_env.close()
 
+    def test_colour_bomb_v3_slips_from_ordinary_cells(self) -> None:
+        # Regression: slips were written into the random action's column, so every
+        # column still summed to 1 but all movement was deterministic.
+        env = CustomColourBombGridWorldV3(slip_prob=0.1)
+        try:
+            matrix = env.get_transition_matrix()
+            unwrapped = env.unwrapped
+            exempt = set(unwrapped._wall_states) | set(unwrapped._safe_states) | set(unwrapped._goal_states)  # noqa: SLF001
+            states = [state for state in range(matrix.shape[1]) if state not in exempt]
+            self.assertTrue(states)
+            for state in states:
+                for action in range(matrix.shape[2]):
+                    column = matrix[:, state, action]
+                    self.assertAlmostEqual(float(column.sum()), 1.0)
+                    # 0.9 for the chosen move, plus any slips that land on the same cell.
+                    self.assertLess(float(column.max()), 1.0)
+                    self.assertGreaterEqual(float(column.max()), 0.9 - 1e-12)
+        finally:
+            env.close()
+
     def test_media_streaming_rates_change_transition_matrix(self) -> None:
         slow = CustomMediaStreaming(fast_rate=0.6)
         fast = CustomMediaStreaming(fast_rate=0.95)
