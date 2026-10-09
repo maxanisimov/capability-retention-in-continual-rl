@@ -202,48 +202,19 @@ if ENV_KWARGS_OVERRIDE:
     cfg["env_kwargs"] = {**(cfg.get("env_kwargs") or {}), **overrides}
 if SHIELD_PATH_OVERRIDE:
     cfg["shield_path"] = SHIELD_PATH_OVERRIDE
-best_path = (
-    REPO
-    / "projects/safe_policy_optimisation/docs/pspo_precomputed"
-    / "pspo_precomputed_best_hyperparameters.json"
-)
+best_path = REPO / "projects/safe_policy_optimisation/settings/pspo_launcher_hyperparameters.json"
 best = json.loads(best_path.read_text())
-alt_best_path = (
-    REPO
-    / "projects/safe_policy_optimisation/docs/pspo_precomputed"
-    / "best_pspo_precomputed_by_architecture_current.json"
-)
 
 
 def best_hyperparameters(architecture, env_label):
     try:
-        hp = best["architectures"][architecture][env_label]["best_settings"][0]["hyperparameters"]
-        return dict(hp), best_path
-    except KeyError:
-        pass
-    alt_best = json.loads(alt_best_path.read_text())
-    try:
-        payload = alt_best["architectures"][architecture][env_label]
-        hp = payload.get("hyperparameters")
-        if hp is None:
-            hp = payload["best_settings"][0]["hyperparameters"]
+        return dict(best["architectures"][architecture][env_label]), best_path
     except KeyError as exc:
-        available = sorted(
-            set(best.get("architectures", {}).get(architecture, {}))
-            | set(alt_best.get("architectures", {}).get(architecture, {}))
-        )
+        available = sorted(best["architectures"].get(architecture, {}))
         raise SystemExit(
-            f"No best precomputed PSPO hyperparameters for ARCHITECTURE={architecture!r}, "
+            f"No PSPO launcher settings for ARCHITECTURE={architecture!r}, "
             f"ENV_NAME={ENV_NAME!r} ({env_label!r}). Available labels: {available}"
         ) from exc
-    hp = dict(hp)
-    if architecture == "one_hidden":
-        hp.setdefault("n_hidden", 1)
-        hp.setdefault("hidden_dim", 64)
-    elif architecture == "tabular":
-        hp.setdefault("n_hidden", 0)
-        hp.setdefault("hidden_dim", 64)
-    return hp, alt_best_path
 
 
 hp, hp_source = best_hyperparameters(ARCHITECTURE, label)

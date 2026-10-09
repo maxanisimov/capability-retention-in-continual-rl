@@ -91,7 +91,7 @@ steps did not translate into a shorter full run here. One seed cannot establish
 across-seed uncertainty or scalability to larger maps.
 
 Full audited results and artifacts:
-[pilot report](../artifacts/paper_2503_07671/runs/ppo_shaping_frozenlake16_20261007T220300Z/README.md).
+[pilot report](../archive/artifacts/paper_2503_07671/runs/ppo_shaping_frozenlake16_20261007T220300Z/README.md).
 
 ## PSPO with shaping and safety-only initialization
 

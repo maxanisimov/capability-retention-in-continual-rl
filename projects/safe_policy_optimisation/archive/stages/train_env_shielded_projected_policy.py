@@ -43,7 +43,7 @@ from masa.common.wrappers import ConstraintPersistentWrapper
 from masa.prob_shield.prob_shield_wrapper_v2 import ProbShieldWrapperDisc
 from stable_baselines3.common.callbacks import BaseCallback
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "pyproject.toml").is_file())
 
 from provably_safe_policy_optimisation import ProjectedPPO  # noqa: E402
 

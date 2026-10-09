@@ -53,11 +53,15 @@ from projects.safe_policy_optimisation.utils.learning_curves import (  # noqa: E
     LearningCurveLogger,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
-    ALGORITHM_NAMES,
+    CPO_ALGORITHM_NAMES,
+    PPO_LAGRANGIAN_ALGORITHM_NAMES,
     SAFE_RL_BASELINE_HYPERPARAMS,
     build_safe_rl_baseline,
     save_checkpoint,
 )
+
+# Keep this study's supported methods explicit when the shared registry grows.
+ALGORITHM_NAMES = (*PPO_LAGRANGIAN_ALGORITHM_NAMES, *CPO_ALGORITHM_NAMES)
 
 
 def source_paths() -> list[Path]:
@@ -169,7 +173,7 @@ def run(args: argparse.Namespace) -> dict:
         seed=args.seed + 30000,
         reward_threshold=0,
     )
-    hyper = {key: getattr(args, key) for key in SAFE_RL_BASELINE_HYPERPARAMS}
+    hyper = {key: getattr(args, key, None) for key in SAFE_RL_BASELINE_HYPERPARAMS}
     env = None
     try:
         started = time.perf_counter()

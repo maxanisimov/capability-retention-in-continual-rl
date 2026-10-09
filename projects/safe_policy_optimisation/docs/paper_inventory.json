@@ -1,0 +1,212 @@
+{
+  "date": "2026-10-09",
+  "run_root": "artifacts/paper_2503_07671/runs",
+  "retained_runs": {
+    "frozenlake128_shaping_ppo_pspo_t400k_20261008T085100Z": [
+      "scripts/plot_frozenlake_shaping_learning_curves.py",
+      "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    ],
+    "frozenlake128_shaping_ppo_t200000_20261008T210643Z": [
+      "scripts/plot_frozenlake_scalability.py"
+    ],
+    "frozenlake128_shaping_pspo_segment_verify_first_freq1_t200000_20261008T173822Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "frozenlake128_shaping_pspo_segment_verify_first_t1024000_20261008T124400Z": [
+      "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    ],
+    "frozenlake16_shaping_ppo_t204800_20261008T150953Z": [
+      "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    ],
+    "frozenlake16_shaping_pspo_segment_verify_first_freq1_t204800_20261008T155100Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "frozenlake16_shaping_pspo_segment_verify_first_t204800_20261008T123000Z": [
+      "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    ],
+    "frozenlake256_shaping_pspo_segment_verify_first_freq1_t200000_20261008T173822Z": [
+      "Running FrozenLake job (protected)"
+    ],
+    "frozenlake256_shaping_pspo_segment_verify_first_t4096000_20261008T124400Z": [
+      "Running FrozenLake job (protected)"
+    ],
+    "frozenlake32_shaping_ppo_t204800_20261008T151817Z": [
+      "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    ],
+    "frozenlake32_shaping_pspo_segment_verify_first_freq1_t204800_20261008T160100Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "frozenlake32_shaping_pspo_segment_verify_first_t204800_20261008T123000Z": [
+      "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    ],
+    "frozenlake64_shaping_ppo_t200000_20261008T172454Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "frozenlake64_shaping_pspo_segment_verify_first_freq1_t200000_20261008T172800Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "frozenlake64_shaping_pspo_segment_verify_first_freq1_t409600_20261008T160100Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "frozenlake64_shaping_pspo_segment_verify_first_t409600_20261008T124400Z": [
+      "Running FrozenLake job (protected)"
+    ],
+    "frozenlake_pspo_segment_verify_first_scaling_20261008T124400Z": [
+      "Running FrozenLake job (protected)"
+    ],
+    "inference_main_20261007T103000Z": [
+      "Retained inference-time comparison"
+    ],
+    "inference_pspo_ls_20261008T225928Z": [
+      "Retained inference-time comparison"
+    ],
+    "masa_all_envs": [
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of static_lid_ablation_masa_matched"
+    ],
+    "ppo_shaping_frozenlake64_20261008T070700Z": [
+      "scripts/plot_frozenlake_freq1_evaluation_curves.py"
+    ],
+    "pspo_adaptive_bridge_v1_safe_entropy_w1_min0p95_freq1": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py",
+      "scripts/plot_extended_budget_learning_curves.py",
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of static_lid_ablation_masa_matched",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "pspo_adaptive_bridge_v2_safe_entropy_w1_min0p95_freq1": [
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of pspo_adaptive_bridge_v2_safe_entropy_w1_min0p95_freq1_t1600k_reuse_base",
+      "Metadata dependency of static_lid_ablation_masa_matched",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "pspo_adaptive_bridge_v2_safe_entropy_w1_min0p95_freq1_t1600k_reuse_base": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py",
+      "scripts/plot_extended_budget_learning_curves.py",
+      "scripts/compare_extended_budget_pspo_vs_baselines.py",
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "pspo_adaptive_cb_media_safe_entropy_w1_min0p95_freq1_default": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py",
+      "scripts/plot_extended_budget_learning_curves.py",
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of static_lid_ablation_masa_matched",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "pspo_adaptive_mini_pacman_safe_entropy_w1_min0p95_freq100": [
+      "scripts/compare_extended_budget_pspo_vs_baselines.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of pspo_adaptive_mini_pacman_safe_entropy_w1_min0p95_freq100_t2000k_reuse_base",
+      "Metadata dependency of static_lid_ablation_masa_matched",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "pspo_adaptive_mini_pacman_safe_entropy_w1_min0p95_freq100_t2000k_reuse_base": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py",
+      "scripts/plot_extended_budget_learning_curves.py",
+      "scripts/compare_extended_budget_pspo_vs_baselines.py",
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "pspo_adaptive_two_hidden_directional_replace_all_margin2_200iters": [
+      "Metadata dependency of pspo_reward_pilot_bcv2_m2_reuse_i200_f1_t400k"
+    ],
+    "pspo_reward_pilot_bcv2_m2_reuse_i200_f1_t400k": [
+      "scripts/compare_extended_budget_pspo_vs_baselines.py"
+    ],
+    "pspo_stochastic_frozenlake128_safety_only_state_id_lookup": [
+      "scripts/generate_environment_description_table.py",
+      "Safety-only FrozenLake actor, shield and layout inputs"
+    ],
+    "pspo_stochastic_frozenlake16_safety_only_state_id_lookup": [
+      "Safety-only FrozenLake actor, shield and layout inputs"
+    ],
+    "pspo_stochastic_frozenlake256_safety_only_state_id_lookup": [
+      "Safety-only FrozenLake actor, shield and layout inputs"
+    ],
+    "pspo_verifyfirst_masa": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py"
+    ],
+    "pspo_verifyfirst_segment_masa_20261007T131200Z": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py"
+    ],
+    "rl_baselines_extended_budgets": [
+      "scripts/plot_extended_budget_learning_curves.py",
+      "scripts/compare_extended_budget_pspo_vs_baselines.py",
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of inference_pspo_ls_20261008T225928Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "rl_baselines_extended_budgets_1600k": [
+      "scripts/plot_extended_budget_learning_curves.py",
+      "scripts/collect_masa_results.py",
+      "Metadata dependency of inference_main_20261007T103000Z",
+      "Metadata dependency of inference_pspo_ls_20261008T225928Z",
+      "Metadata dependency of masa_all_envs",
+      "Metadata dependency of timing_main_lookup_20261006T224805Z"
+    ],
+    "rl_sgf_safe_initialised": [
+      "scripts/plot_rl_sgf_final_policy_reward_safety_bars.py",
+      "scripts/plot_masa_learning_curve_comparisons.py",
+      "scripts/plot_rl_sgf_learning_curves.py",
+      "scripts/plot_rl_sgf_reward_safety_bars.py"
+    ],
+    "rl_sgf_safe_initialised_projection": [
+      "scripts/plot_masa_learning_curve_comparisons.py",
+      "scripts/generate_safe_projection_comparison_assets.py"
+    ],
+    "safe_initialised_baseline_projection": [
+      "scripts/plot_masa_learning_curve_comparisons.py",
+      "scripts/generate_safe_projection_comparison_assets.py"
+    ],
+    "segment_lid": [
+      "scripts/plot_pspo_variant_reward_time_aamas.py",
+      "scripts/plot_pspo_ablation_gain_retained.py",
+      "scripts/plot_pspo_ls_test_time_bars.py",
+      "Metadata dependency of inference_pspo_ls_20261008T225928Z",
+      "Metadata dependency of pspo_verifyfirst_segment_masa_20261007T131200Z"
+    ],
+    "static_lid_ablation_masa_matched": [
+      "scripts/generate_safe_projection_comparison_assets.py",
+      "scripts/plot_pspo_ablation_gain_retained.py",
+      "Metadata dependency of rl_sgf_safe_initialised",
+      "Metadata dependency of rl_sgf_safe_initialised_projection",
+      "Metadata dependency of safe_initialised_baseline_projection"
+    ],
+    "timing_main_lookup_20261006T224805Z": [
+      "scripts/generate_pspo_variant_tables.py"
+    ]
+  },
+  "rl_sgf_import": {
+    "source_worktree": ".claude/worktrees/rl-sgf",
+    "cohorts": [
+      {
+        "name": "rl_sgf_safe_initialised",
+        "files": 700,
+        "bytes": 173791473,
+        "copy_manifest_sha256": "93f08f8dbe21275fc7f0959777b04e82d19f25ffac40701c6e70f89aa13cca3c",
+        "verification": "Every source and destination file matched SHA-256 after copying."
+      },
+      {
+        "name": "rl_sgf_safe_initialised_projection",
+        "files": 900,
+        "bytes": 205212151,
+        "copy_manifest_sha256": "cc9aabd00648c2d4726f9d85134f845f53627f902d2907c1d7a87bd9a47ddd67",
+        "verification": "Every source and destination file matched SHA-256 after copying."
+      }
+    ]
+  },
+  "archive_manifest": "archive/manifest.json"
+}

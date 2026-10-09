@@ -8,9 +8,6 @@ import unittest
 import gymnasium as gym
 import numpy as np
 
-from projects.safe_policy_optimisation.scripts.run_frozenlake_features_pspo import (
-    build_safe_actor_features,
-)
 from projects.safe_policy_optimisation.scripts.run_stochastic_frozenlake_pspo import (
     INITIALISATION_SCHEME,
     build_safe_actor,
@@ -131,10 +128,8 @@ class StochasticFrozenLakeTests(unittest.TestCase):
 
     def test_frozenlake_initialisers_cannot_accept_reward_or_goal_inputs(self):
         tabular = inspect.signature(build_safe_actor).parameters
-        features = inspect.signature(build_safe_actor_features).parameters
         self.assertEqual(set(tabular), {"mask", "state_representation"})
-        self.assertEqual(set(features), {"env", "mask", "epochs", "seed"})
-        for parameters in (tabular, features):
+        for parameters in (tabular,):
             for forbidden in ("reward", "goal", "preferred", "witness", "distance"):
                 self.assertNotIn(forbidden, parameters)
 

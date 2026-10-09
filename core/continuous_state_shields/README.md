@@ -52,7 +52,7 @@ safe_actions = shield.get_safe_actions(observation)
 executed_action = shield.shield_action(observation, proposed_action)
 ```
 
-Run `projects/safe_policy_optimisation/stages/synthesise_mountaincar_reach_avoid_shield.py`
+Run `projects/safe_policy_optimisation/archive/stages/synthesise_mountaincar_reach_avoid_shield.py`
 to regenerate the viability kernel, safe goal-reachable set, goal ranks, and
 state-action mask from the exact MountainCar transition equations.
 

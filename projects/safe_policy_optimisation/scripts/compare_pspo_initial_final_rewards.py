@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[3]
 DEFAULT_RUN_ROOT = (
     REPO
     / "projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs"
-    / "adaptive_v2_two_hidden_directional_replace_all_margin2_200iters/two_hidden"
+    / "segment_lid/two_hidden"
 )
 
 

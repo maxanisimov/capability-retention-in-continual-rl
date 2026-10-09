@@ -145,6 +145,7 @@ class RegionRefreshAndAuditTests(unittest.TestCase):
 
     def test_exact_candidate_audit_does_not_mutate_live_actor(self) -> None:
         instance = object.__new__(AdaptiveSafePPO)
+        instance._certificate_has_input_intervals = False
         live = torch.nn.Linear(1, 3, bias=False)
         frozen = torch.nn.Linear(1, 3, bias=False)
         instance._live_actor_params = list(live.parameters())
@@ -213,6 +214,7 @@ class RegionRefreshAndAuditTests(unittest.TestCase):
         instance._compute_region_once = False
         instance._directional_rashomon_growth = False
         instance._stop_when_proposal_contained = False
+        instance._safe_region_shape = "orthotope"
         instance._active_regions = []
         instance._directional_initial_region_pending = False
         instance._rashomon_initial_n_iters = 200

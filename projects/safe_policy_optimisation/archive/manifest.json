@@ -1,0 +1,1637 @@
+{
+  "date": "2026-10-09",
+  "path_base": "projects/safe_policy_optimisation",
+  "notes": [
+    "Historical output paths inside saved provenance were deliberately not rewritten.",
+    "Bulk outputs moved by rename; device/inode equality verified. File-list digests cover relative filenames and byte sizes, not file contents.",
+    "sha256_before fields for source moves describe the pre-move content, before archived import/root updates."
+  ],
+  "moves": [
+    {
+      "original": "scripts/analyse_one_hidden_baseline_region_distance.py",
+      "archived": "archive/scripts/analyse_one_hidden_baseline_region_distance.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 16618,
+      "sha256_before": "291ac264f2e9f1196a903e07bf4d516b7f8b6e45638c875758cad44697764db9"
+    },
+    {
+      "original": "scripts/build_lunarlander_descent_certificate.py",
+      "archived": "archive/scripts/build_lunarlander_descent_certificate.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 8913,
+      "sha256_before": "426754f8f61bbfca6ea89f0c648ce20da7afd2ece9549b8e9f04d315e9d67dfd"
+    },
+    {
+      "original": "scripts/build_mountaincar_left_edge_shield.py",
+      "archived": "archive/scripts/build_mountaincar_left_edge_shield.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 5673,
+      "sha256_before": "8eec89669aa43d5e50847c1c5d7b6cd5aa08df05f05cc554949df5cd83ca512e"
+    },
+    {
+      "original": "scripts/compare_pspo_adaptive_initial_final_rewards.py",
+      "archived": "archive/scripts/compare_pspo_adaptive_initial_final_rewards.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 610,
+      "sha256_before": "476e93676c43831b61ee42f510a2680b796f601d8aa84810e36b88f924430173"
+    },
+    {
+      "original": "scripts/generate_compact_main_results.py",
+      "archived": "archive/scripts/generate_compact_main_results.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 12708,
+      "sha256_before": "b48122216ac9d16ef94ba7188d86989cc6c0150068af6f20a0d4e7e3373492d4"
+    },
+    {
+      "original": "scripts/generate_safe_percentage_tables.py",
+      "archived": "archive/scripts/generate_safe_percentage_tables.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6198,
+      "sha256_before": "30b7dc654164ca015dd4c5bd7433dc7e3404f7406a81539e4f304c582b695739"
+    },
+    {
+      "original": "scripts/launch_adaptive_v2_tabular_best_screens.sh",
+      "archived": "archive/scripts/launch_adaptive_v2_tabular_best_screens.sh",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 2011,
+      "sha256_before": "d6dabd710570bb189daf796727b49aa71d7f8d7e6b2e396366becc7f4fe1977e"
+    },
+    {
+      "original": "scripts/launch_pspo_adaptive_multi_env.py",
+      "archived": "archive/scripts/launch_pspo_adaptive_multi_env.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 538,
+      "sha256_before": "1a0d1741badb4ca18bef0af0295e0ef81b41ea11c8d4ec32b3dcbdfd356a2660"
+    },
+    {
+      "original": "scripts/plot_architecture_results.py",
+      "archived": "archive/scripts/plot_architecture_results.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 29208,
+      "sha256_before": "8185cbc812e0f490f6dc6b79d4c5c9e8008f51ca48df2fa7bff78412bd3e7664"
+    },
+    {
+      "original": "scripts/plot_architecture_unsafe_metrics.py",
+      "archived": "archive/scripts/plot_architecture_unsafe_metrics.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 21339,
+      "sha256_before": "9ace09748c25deca8d3f96a5ed63c38e28a2b4d9e6479133e4a243d187d098a7"
+    },
+    {
+      "original": "scripts/plot_media_streaming_tabular_logit_intervals.py",
+      "archived": "archive/scripts/plot_media_streaming_tabular_logit_intervals.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 12071,
+      "sha256_before": "38a68687ed2870881f612676c9e12ea34a671b9c285415c9d4e4838f5fa6db9c"
+    },
+    {
+      "original": "scripts/plot_one_hidden_learning_curves.py",
+      "archived": "archive/scripts/plot_one_hidden_learning_curves.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 7839,
+      "sha256_before": "a1c1f5090c483454990cb35f64ee1054b36bdfdc01a676893aa7422341498404"
+    },
+    {
+      "original": "scripts/plot_one_hidden_reward_safety_bars.py",
+      "archived": "archive/scripts/plot_one_hidden_reward_safety_bars.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 5212,
+      "sha256_before": "187e5561c68e27043037eb0053cfe5c79bea5f4a26c690eb4309c6128e946644"
+    },
+    {
+      "original": "scripts/plot_pspo_safe_update_ablation.py",
+      "archived": "archive/scripts/plot_pspo_safe_update_ablation.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 18779,
+      "sha256_before": "e3ff36cb907dc3e546c7ffe2f53d3fd73dfa6d0785d7b5bd2999e616301d1c49"
+    },
+    {
+      "original": "scripts/plot_pspo_variant_rewards.py",
+      "archived": "archive/scripts/plot_pspo_variant_rewards.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 19252,
+      "sha256_before": "21adc5a30f81b899f9547ecd96699044989bd55f24445de118c9c2daaffff1f7"
+    },
+    {
+      "original": "scripts/plot_tabular_learning_curves.py",
+      "archived": "archive/scripts/plot_tabular_learning_curves.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6459,
+      "sha256_before": "716668f716846e0b1ba97dd09472c9040ef278e747bd9b693567a3aea33ce161"
+    },
+    {
+      "original": "scripts/plot_tabular_rashomon_size_by_bc_margin.py",
+      "archived": "archive/scripts/plot_tabular_rashomon_size_by_bc_margin.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 8687,
+      "sha256_before": "329f5666c8d70294a73ad6146b226164d10504f67f7388df6ad6b11a1aae0695"
+    },
+    {
+      "original": "scripts/plot_tabular_reward_safety_bars.py",
+      "archived": "archive/scripts/plot_tabular_reward_safety_bars.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 3600,
+      "sha256_before": "c9cd78f2e991abdeb1e5dd5d178da42e69d8aa785a5daafe92a20b678cdf9d0e"
+    },
+    {
+      "original": "scripts/run_adaptive_seed_experiments.py",
+      "archived": "archive/scripts/run_adaptive_seed_experiments.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 553,
+      "sha256_before": "0bfb06bb2eb643ceb14ee9f85b1bfb0605efe14348d23a8f583f370a0e7fbbbc"
+    },
+    {
+      "original": "scripts/run_adaptive_v2_tabular_best_one_env.sh",
+      "archived": "archive/scripts/run_adaptive_v2_tabular_best_one_env.sh",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 12271,
+      "sha256_before": "0b849e4647f840cc0b391528584953c3e3ef866c9d994bde4466200bc2f0521b"
+    },
+    {
+      "original": "scripts/run_frozenlake_features_pspo.py",
+      "archived": "archive/scripts/run_frozenlake_features_pspo.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 20003,
+      "sha256_before": "efb9ca1f3549956e18724cefbe1512002f302b29824f33dcd64641944607b19c"
+    },
+    {
+      "original": "scripts/run_lunarlander_vanilla_ppo_viewport_audit.py",
+      "archived": "archive/scripts/run_lunarlander_vanilla_ppo_viewport_audit.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 30364,
+      "sha256_before": "8a7196c31c33264eddb29e24a542435110c3df563a9ca9b1cc70e1d099ecf946"
+    },
+    {
+      "original": "scripts/run_lunarlander_viewport_sweep.py",
+      "archived": "archive/scripts/run_lunarlander_viewport_sweep.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 18341,
+      "sha256_before": "230c6b04ebf178c1bcf0fba32dda4b6661cf735574462d1d3e2c82a359edfc7a"
+    },
+    {
+      "original": "scripts/run_masa_bc_margin_sweep.py",
+      "archived": "archive/scripts/run_masa_bc_margin_sweep.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 11776,
+      "sha256_before": "3ca1ff6116daabeeb37f553d9d0a7bae083eef4a08c19ff5d71bdb3168053516"
+    },
+    {
+      "original": "scripts/run_mountaincar_shield_interval_sweep.py",
+      "archived": "archive/scripts/run_mountaincar_shield_interval_sweep.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 25403,
+      "sha256_before": "15839a3324f1efa9294367f26525e708badcfb26bd6139122e41bd0c2dd8ef2b"
+    },
+    {
+      "original": "scripts/run_precomputed_matched_adaptive_budgets.py",
+      "archived": "archive/scripts/run_precomputed_matched_adaptive_budgets.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 22077,
+      "sha256_before": "9dcaa05f404b81db7ca90de53825ccab0857672b725b4cb41e4d6dfa082bfb5f"
+    },
+    {
+      "original": "scripts/run_pspo_adaptive_one_env.sh",
+      "archived": "archive/scripts/run_pspo_adaptive_one_env.sh",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 238,
+      "sha256_before": "402684f859b4b00bba6bc7fc4ae6484304b9fe6970f60b8283136fa57a611c30"
+    },
+    {
+      "original": "scripts/run_pspo_hparam_sweep.py",
+      "archived": "archive/scripts/run_pspo_hparam_sweep.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 32294,
+      "sha256_before": "6ca271584fa5ab5b8dcfc6ff18e693d3114c83af55de1fe83228e878a50ac05c"
+    },
+    {
+      "original": "scripts/run_pspo_lunarlander_descent.sh",
+      "archived": "archive/scripts/run_pspo_lunarlander_descent.sh",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 11846,
+      "sha256_before": "151ca6ea29a417323600b280fbe778a366d45f39a5447f719a9c80f50173c5ad"
+    },
+    {
+      "original": "scripts/run_pspo_mountaincar_left_edge.sh",
+      "archived": "archive/scripts/run_pspo_mountaincar_left_edge.sh",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 9485,
+      "sha256_before": "3edc8274aa964441086697c46055b3b4a7892c7c3352a1196f17de088d59fe7e"
+    },
+    {
+      "original": "scripts/run_rashomon_iter_sweep.py",
+      "archived": "archive/scripts/run_rashomon_iter_sweep.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6204,
+      "sha256_before": "110e66cc38b2303c25672e2e755261d5fb7a0a0bf7a4a71fc6ffd578a889066a"
+    },
+    {
+      "original": "scripts/summarise_pspo_precomputed_hparams.py",
+      "archived": "archive/scripts/summarise_pspo_precomputed_hparams.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 24421,
+      "sha256_before": "4d4cef36ee755deacaa54f6fc4240d7b990c81666dcb82aa566d4c18f9f4d8f7"
+    },
+    {
+      "original": "stages/box_mountaincar_reach_avoid_shield.py",
+      "archived": "archive/stages/box_mountaincar_reach_avoid_shield.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6262,
+      "sha256_before": "b8f828400854c3bd3d42e609f85fb2bfce70e2efba8391ad7649b738ce886ed6"
+    },
+    {
+      "original": "stages/synthesise_mountaincar_reach_avoid_shield.py",
+      "archived": "archive/stages/synthesise_mountaincar_reach_avoid_shield.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6940,
+      "sha256_before": "c45429b92fb230c7c8a84f41c8bf9dc0a77c4ecc09bd9530a92ea1626da795f3"
+    },
+    {
+      "original": "stages/train_mountaincar_edge_safety.py",
+      "archived": "archive/stages/train_mountaincar_edge_safety.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 23226,
+      "sha256_before": "50359426ac8e1ebcda53e4095bb5bde516b3582aeee1c47acd2f13cf2c9dff11"
+    },
+    {
+      "original": "stages/train_mountaincar_pspo_initialisation.py",
+      "archived": "archive/stages/train_mountaincar_pspo_initialisation.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 18944,
+      "sha256_before": "cb8f72048e02df0db8562abb72e2e229dd4b1a9964447865057f11a641a5211f"
+    },
+    {
+      "original": "stages/train_pspo_adaptive.py",
+      "archived": "archive/stages/train_pspo_adaptive.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 486,
+      "sha256_before": "f3e57b75480897767a349ae8d000a7fb9116f548fe78afdfc34d6574cbbf832a"
+    },
+    {
+      "original": "stages/train_pspo_adaptive_v2.py",
+      "archived": "archive/stages/train_pspo_adaptive_v2.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6162,
+      "sha256_before": "930feffb2d0d21e8bfc4362ed0f1697e6a37cfcb77e3156d6bceaefaa63fca6a"
+    },
+    {
+      "original": "stages/train_pspo_continuous.py",
+      "archived": "archive/stages/train_pspo_continuous.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 56325,
+      "sha256_before": "cdaac7a6d7dbb9bf00e974db3179b23a25a5957fc7c706aed796476e99909208"
+    },
+    {
+      "original": "tests/test_mountaincar_edge_safety_unittest.py",
+      "archived": "archive/tests/test_mountaincar_edge_safety_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 8534,
+      "sha256_before": "f65c63bab8d8ef14d10eb2ec5ba04412df7d57207e26736531e016c1f55d2732"
+    },
+    {
+      "original": "tests/test_mountaincar_interval_sweep_unittest.py",
+      "archived": "archive/tests/test_mountaincar_interval_sweep_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 10109,
+      "sha256_before": "34c54b229db3f6b1ad4406aeb581b5a47281fc2abd199b27f1a641f84e9346f5"
+    },
+    {
+      "original": "tests/test_mountaincar_pspo_initialisation_unittest.py",
+      "archived": "archive/tests/test_mountaincar_pspo_initialisation_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 5094,
+      "sha256_before": "33e68a2d18fbb2a6acc7ca8cad7c557b12a69e336687d1ddd60c1485442550a6"
+    },
+    {
+      "original": "tests/test_lunarlander_viewport_sweep_unittest.py",
+      "archived": "archive/tests/test_lunarlander_viewport_sweep_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 10593,
+      "sha256_before": "62e4ddf3d9e5624431a4e4c5b110a212f7f8fd1473f439ef2bb67bc8dea289f2"
+    },
+    {
+      "original": "tests/test_pspo_lunarlander_unittest.py",
+      "archived": "archive/tests/test_pspo_lunarlander_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 10972,
+      "sha256_before": "cf1a40e734dcb559f809a97b91da7764c285f6959b535dffb258dc52d9fb07d0"
+    },
+    {
+      "original": "tests/test_pspo_continuous_unittest.py",
+      "archived": "archive/tests/test_pspo_continuous_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 8750,
+      "sha256_before": "fa25ab9ece31b5d4ecf29c58c987362e92c32d0815f1e3e5d38a36efb1461e9f"
+    },
+    {
+      "original": "tests/test_precomputed_matched_launcher_unittest.py",
+      "archived": "archive/tests/test_precomputed_matched_launcher_unittest.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 8204,
+      "sha256_before": "9de47b3daa44e184c79d5d7ac14049cd51cb2e80357e3157a07679952a104ffe"
+    },
+    {
+      "original": "utils/frozen_lake_features_experiment.py",
+      "archived": "archive/utils/frozen_lake_features_experiment.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 5339,
+      "sha256_before": "aba33be782744b1e48f6f74ffe6c3cf2de2f720ba8922d9e07be4d6fb425c31e"
+    },
+    {
+      "original": "utils/pspo_adaptive_defaults.py",
+      "archived": "archive/utils/pspo_adaptive_defaults.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 346,
+      "sha256_before": "18766aeafe99e1e4b0c31ccd83cfbd70528a4cb05b0f303f8ae5438e35e184bb"
+    },
+    {
+      "original": "utils/pspo_adaptive_launcher.py",
+      "archived": "archive/utils/pspo_adaptive_launcher.py",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 346,
+      "sha256_before": "c4dcfdee356cfba249dc4380d8590088668012f45eda9d10eab1e7b526358226"
+    },
+    {
+      "original": "docs/crown_vs_ibp_tanh_looseness.md",
+      "archived": "archive/docs/crown_vs_ibp_tanh_looseness.md",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 11458,
+      "sha256_before": "58c8407eef3a1550f492733bcb40c005c47ff984b832d95486a797b1bf28f4aa"
+    },
+    {
+      "original": "docs/lunarlander_viewport_sweep.md",
+      "archived": "archive/docs/lunarlander_viewport_sweep.md",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 5004,
+      "sha256_before": "529d083b1354010364d655e10e9215dbaceba017868b8a10610f75f95cbaa803"
+    },
+    {
+      "original": "docs/mountaincar_left_edge_shield.md",
+      "archived": "archive/docs/mountaincar_left_edge_shield.md",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 6058,
+      "sha256_before": "76a2532a18f5b7a846378f48b53b4d23d153a28a633379c4d1ca7da23cc8c4a2"
+    },
+    {
+      "original": "docs/mountaincar_shield_interval_sweep.md",
+      "archived": "archive/docs/mountaincar_shield_interval_sweep.md",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 4113,
+      "sha256_before": "6a807df97289c27941db643b6fb60df319cd1dca8003c58a0d1f79b72d5dc425"
+    },
+    {
+      "original": "docs/pspo_reward_improvement_results.md",
+      "archived": "archive/docs/pspo_reward_improvement_results.md",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 5320,
+      "sha256_before": "59b46c273020216226750e78a587805a01a1f86c2276d7ba752963ffa1753e9a"
+    },
+    {
+      "original": "docs/pspo_precomputed",
+      "archived": "archive/docs/pspo_precomputed",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 20,
+      "bytes": 588338,
+      "sha256_before": "2546d6218aa1382ca582493516ac6038e72a0fc779df4ce8da83be2c4ca6edfb"
+    },
+    {
+      "original": "docs/pspo_talk.tex",
+      "archived": "archive/docs/pspo_talk.tex",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 12946,
+      "sha256_before": "a0885313d2bf29badb3de11f0533a017b8b27e9a44ffe0c028130aed7ae543dd"
+    },
+    {
+      "original": "docs/pspo_talk.pdf",
+      "archived": "archive/docs/pspo_talk.pdf",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 975274,
+      "sha256_before": "d50e58553e0babee650101ab74c02bab47175aad46023dd98a5e0f386eb37571"
+    },
+    {
+      "original": "settings/ablation_studies",
+      "archived": "archive/settings/ablation_studies",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 2,
+      "bytes": 10645,
+      "sha256_before": "97e94b3c97ea737b38339b77d0460d8b459b32ccdcb9e2e2fb9595893b243ac1"
+    },
+    {
+      "original": "TODO.md",
+      "archived": "archive/TODO.md",
+      "reason": "Superseded workflow or study outside the retained paper comparisons",
+      "files": 1,
+      "bytes": 4157,
+      "sha256_before": "4c49a750e840a9d45518c601d161a120767ce877c9c12abaf9ac1cd24392af60"
+    },
+    {
+      "original": "scripts/generate_policy_initialisation_paper_assets.py.orig",
+      "archived": "archive/backups/scripts/generate_policy_initialisation_paper_assets.py.orig",
+      "reason": "Local patch backup (ignored)",
+      "files": 1,
+      "bytes": 19553,
+      "sha256_before": "79fa802bf68d5602f089a32ca11ff80f034b9aab7bde411078335dba3cf10cfd"
+    },
+    {
+      "original": "scripts/generate_policy_initialisation_tables.py.orig",
+      "archived": "archive/backups/scripts/generate_policy_initialisation_tables.py.orig",
+      "reason": "Local patch backup (ignored)",
+      "files": 1,
+      "bytes": 14218,
+      "sha256_before": "4d1ff366c3b1d3110efba66c1230f7a604b89c831347dd92af332d9978ca67c6"
+    },
+    {
+      "original": "scripts/lab_cluster/pspo_initialisation.py.orig",
+      "archived": "archive/backups/scripts/lab_cluster/pspo_initialisation.py.orig",
+      "reason": "Local patch backup (ignored)",
+      "files": 1,
+      "bytes": 34466,
+      "sha256_before": "3e371c80e70b1ade30cc3a60aa21973df6a371be692260c4161d4031a96d1db1"
+    },
+    {
+      "original": "scripts/run_pspo_one_env.sh.orig",
+      "archived": "archive/backups/scripts/run_pspo_one_env.sh.orig",
+      "reason": "Local patch backup (ignored)",
+      "files": 1,
+      "bytes": 24607,
+      "sha256_before": "61fa92a308623ea60466e72b78e646058137751d95f5859ced9ca4a0f380d9d0"
+    },
+    {
+      "original": "docs/pspo_policy_initialisation_launch.md.orig",
+      "archived": "archive/backups/docs/pspo_policy_initialisation_launch.md.orig",
+      "reason": "Local patch backup (ignored)",
+      "files": 1,
+      "bytes": 5872,
+      "sha256_before": "87314a64f3632afd7136ef0ccd355764ebcf5b117c2ba14296394b0da7966ffc"
+    },
+    {
+      "original": "tests/test_pspo_initialisation_cluster_unittest.py.orig",
+      "archived": "archive/backups/tests/test_pspo_initialisation_cluster_unittest.py.orig",
+      "reason": "Local patch backup (ignored)",
+      "files": 1,
+      "bytes": 6475,
+      "sha256_before": "72883e706cd0aa8cb4330ab5299f904c674e619b26c04e8b62e7bd205af7e1c3"
+    },
+    {
+      "original": "scripts/plot_learning_curves.py",
+      "archived": "archive/scripts/plot_learning_curves.py",
+      "reason": "Superseded plot or historical goal-aware FrozenLake evaluation",
+      "files": 1,
+      "bytes": 6937
+    },
+    {
+      "original": "scripts/plot_reward_safety_bars.py",
+      "archived": "archive/scripts/plot_reward_safety_bars.py",
+      "reason": "Superseded plot or historical goal-aware FrozenLake evaluation",
+      "files": 1,
+      "bytes": 3320
+    },
+    {
+      "original": "scripts/plot_unshielded_learning_curves.py",
+      "archived": "archive/scripts/plot_unshielded_learning_curves.py",
+      "reason": "Superseded plot or historical goal-aware FrozenLake evaluation",
+      "files": 1,
+      "bytes": 17834
+    },
+    {
+      "original": "scripts/evaluate_frozenlake_final_policies.py",
+      "archived": "archive/scripts/evaluate_frozenlake_final_policies.py",
+      "reason": "Superseded plot or historical goal-aware FrozenLake evaluation",
+      "files": 1,
+      "bytes": 14769
+    },
+    {
+      "original": "scripts/plot_frozenlake_reward_safety_bars.py",
+      "archived": "archive/scripts/plot_frozenlake_reward_safety_bars.py",
+      "reason": "Superseded plot or historical goal-aware FrozenLake evaluation",
+      "files": 1,
+      "bytes": 4237
+    },
+    {
+      "original": "docs/stochastic_frozenlake128.md",
+      "archived": "archive/docs/stochastic_frozenlake128.md",
+      "reason": "Superseded plot or historical goal-aware FrozenLake evaluation",
+      "files": 1,
+      "bytes": 8438
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/ppo_frozenlake_smoke_20261007T155800Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/ppo_frozenlake_smoke_20261007T155800Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 25,
+      "bytes": 126183973,
+      "file_list_sha256": "e54067cd01b2c040df73a3bb0b45a7f3bd65c3900a4a915d3df59e44c15a822a"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_media_streaming_b128_fullbatch",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_media_streaming_b128_fullbatch",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 42,
+      "bytes": 17586335195,
+      "file_list_sha256": "486f233aca15dead166757108a9520a04182d1c1c31c093727d479b428372895"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/ppo_shaping_frozenlake16_20261007T220300Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/ppo_shaping_frozenlake16_20261007T220300Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 30,
+      "bytes": 3198722,
+      "file_list_sha256": "b26545ebf16c6af8169121d2678a92095ed1d0a8093ad9f63f5de8b075aa835d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv1_m1_i200_f1_t200k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv1_m1_i200_f1_t200k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 150,
+      "bytes": 869484814,
+      "file_list_sha256": "9a4fdb5650644bf1dbf05538d902d8a0eafbf2b862a48cff087ca1f359f2d646"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_verify_first_weighted_width_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_verify_first_weighted_width_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 193,
+      "bytes": 1632231823,
+      "file_list_sha256": "614c7d091618c8fc5349934d51d8595230ea9c8c169fcbd7bb4389b63dca061d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_media_streaming_b128_verifyfirst",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_media_streaming_b128_verifyfirst",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 150,
+      "bytes": 58775281626,
+      "file_list_sha256": "2dd22e20fea2c2b07b8900b0f1ff34d4650276f3194587c6bf5cdbeeae848544"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake_pspo_segment_verify_first_400k_20261008T150100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake_pspo_segment_verify_first_400k_20261008T150100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 4,
+      "bytes": 9074,
+      "file_list_sha256": "9cc34c44e0ecccbb2d330e6d5541d49eb5eae40a9eec617b936e8b7d6951a9b2"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake128_shaping_safe_baselines_t400k_20261008T103300Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake128_shaping_safe_baselines_t400k_20261008T103300Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 675,
+      "bytes": 2074400952,
+      "file_list_sha256": "437a31192f4dd3a23acfb39d14aa4444611c19e5cc374f36a891b31c3b695df0"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_projection_distance_margin1_reused_base_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_projection_distance_margin1_reused_base_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 131,
+      "bytes": 869167941,
+      "file_list_sha256": "573004884b467b15a58fb80de0354eb073a998cbed96350f22ce6451429c083c"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_ablation_verify_first_weighted_width_shared_margin2_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_ablation_verify_first_weighted_width_shared_margin2_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 131,
+      "bytes": 850498005,
+      "file_list_sha256": "dd815abcb1e748a2ba2f716918ae0c65b2b96d9e9ae0b3a6e0e6b77514d0ed61"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv1_m2_reuse_i100_f1_t200k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv1_m2_reuse_i100_f1_t200k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 145,
+      "bytes": 854659646,
+      "file_list_sha256": "af968e5642fa0d18f71929f4c9c730632947f628c7a304fe96ed018ce559fed3"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv2_m1_i200_f1_t200k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv2_m1_i200_f1_t200k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 80,
+      "bytes": 434164657,
+      "file_list_sha256": "45548cd04a8b75304f149f8aefac82860200cbd54452252e774c3bf096856f1a"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_tabular_best_precomputed",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_tabular_best_precomputed",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 44435,
+      "file_list_sha256": "673ed06860b8f642ec44bd35c39a815a00370da8a1c362b9bbcf0c5f33c4c42e"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_mini_m2_i200_f50_t500k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_mini_m2_i200_f50_t500k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 30,
+      "bytes": 673671857,
+      "file_list_sha256": "2a4462717410c0ff3173c0a29c14751da1b0c078204d103858fdcc99251e0a91"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake256_shaping_pspo_segment_verify_first_t400000_20261008T150100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake256_shaping_pspo_segment_verify_first_t400000_20261008T150100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 218,
+      "bytes": 2584812721,
+      "file_list_sha256": "377fc1098e5bd66d667b48f98355dc030ff0c71c86af0d85993c3ffd19d01306"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/lagrangian_stochastic_frozenlake256",
+      "archived": "archive/artifacts/paper_2503_07671/runs/lagrangian_stochastic_frozenlake256",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 246,
+      "bytes": 15023228798,
+      "file_list_sha256": "f117235c7eabd288cd982f795d8a494aa30036057e7d61745d92feb02a440b7e"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv1_m2_i100_f1_t200k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv1_m2_i100_f1_t200k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 30,
+      "bytes": 38725999,
+      "file_list_sha256": "64726b825ff5a1b52313c6c425d79a1e20e08b24d7a0b15148d81d27438f66d3"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/lagrangian_stochastic_frozenlake128",
+      "archived": "archive/artifacts/paper_2503_07671/runs/lagrangian_stochastic_frozenlake128",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 246,
+      "bytes": 14299804531,
+      "file_list_sha256": "df1a8a30aa6c6ee49332c8f44b25badc95c54918f2bef046ed3291a54851f02b"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_bridge_crossing_v2_trainphase_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_bridge_crossing_v2_trainphase_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 18627,
+      "file_list_sha256": "653dc656ea51c9cb544e4bf35f2312c07ce6c7c66487da48e2678e83fee55bbe"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2_safe_entropy_w1_min0p95_freq1_t400k_reuse_base",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2_safe_entropy_w1_min0p95_freq1_t400k_reuse_base",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 28,
+      "bytes": 329672976,
+      "file_list_sha256": "5912d0d8462ff52fff8429effadf5f5278966b82e692aeb51cd37d8ae8780e76"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_ablation_verify_first_weighted_width_shared_margin1_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_ablation_verify_first_weighted_width_shared_margin1_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 131,
+      "bytes": 854327830,
+      "file_list_sha256": "aef75a90f60e5df63f100e6f712e31ca2bbd630f05353fa432c51171e6c2b750"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_bridge_crossing_trainphase_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_bridge_crossing_trainphase_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 135,
+      "bytes": 868003638,
+      "file_list_sha256": "e79184ec7a484343686d1dc1a8e5cce1a40979552c66b71ffb0fc07d430de736"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v1_projection_distance",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v1_projection_distance",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 137,
+      "bytes": 871111763,
+      "file_list_sha256": "61445e4e3260e282df0fcb8e49ddac42f6f036e90b391df5d37a4d0cdb2e55cb"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_verifyfirst_segment_smoke_20261007T131100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_verifyfirst_segment_smoke_20261007T131100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 111,
+      "bytes": 87477081,
+      "file_list_sha256": "ee8256982e4d2f12610a93cdb80bc2cbe323813fc8042511ff053529a6c033a5"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_features_frozenlake128",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_features_frozenlake128",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 25,
+      "bytes": 768066288,
+      "file_list_sha256": "a8aa4d355fabfbe399165ef6785e899f8cee9d1e29b1a853ddc2817bab08b229"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/ppo_frozenlake_128_256_20261007T160200Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/ppo_frozenlake_128_256_20261007T160200Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 332,
+      "bytes": 15314357306,
+      "file_list_sha256": "c5a031f6eb6aa677f12ec83707be407a0ea54994fb3c4029bda0a38e150f2b3d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake256_shaping_pspo_segment_verify_first_t200000_20261008T134027Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake256_shaping_pspo_segment_verify_first_t200000_20261008T134027Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 218,
+      "bytes": 1885100511,
+      "file_list_sha256": "27ef0fa002346bef07fe9ef397996bca3c7b35dccbde21b5f1cd5d931d7eef5d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_verify_first_weighted_width_freq100",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_verify_first_weighted_width_freq100",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 132,
+      "bytes": 2072140805,
+      "file_list_sha256": "ccd0791b2e6420b70fb9c91eb6536e0dced071a73691f7f1c8d9c735dd12702d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2_projection_distance_freq1_margin2_reuse",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2_projection_distance_freq1_margin2_reuse",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 132,
+      "bytes": 866497186,
+      "file_list_sha256": "84761f58d8da4192128a8ffb0eb4beb51f6240400a2940e729d1311f7e0090a2"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_shaping_frozenlake64_20261008T073000Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_shaping_frozenlake64_20261008T073000Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 22,
+      "bytes": 77830543,
+      "file_list_sha256": "a8de4492f509cb1d8eb4891361601d14202cef2750c634060ad712e5c5e083ac"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/baselines_stochastic_frozenlake128",
+      "archived": "archive/artifacts/paper_2503_07671/runs/baselines_stochastic_frozenlake128",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 286,
+      "bytes": 14318071014,
+      "file_list_sha256": "6b6c096bd95b7a5258100bd733ea959d422fe652b7c6b4ce23dcc6be3c530d1d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_media_streaming_b128",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_media_streaming_b128",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 145,
+      "bytes": 60790151394,
+      "file_list_sha256": "62b645807d8c0354123832dfa1c9f87ad5d6af47825d10cf688907bc8acd11af"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/baselines_stochastic_frozenlake256",
+      "archived": "archive/artifacts/paper_2503_07671/runs/baselines_stochastic_frozenlake256",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 286,
+      "bytes": 15440303988,
+      "file_list_sha256": "98a844153d725f5f975740bebbec4b15b27d65f59143cc635565fa637fb98f83"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_v2_bridge",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_v2_bridge",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 64,
+      "bytes": 116757386,
+      "file_list_sha256": "88c0945c400cb910f398f2be41179566d2d5186424f27a3d99a93d78aaee17b6"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/final_policy_rollouts_frozenlake128",
+      "archived": "archive/artifacts/paper_2503_07671/runs/final_policy_rollouts_frozenlake128",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 92,
+      "bytes": 359031,
+      "file_list_sha256": "7d3e936b7ac2b2664fa9a9027e708fc584b68da3b889a5d5b80600332f275675"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_mini_m2_reuse_i200_f50_t500k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_mini_m2_reuse_i200_f50_t500k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 75,
+      "bytes": 1035910072,
+      "file_list_sha256": "2599a763ce9c1caa9664170d05ad97e1fc0340f8b24ac8a15a9758a896dc1b4e"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/tmp",
+      "archived": "archive/artifacts/paper_2503_07671/runs/tmp",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 0,
+      "bytes": 0,
+      "file_list_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_media_streaming_trainphase_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_media_streaming_trainphase_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 136,
+      "bytes": 157467654,
+      "file_list_sha256": "4b026298ad0e604c762a1d9c25db9846e6fc8b42b9d2c796526d196edc96eb4a"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_media_streaming_two_hidden_directional_replace_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_media_streaming_two_hidden_directional_replace_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 145,
+      "bytes": 524629798,
+      "file_list_sha256": "da47f52ebc2780f706a79921d58e259dcb553550374bf19df5017b14ef93e094"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_two_hidden_directional_replace_all_margin2_200iters_projection_distance_verify_first",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_two_hidden_directional_replace_all_margin2_200iters_projection_distance_verify_first",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 0,
+      "bytes": 0,
+      "file_list_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/precomputed_media_streaming_two_hidden_matched_adaptive_iterations",
+      "archived": "archive/artifacts/paper_2503_07671/runs/precomputed_media_streaming_two_hidden_matched_adaptive_iterations",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 221,
+      "bytes": 552405628,
+      "file_list_sha256": "8b99d59d911e1e81dcdebe6d69aee70d748541f6d79521c2f7d15379fc7bff91"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_two_hidden_directional_replace_all_margin2_trainphase_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_two_hidden_directional_replace_all_margin2_trainphase_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 57,
+      "bytes": 680533024,
+      "file_list_sha256": "d6d29d8d768a473d31bdd4126d9994364398a345ff8637064dbb612d0f5efba0"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_media_streaming_b128_freq3",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_media_streaming_b128_freq3",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 140,
+      "bytes": 58614099832,
+      "file_list_sha256": "39b7fa43643c43107191616094560e3f77a1a6fbcbcc173cd82ba5b4e3fa50c0"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_tabular_directional_replace_all_margin0p1_200iters_checkpoint5",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_tabular_directional_replace_all_margin0p1_200iters_checkpoint5",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 0,
+      "bytes": 0,
+      "file_list_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake128_shaping_pspo_segment_verify_first_t400000_20261008T150100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake128_shaping_pspo_segment_verify_first_t400000_20261008T150100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 218,
+      "bytes": 1699357059,
+      "file_list_sha256": "dc53efc9a741bd115be46cc9f3daec2d94dfe6ac6067e7c50fd94649d79931d3"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/colour_bomb_v2_slipfix_20261007",
+      "archived": "archive/artifacts/paper_2503_07671/runs/colour_bomb_v2_slipfix_20261007",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 584,
+      "bytes": 2233268454,
+      "file_list_sha256": "c5312b32a31a9653f01d023426d6bf0be6b90de163de1064b201066435c800df"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake16_shaping_pspo_segment_t204800_20261008T114100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake16_shaping_pspo_segment_t204800_20261008T114100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 3,
+      "bytes": 598885,
+      "file_list_sha256": "86bceee3b3381df8b4824ccf1840af75d6fec50858fb7d835b5fb1ab68013d2f"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_colour_bomb_trainphase_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_colour_bomb_trainphase_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 137,
+      "bytes": 118528059,
+      "file_list_sha256": "63fa8d61fb07338a0f933b186a85c8f6917523debc0f2fff0e1948fe4769e30d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake32_shaping_pspo_shield_ppo_20261008T081800Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake32_shaping_pspo_shield_ppo_20261008T081800Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 581,
+      "bytes": 1469715769,
+      "file_list_sha256": "addc0b5d6e9e5ab42f104895a14b0d30ca201ef86f1d4f77b58216a85a36fb86"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake32_shaping_pspo_segment_t204800_20261008T121400Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake32_shaping_pspo_segment_t204800_20261008T121400Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 220,
+      "bytes": 739419648,
+      "file_list_sha256": "ceb41478072dcc5a14cc65f9531c45468fe76b1aebfa0753cc032297a877a4b4"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/colour_bomb_v2_slipfix_20261008_pspo_t200k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/colour_bomb_v2_slipfix_20261008_pspo_t200k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 153,
+      "bytes": 1230824347,
+      "file_list_sha256": "96bf53998d407d754f9eb3c8dccc09b85f16f514bcc909629be9f4e0404b3fc4"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_media_streaming_one_hidden_directional_replace_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_media_streaming_one_hidden_directional_replace_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 110,
+      "bytes": 591161080,
+      "file_list_sha256": "a27aa197404c0a439172a74eebe4ce47c52a69c66710379aaf3cd17f1a912fc8"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_tabular_directional_replace_all_margin0p1_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_tabular_directional_replace_all_margin0p1_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 511,
+      "bytes": 19050575337,
+      "file_list_sha256": "38903eac4d0ed4d6fbbf49b3c0ddc7189fca5d59223ae23c84922009ac71965d"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake128_shaping_pspo_segment_verify_first_t200000_20261008T134027Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake128_shaping_pspo_segment_verify_first_t200000_20261008T134027Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 218,
+      "bytes": 999125771,
+      "file_list_sha256": "370e32aeccf261dbb79c9176be2aac04007168df4970e0e5f59108d723874e22"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/_smoke",
+      "archived": "archive/artifacts/paper_2503_07671/runs/_smoke",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 183,
+      "bytes": 129447809,
+      "file_list_sha256": "db3ef256afc0588234ecd16447d1d5735db9562910fa80edf1309d7b8ba49268"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake16_shaping_pspo_segment_t204800_20261008T114000Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake16_shaping_pspo_segment_t204800_20261008T114000Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 220,
+      "bytes": 729452702,
+      "file_list_sha256": "803f71fabc7126f4c7744b74548eafe3f04b286a139336ab3ca78083f9c42864"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_v2_bridge_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_v2_bridge_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 134,
+      "bytes": 856739902,
+      "file_list_sha256": "69756b04cd90a9129606957c772934ad0b292ff48138741b62ac096f04dd649c"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/adaptive_v2_two_hidden_directional_replace_all_margin2_200iters",
+      "archived": "archive/artifacts/paper_2503_07671/runs/adaptive_v2_two_hidden_directional_replace_all_margin2_200iters",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 647,
+      "bytes": 10117083589,
+      "file_list_sha256": "a84b1f41ce641d43dbe367cde9a43ff9fa128975ccb8c49f1c4a02798f4d6a8a"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_mini_m1_i200_f100_t500k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_mini_m1_i200_f100_t500k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 80,
+      "bytes": 1696274191,
+      "file_list_sha256": "47d981ca8821ee9a1627e458b3d4af140f34c60af8d25f6435b678a33a298457"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/no_earlystop",
+      "archived": "archive/artifacts/paper_2503_07671/runs/no_earlystop",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 34,
+      "bytes": 0,
+      "file_list_sha256": "0dd1b1bd4e1d4f2a37ce524ad18578d2faaca315185ac8e1bf92314373eadabe"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv2_m2_i200_f1_t400k",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_reward_pilot_bcv2_m2_i200_f1_t400k",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 30,
+      "bytes": 31949937,
+      "file_list_sha256": "f34241db7317704c00755ac2e2e90158429c69e40ef6cd1af8fe16983c716f13"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_verifyfirst_segment_smoke_20261007T130800Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_verifyfirst_segment_smoke_20261007T130800Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 27,
+      "bytes": 38118,
+      "file_list_sha256": "8e6a8698653199acc886a72bd1f7be1a05fdb27f94cae6eea53899c26d59b5f4"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/ppo_frozenlake_smoke_20261007T160100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/ppo_frozenlake_smoke_20261007T160100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 39,
+      "bytes": 126189792,
+      "file_list_sha256": "87c0b073064b58f922ac7e1339787f652e0d526d2e78304ad0575062a610fb3c"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/precomputed_colour_bomb_two_hidden_matched_adaptive_iterations",
+      "archived": "archive/artifacts/paper_2503_07671/runs/precomputed_colour_bomb_two_hidden_matched_adaptive_iterations",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 221,
+      "bytes": 239623347,
+      "file_list_sha256": "a0efbdbe1f42074f8cdd0bab339fff772b917f7b3d3c922276baba6d692fec6c"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/colour_bomb_v2_slipfix_20261007_pspo",
+      "archived": "archive/artifacts/paper_2503_07671/runs/colour_bomb_v2_slipfix_20261007_pspo",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 157,
+      "bytes": 843020050,
+      "file_list_sha256": "ff5d17a6b21cfb0730b47e6cd64bd3f741b675288830752d2bb56a83a6fa5e7a"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_adaptive_projection_distance_margin2_reused_base_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_adaptive_projection_distance_margin2_reused_base_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 131,
+      "bytes": 867218151,
+      "file_list_sha256": "96325fc0625376437708db64d27e6d942f9348da5379de32b1eaf43b3efe6dcf"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/frozenlake_pspo_segment_verify_first_200k_20261008T134027Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/frozenlake_pspo_segment_verify_first_200k_20261008T134027Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 4,
+      "bytes": 6543,
+      "file_list_sha256": "530e7f56e1ee11b1198c9c17f68fd02216083d2391ad09beed81cc4aa71dfd96"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/pspo_ablation_region_first_weighted_width_shared_margin2_freq1",
+      "archived": "archive/artifacts/paper_2503_07671/runs/pspo_ablation_region_first_weighted_width_shared_margin2_freq1",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 131,
+      "bytes": 867980219,
+      "file_list_sha256": "0b3429cca8349bc46f6b76224bd1d0034d835f350d28cac7b5832cfef48f86df"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/runs/ppo_shaping_frozenlake32_20261008T063100Z",
+      "archived": "archive/artifacts/paper_2503_07671/runs/ppo_shaping_frozenlake32_20261008T063100Z",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 16,
+      "bytes": 2174438,
+      "file_list_sha256": "6b7fe022699cd20193f23211fa6d1a1e585427692ef913ce626cf613f816faea"
+    },
+    {
+      "original": "artifacts/mountaincar_dqn_rlzoo_like",
+      "archived": "archive/artifacts/mountaincar_dqn_rlzoo_like",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 94,
+      "bytes": 1400677,
+      "file_list_sha256": "0390f6584b44ff75ef76e0370210f4615a1788cec851a4f5a3cab0167025d13e"
+    },
+    {
+      "original": "artifacts/mountaincar_edge_safety",
+      "archived": "archive/artifacts/mountaincar_edge_safety",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 25,
+      "bytes": 3003002,
+      "file_list_sha256": "5ff4c4bbbec89a566364ed163d83adacee9e1f2ade92c1a829954fd3092aa0c2"
+    },
+    {
+      "original": "artifacts/.trash",
+      "archived": "archive/artifacts/.trash",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 538,
+      "bytes": 18933984688,
+      "file_list_sha256": "7a84d65e2c41d70699fe068242a0962778d61dfc652d5bb33fff8bdca1f61647"
+    },
+    {
+      "original": "artifacts/mountaincar_vanilla_dqn",
+      "archived": "archive/artifacts/mountaincar_vanilla_dqn",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 204,
+      "bytes": 2814872,
+      "file_list_sha256": "beadbbcf79dfa12b50cc148ac05f5041fe2141dcac4e3454c6773bf5ffcbe9e6"
+    },
+    {
+      "original": "outputs/deterministic_media_streaming",
+      "archived": "archive/outputs/deterministic_media_streaming",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 10,
+      "bytes": 66157,
+      "file_list_sha256": "a675bf99bf039aff58ba9f5b9d6bbc93d84d5bdc159719a4009425c8ca6f1e7e"
+    },
+    {
+      "original": "outputs/deterministic_minipacman",
+      "archived": "archive/outputs/deterministic_minipacman",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 25,
+      "bytes": 29147109,
+      "file_list_sha256": "5d5bae15fac1d30fd5343db1c35cea832e85115f7370e717b3359a263a928606"
+    },
+    {
+      "original": "outputs/paper_2503_07671",
+      "archived": "archive/outputs/paper_2503_07671",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 414,
+      "bytes": 2002358694,
+      "file_list_sha256": "cb48b423ba28f2a0a5c792f4151fe5b4d1367f779e8214ee3554da2dc05e852d"
+    },
+    {
+      "original": "results/additional_results.tex",
+      "archived": "archive/results/additional_results.tex",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 10279,
+      "file_list_sha256": "e969034552dd7880c6da083db2160a5704c50db6fdbe3435bad5598e123590b1"
+    },
+    {
+      "original": "artifacts/paper_2503_07671/inputs/media_streaming_b128",
+      "archived": "archive/artifacts/paper_2503_07671/inputs/media_streaming_b128",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 1060004,
+      "file_list_sha256": "243bc7a11e96e76773a576a3a12043a869934258b4bc42836e20a3b4ff6bf211"
+    },
+    {
+      "original": "figures/two_hidden_unsafe_metrics.pdf",
+      "archived": "archive/figures/two_hidden_unsafe_metrics.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 18505,
+      "file_list_sha256": "8535e805774b84e859c97d6b5513d9022847bcff2256210f837554eee1fdae79"
+    },
+    {
+      "original": "figures/pspo_adaptive_vs_rl_baselines_exploration_curves",
+      "archived": "archive/figures/pspo_adaptive_vs_rl_baselines_exploration_curves",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 11,
+      "bytes": 2810746,
+      "file_list_sha256": "6f86283ce86cd0a3fe62afaeca4eed1fc8fff4a51afeac025144edc7403c967a"
+    },
+    {
+      "original": "figures/tabular_reward_safety.pdf",
+      "archived": "archive/figures/tabular_reward_safety.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 20039,
+      "file_list_sha256": "f104ef885e0e97c8994641211b66683b200c17344f1c87dd6c1bdec7aa773013"
+    },
+    {
+      "original": "figures/two_hidden_unsafe_metrics.png",
+      "archived": "archive/figures/two_hidden_unsafe_metrics.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 245008,
+      "file_list_sha256": "58296913855ce2d0f810ee481345486a3748aefe9d3ee8e0e3f64a87b5a74e46"
+    },
+    {
+      "original": "figures/tabular_reward_safety.png",
+      "archived": "archive/figures/tabular_reward_safety.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 274195,
+      "file_list_sha256": "9169b8cc5d53bfa601ea712f2135da02ec1f691e1366ee6e03fcf0ae6ee0cd7f"
+    },
+    {
+      "original": "figures/pspo_adaptive_vs_rl_baselines_learning_curves",
+      "archived": "archive/figures/pspo_adaptive_vs_rl_baselines_learning_curves",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 11,
+      "bytes": 2087089,
+      "file_list_sha256": "10b84c5c139e1f229f6a27d5ac615710e9d21a56be6c8c19b2565b2052243b70"
+    },
+    {
+      "original": "figures/tabular_compact_learning_curves.png",
+      "archived": "archive/figures/tabular_compact_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 294169,
+      "file_list_sha256": "4c08b15a879fcc32fc39c25253e60b9f5dc2a3e537d62a799ea9d8bd8ab634d7"
+    },
+    {
+      "original": "figures/pspo_mini_pacman_extended_2m",
+      "archived": "archive/figures/pspo_mini_pacman_extended_2m",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 4,
+      "bytes": 1572688,
+      "file_list_sha256": "b83dde283f7533e8afee961f160c78ae0c2ebfbe6bbe58a79d333a3006f0059e"
+    },
+    {
+      "original": "figures/tabular_compact_learning_curves.pdf",
+      "archived": "archive/figures/tabular_compact_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 42581,
+      "file_list_sha256": "51978ce307d42a5d11f759bdeffa94f024e9ae256a1685dd98be17522a91e535"
+    },
+    {
+      "original": "figures/two_hidden_learning_curves.png",
+      "archived": "archive/figures/two_hidden_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 517086,
+      "file_list_sha256": "0827a2e74dff1314de62b443e812c99204f1e76d22339c41047eebda960c1e97"
+    },
+    {
+      "original": "figures/frozenlake128_reward_safety_bars.pdf",
+      "archived": "archive/figures/frozenlake128_reward_safety_bars.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 30867,
+      "file_list_sha256": "9f54dcf63c50d7e9453934ebc3da28a38bffa18a12d089f139f01b82327be936"
+    },
+    {
+      "original": "figures/two_hidden_learning_curves.pdf",
+      "archived": "archive/figures/two_hidden_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 50073,
+      "file_list_sha256": "b15d41c058961620d30d112bce36d3e8cf5bcecde21d5519906694c9732cc30f"
+    },
+    {
+      "original": "figures/frozenlake128_reward_safety_bars.png",
+      "archived": "archive/figures/frozenlake128_reward_safety_bars.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 77493,
+      "file_list_sha256": "3609d4cb73f5b41ddc48bb3f2fc1f32f774e4a878fb2c791a70acbf6ac3f360a"
+    },
+    {
+      "original": "figures/one_hidden_exploration_evaluation_safety_rate.pdf",
+      "archived": "archive/figures/one_hidden_exploration_evaluation_safety_rate.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 20082,
+      "file_list_sha256": "c0b63fcbdb6a8ea0b6236e270452f3b752dbb9c83be875e3b17c2ff3042e965a"
+    },
+    {
+      "original": "figures/two_hidden_reward_safety.png",
+      "archived": "archive/figures/two_hidden_reward_safety.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 236925,
+      "file_list_sha256": "c096707afd2e50d3c7486cb2284a9d5175fe3727ebc5235f1c86bd5f9fae8881"
+    },
+    {
+      "original": "figures/tabular_unsafe_metrics.png",
+      "archived": "archive/figures/tabular_unsafe_metrics.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 286517,
+      "file_list_sha256": "8e263d768a1fec672a6393eb191c43a3f93527eb9917ce27786c45010ec6b5cb"
+    },
+    {
+      "original": "figures/pspo_adaptive_vs_rl_baselines_extended_1m",
+      "archived": "archive/figures/pspo_adaptive_vs_rl_baselines_extended_1m",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 9,
+      "bytes": 4431619,
+      "file_list_sha256": "28430caa7c42db2c8a1236a79414e785eedf78407cc3a3511784f931abc4125d"
+    },
+    {
+      "original": "figures/two_hidden_reward_safety.pdf",
+      "archived": "archive/figures/two_hidden_reward_safety.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 18753,
+      "file_list_sha256": "db3132b0887bac9955837e2b8583bdcaa0e7d655ef989712f009ce61adab406c"
+    },
+    {
+      "original": "figures/one_hidden_exploration_evaluation_safety_rate.png",
+      "archived": "archive/figures/one_hidden_exploration_evaluation_safety_rate.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 286162,
+      "file_list_sha256": "9386b4248e194311935e45e9d8ca653613df5ec6c1fa125bac37097a48f427d8"
+    },
+    {
+      "original": "figures/tabular_unsafe_metrics.pdf",
+      "archived": "archive/figures/tabular_unsafe_metrics.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 19869,
+      "file_list_sha256": "f29fa3b0fc6fabe738000839a1596432e5851270f5e31777a00315859da6a2f1"
+    },
+    {
+      "original": "figures/one_hidden_learning_curves.pdf",
+      "archived": "archive/figures/one_hidden_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 85617,
+      "file_list_sha256": "e2b2a07196f536de80347f03410289553d7e974ab55b5a95e77f33f65de5f777"
+    },
+    {
+      "original": "figures/one_hidden_learning_curves.png",
+      "archived": "archive/figures/one_hidden_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 677087,
+      "file_list_sha256": "8cd896dfbe7dd91b2ef244cd69ff62eaa7d4ad3003a15a41d37033d5e243b989"
+    },
+    {
+      "original": "figures/two_hidden_pspo_safe_update_ablation_reward_safety.png",
+      "archived": "archive/figures/two_hidden_pspo_safe_update_ablation_reward_safety.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 229685,
+      "file_list_sha256": "b25ec66bd161b7a35083081242d521c5d58c9303b32029caf42677a49b7a95b9"
+    },
+    {
+      "original": "figures/talk_learning_curves",
+      "archived": "archive/figures/talk_learning_curves",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 7,
+      "bytes": 6192368,
+      "file_list_sha256": "9ad95ba7c2c812833053ee3c59ea2a3c092ccc11c3433a4a1e93f1eacf32d174"
+    },
+    {
+      "original": "figures/two_hidden_exploration_evaluation_safety_rate.pdf",
+      "archived": "archive/figures/two_hidden_exploration_evaluation_safety_rate.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 18667,
+      "file_list_sha256": "31b4dce60d3fc1d39e5eadb8088938899c0c2fdc1c9438bf523fe54e0efee266"
+    },
+    {
+      "original": "figures/one_hidden_reward_safety.pdf",
+      "archived": "archive/figures/one_hidden_reward_safety.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 20027,
+      "file_list_sha256": "7bf43d9d9e412f56509a9528c099da9bebfc994cc8a384d1da33c72be3c0b552"
+    },
+    {
+      "original": "figures/two_hidden_pspo_safe_update_ablation_reward_safety.pdf",
+      "archived": "archive/figures/two_hidden_pspo_safe_update_ablation_reward_safety.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 15938,
+      "file_list_sha256": "7867d9eeac096db1fb57d53e9e2f9fd16a1641d39e59a017176e6cbb5aca325f"
+    },
+    {
+      "original": "figures/one_hidden_reward_safety.png",
+      "archived": "archive/figures/one_hidden_reward_safety.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 273690,
+      "file_list_sha256": "ee4aacd296e9caadde370114911a9ce8c346cf938f0464c64baab8c809450884"
+    },
+    {
+      "original": "figures/two_hidden_exploration_evaluation_safety_rate.png",
+      "archived": "archive/figures/two_hidden_exploration_evaluation_safety_rate.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 244537,
+      "file_list_sha256": "011fbf437ff54a315531b9d550a5b7b342eb45790e448a893a913f4ad33925ec"
+    },
+    {
+      "original": "figures/tabular_exploration_evaluation_safety_rate.png",
+      "archived": "archive/figures/tabular_exploration_evaluation_safety_rate.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 286416,
+      "file_list_sha256": "f56e563b1002663330a1ec85ad85120c34d14b6409dd7874bbdf49448c1ec388"
+    },
+    {
+      "original": "figures/tabular_pspo_safe_update_ablation_learning_curves.png",
+      "archived": "archive/figures/tabular_pspo_safe_update_ablation_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 564322,
+      "file_list_sha256": "d1cd3197185324c46cf96457d5a792dced380ba1dc5daa8974fb43aa578ab434"
+    },
+    {
+      "original": "figures/tabular_exploration_evaluation_safety_rate.pdf",
+      "archived": "archive/figures/tabular_exploration_evaluation_safety_rate.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 20039,
+      "file_list_sha256": "8cb2c860d36ad7fb65d57868004210014bc5a4440246b06ceface2c15a3853c8"
+    },
+    {
+      "original": "figures/tabular_pspo_safe_update_ablation_learning_curves.pdf",
+      "archived": "archive/figures/tabular_pspo_safe_update_ablation_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 51430,
+      "file_list_sha256": "064045cb1840c628bdec5f4e616347249b13f1cd9a35a60ef095a4421372669b"
+    },
+    {
+      "original": "figures/tabular_pspo_safe_update_ablation_reward_safety.pdf",
+      "archived": "archive/figures/tabular_pspo_safe_update_ablation_reward_safety.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 16679,
+      "file_list_sha256": "3e7822a5aaba1a1bb9c576468dba72eccc9529ebf65edde845bdc61b351f24aa"
+    },
+    {
+      "original": "figures/one_hidden_pspo_safe_update_ablation_reward_safety.png",
+      "archived": "archive/figures/one_hidden_pspo_safe_update_ablation_reward_safety.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 263122,
+      "file_list_sha256": "8e18da2cdcc82a685090f60b32b30493d6df598195e3e8bc2f4c8ae123efdf3a"
+    },
+    {
+      "original": "figures/tabular_pspo_safe_update_ablation_reward_safety.png",
+      "archived": "archive/figures/tabular_pspo_safe_update_ablation_reward_safety.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 262778,
+      "file_list_sha256": "f6aee959ac7ed4815abdedeec81fb74a6c88c0f93b95cd81f457edff61049fcd"
+    },
+    {
+      "original": "figures/one_hidden_pspo_safe_update_ablation_reward_safety.pdf",
+      "archived": "archive/figures/one_hidden_pspo_safe_update_ablation_reward_safety.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 16492,
+      "file_list_sha256": "ab99fc0419fa4361a165338f379679bb65e535a842df9ef5cf54baaceff5a985"
+    },
+    {
+      "original": "figures/one_hidden_unsafe_metrics.png",
+      "archived": "archive/figures/one_hidden_unsafe_metrics.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 286550,
+      "file_list_sha256": "6cc06ea037d83552dc2e9077d4aa0766e43c2bc5ed348eb42d0ce344f0e7b23f"
+    },
+    {
+      "original": "figures/frozenlake128_reward_safety_bars.tex",
+      "archived": "archive/figures/frozenlake128_reward_safety_bars.tex",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 816,
+      "file_list_sha256": "cdcd90fc037194df5cbedcb7ef16b26bd1fc0da5c08c67c1734c4a470b63f754"
+    },
+    {
+      "original": "figures/one_hidden_unsafe_metrics.pdf",
+      "archived": "archive/figures/one_hidden_unsafe_metrics.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 19899,
+      "file_list_sha256": "b0109927310341f2a1a027ac71c12af8df6998a4e8ddeeb857b44e91ad9a63f1"
+    },
+    {
+      "original": "figures/two_hidden_pspo_safe_update_ablation_learning_curves.png",
+      "archived": "archive/figures/two_hidden_pspo_safe_update_ablation_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 456915,
+      "file_list_sha256": "e60732f6305730a97e5510fe872f8cae9ef5ad985e56864dced7edd9cbcff170"
+    },
+    {
+      "original": "figures/two_hidden_pspo_safe_update_ablation_learning_curves.pdf",
+      "archived": "archive/figures/two_hidden_pspo_safe_update_ablation_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 32798,
+      "file_list_sha256": "26534715ce0b07729e7dee32b7fe95c4a7a3b536a9f246654d9f9bb3f03c8705"
+    },
+    {
+      "original": "figures/frozenlake128_reward_safety_bars.csv",
+      "archived": "archive/figures/frozenlake128_reward_safety_bars.csv",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 444,
+      "file_list_sha256": "29b811a0252db3189f87fdcee9374376160ae82768c63273ef998b313dfac765"
+    },
+    {
+      "original": "figures/one_hidden_pspo_safe_update_ablation_learning_curves.png",
+      "archived": "archive/figures/one_hidden_pspo_safe_update_ablation_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 572832,
+      "file_list_sha256": "5a910dabc8843fd2db22141b1189ba96a15d057526e7efd7f194369103d51f2a"
+    },
+    {
+      "original": "figures/one_hidden_pspo_safe_update_ablation_learning_curves.pdf",
+      "archived": "archive/figures/one_hidden_pspo_safe_update_ablation_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 52056,
+      "file_list_sha256": "59f6005c03f376cc34c4a2fdc0756b69de9fce93ed1821420eb090105bddc5c5"
+    },
+    {
+      "original": "figures/tabular_learning_curves.png",
+      "archived": "archive/figures/tabular_learning_curves.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 738540,
+      "file_list_sha256": "72b6032e6051245cc6a2e8fb26e9b81c203fbde1bb9a6cad028476701c1eb537"
+    },
+    {
+      "original": "figures/tabular_learning_curves.pdf",
+      "archived": "archive/figures/tabular_learning_curves.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 93355,
+      "file_list_sha256": "ccf8072a7bcb32c0023bf7fa5db60394beacef09732906a2407999a591b32c64"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars_transposed.tex",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars_transposed.tex",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 849,
+      "file_list_sha256": "238eff3e33f63bda210561b06f1231c7f0d4140bbccbefdb257e4188969a00e7"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars.csv",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars.csv",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 444,
+      "file_list_sha256": "29b811a0252db3189f87fdcee9374376160ae82768c63273ef998b313dfac765"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars_transposed.csv",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars_transposed.csv",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 444,
+      "file_list_sha256": "1e48153a05045df5325f8c4eb79f9b22b4667a23a7f34877b8cdf5d6fad50516"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars.tex",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars.tex",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 827,
+      "file_list_sha256": "21a107e8b58be4bf2e129d0a051659dfdb14e2207fd2c8240ff9a7b8c08678a9"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars_transposed.pdf",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars_transposed.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 17534,
+      "file_list_sha256": "8311ac2b1661d1256c398446a6349960339d6e254294294b41e6a058fcd94799"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars_transposed.png",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars_transposed.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 61661,
+      "file_list_sha256": "1566e92c0fd337f2b4bd038dec7f1da376f3c91aa0b23c3d8410dfb0fa38f155"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars.png",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars.png",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 62522,
+      "file_list_sha256": "1651ec622deeacb760d07fac3ba93c286fa967f2281fb2023000c66dfe8c4308"
+    },
+    {
+      "original": "figures/aamas/frozenlake128_reward_safety_bars.pdf",
+      "archived": "archive/figures/aamas/frozenlake128_reward_safety_bars.pdf",
+      "reason": "Historical output outside retained paper cohorts and their input dependencies",
+      "files": 1,
+      "bytes": 17912,
+      "file_list_sha256": "e4cb68414166790ddbe0db739832d4eeaf7e100f0a252b3ff0fe04909d7420ed"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Local historical artifacts remain available without entering Git.
+/archive/backups/
+/archive/artifacts/
+/archive/outputs/
+/archive/results/
+/archive/figures/
+/archive/docs/pspo_precomputed/*.json
+*.orig
+
+# Generated methodology PDFs (previously tracked PDFs remain tracked).
+/docs/methodology/frozenlake_analytical_actor_construction.pdf

@@ -29,7 +29,7 @@ class SafeProjectionFigureTests(unittest.TestCase):
 
     def test_native_single_column_geometry_and_environment_order(self):
         fig = plot.build_reward_figure(example_rows())
-        self.assertEqual(tuple(fig.get_size_inches()), (3.33, 2.85))
+        self.assertEqual(tuple(fig.get_size_inches()), (3.33, 2.98))
         self.assertEqual(len(fig.axes), 6)
         self.assertEqual([axis.get_title().replace("\n", " ") for axis in fig.axes],
                          list(plot.ENVIRONMENTS.values()))
@@ -57,14 +57,14 @@ class SafeProjectionFigureTests(unittest.TestCase):
                 self.assertLessEqual(axis.get_ylim()[0], segments[index][0][1])
                 self.assertGreaterEqual(axis.get_ylim()[1], segments[index][1][1])
         self.assertLess(fig.axes[0].patches[0].get_y(), -1.55)
-        self.assertEqual(fig.axes[1].patches[0].get_y(), 0)
+        self.assertAlmostEqual(fig.axes[1].patches[0].get_y(), 0.375)
 
     def test_legend_and_headings_fit_inside_the_canvas(self):
         fig = plot.build_reward_figure(example_rows())
         fig.canvas.draw()
         renderer = fig.canvas.get_renderer()
         legend = fig.legends[0]
-        self.assertTrue(all(text.get_fontsize() == 7 for text in legend.get_texts()))
+        self.assertTrue(all(text.get_fontsize() == 6.5 for text in legend.get_texts()))
         for artist in [legend] + [axis.title for axis in fig.axes]:
             box = artist.get_window_extent(renderer)
             self.assertTrue(fig.bbox.contains(box.x0, box.y0))
@@ -101,7 +101,7 @@ class SafeProjectionFigureTests(unittest.TestCase):
             box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", pdf).group(1)
             dims = [float(value) / 72 for value in box.split()][2:]
             self.assertAlmostEqual(dims[0], 3.33)
-            self.assertAlmostEqual(dims[1], 2.85)
+            self.assertAlmostEqual(dims[1], 2.98)
             self.assertIn(b"/FontFile2", pdf)
             self.assertNotIn(b"/Subtype /Type3", pdf)
             snippet = (output / "reward_figure.tex").read_text()

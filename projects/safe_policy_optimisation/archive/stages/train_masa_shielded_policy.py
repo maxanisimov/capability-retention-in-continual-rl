@@ -16,7 +16,7 @@ from masa.prob_shield.prob_shield_wrapper_v2 import ProbShieldWrapperDisc
 from stable_baselines3 import PPO
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "pyproject.toml").is_file())
 
 from projects.safe_policy_optimisation.utils import io  # noqa: E402
 from projects.safe_policy_optimisation.utils.envs import env_kwargs_from_args  # noqa: E402

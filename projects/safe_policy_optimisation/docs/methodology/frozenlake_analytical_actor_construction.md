@@ -177,7 +177,7 @@ Recommended paper wording:
   `fit_base_policy` (line 841).
 - Current certificate storage: `core/provably_safe_policy_optimisation/adaptive_safe_ppo.py`,
   `shield_safe_behaviour_dataset` (line 174).
-- Historical FrozenLake distinction: `docs/stochastic_frozenlake128.md`,
+- Historical FrozenLake distinction: `archive/docs/stochastic_frozenlake128.md`,
   historical-result note and training configuration; archived `source_snapshot.zip`
   in `artifacts/.trash/frozenlake_goal_guided_20261007T214759Z/`.
 
