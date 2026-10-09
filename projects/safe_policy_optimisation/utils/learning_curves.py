@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ EXPLORATION_FIELDS = [
 EVALUATION_SUMMARY_FIELDS = [
     "eval_index",
     "timestep",
+    "training_wall_time_s",
+    "safety_enforcement_s",
     "episodes",
     "mean_total_reward",
     "min_total_reward",
@@ -103,6 +106,8 @@ class LearningCurveLogger:
         self.writer = SummaryWriter(log_dir=str(self.tensorboard_log_dir), flush_secs=10)
         self.cumulative_unsafe = 0
         self.cumulative_checked = 0
+        self._training_started_at: float | None = None
+        self._safety_seconds_provider: Callable[[], float] | None = None
 
         self.exploration_path = self.curve_dir / "exploration_unsafe_actions.csv"
         self._exploration_handle = self.exploration_path.open("w", newline="", encoding="utf-8")
@@ -123,6 +128,15 @@ class LearningCurveLogger:
             channel = _EvaluationChannel(curve_dir=self.curve_dir, variant=variant)
             self._channels[variant] = channel
         return channel
+
+    def start_timing(
+        self, safety_seconds_provider: Callable[[], float] | None = None
+    ) -> None:
+        """Start wall-clock reward-efficiency timing for subsequent evaluations."""
+
+        if self._training_started_at is None:
+            self._training_started_at = time.perf_counter()
+        self._safety_seconds_provider = safety_seconds_provider
 
     @property
     def eval_index(self) -> int:
@@ -217,6 +231,16 @@ class LearningCurveLogger:
         summary = {
             "eval_index": int(eval_index),
             "timestep": int(timestep),
+            "training_wall_time_s": (
+                float(time.perf_counter() - self._training_started_at)
+                if self._training_started_at is not None
+                else 0.0
+            ),
+            "safety_enforcement_s": (
+                float(self._safety_seconds_provider())
+                if self._safety_seconds_provider is not None
+                else 0.0
+            ),
             "episodes": int(len(episode_rows)),
             "mean_total_reward": float(np.mean(rewards)) if rewards.size else 0.0,
             "min_total_reward": float(np.min(rewards)) if rewards.size else 0.0,
@@ -326,7 +350,8 @@ def evaluate_shielded_total_rewards(
     episodes: int,
     seed: int,
     reward_threshold: float,
-    shield_mask: np.ndarray,
+    shield_mask: np.ndarray | None = None,
+    continuous_shield: Any | None = None,
 ) -> list[dict[str, float | int | bool]]:
     """Run deterministic episodes with the shield overriding unsafe actions.
 
@@ -343,6 +368,7 @@ def evaluate_shielded_total_rewards(
         seed=seed,
         reward_threshold=reward_threshold,
         shield_mask=shield_mask,
+        continuous_shield=continuous_shield,
         apply_shield=True,
     )
 
@@ -355,6 +381,7 @@ def evaluate_unshielded_total_rewards(
     seed: int,
     reward_threshold: float,
     shield_mask: np.ndarray | None = None,
+    continuous_shield: Any | None = None,
 ) -> list[dict[str, float | int | bool]]:
     """Run deterministic raw-policy episodes and return per-episode total rewards."""
 
@@ -365,6 +392,7 @@ def evaluate_unshielded_total_rewards(
         seed=seed,
         reward_threshold=reward_threshold,
         shield_mask=shield_mask,
+        continuous_shield=continuous_shield,
         apply_shield=False,
     )
 
@@ -377,16 +405,21 @@ def _evaluate_total_rewards(
     seed: int,
     reward_threshold: float,
     shield_mask: np.ndarray | None,
+    continuous_shield: Any | None,
     apply_shield: bool,
 ) -> list[dict[str, float | int | bool]]:
     """Shared rollout for the shielded and unshielded evaluation curves.
 
-    ``shield_mask`` is used to *count* unsafe proposed actions in both modes;
-    with ``apply_shield`` it additionally overrides them before stepping.
+    Exactly one optional shield representation may audit proposed actions:
+    ``shield_mask`` indexes discrete state ids, while ``continuous_shield``
+    receives the raw observation vector. With ``apply_shield`` it also replaces
+    unsafe proposals before stepping.
     """
 
-    if apply_shield and shield_mask is None:
-        raise ValueError("apply_shield=True requires a shield_mask.")
+    if shield_mask is not None and continuous_shield is not None:
+        raise ValueError("Provide either shield_mask or continuous_shield, not both.")
+    if apply_shield and shield_mask is None and continuous_shield is None:
+        raise ValueError("apply_shield=True requires a shield.")
     rng = np.random.default_rng(int(seed))
     env = env_factory()
     success_mode = success_mode_for_env(getattr(getattr(env, "spec", None), "id", None))
@@ -415,6 +448,16 @@ def _evaluate_total_rewards(
                         safe_actions = np.flatnonzero(shield[state])
                         if safe_actions.size:
                             action_int = int(rng.choice(safe_actions))
+                elif continuous_shield is not None:
+                    checked += 1
+                    proposed_is_safe = bool(
+                        continuous_shield.is_safe_action(obs, action_int)
+                    )
+                    unsafe += int(not proposed_is_safe)
+                    if apply_shield and not proposed_is_safe:
+                        action_int = int(
+                            continuous_shield.shield_action(obs, action_int)
+                        )
                 obs, reward, terminated, truncated, info = env.step(action_int)
                 infos.append(dict(info))
                 step_cost = state_cost(env, obs, info)
@@ -469,11 +512,14 @@ class UnshieldedRewardCurveCallback(BaseCallback):
         seed: int,
         reward_threshold: float,
         shield_mask: np.ndarray | None = None,
+        continuous_shield: Any | None = None,
         apply_shield: bool = False,
     ) -> None:
         super().__init__()
-        if apply_shield and shield_mask is None:
-            raise ValueError("apply_shield=True requires a shield_mask.")
+        if shield_mask is not None and continuous_shield is not None:
+            raise ValueError("Provide either shield_mask or continuous_shield, not both.")
+        if apply_shield and shield_mask is None and continuous_shield is None:
+            raise ValueError("apply_shield=True requires a shield.")
         self.env_factory = env_factory
         self.curve_logger = curve_logger
         self.eval_freq = int(eval_freq)
@@ -481,6 +527,7 @@ class UnshieldedRewardCurveCallback(BaseCallback):
         self.seed = int(seed)
         self.reward_threshold = float(reward_threshold)
         self.shield_mask = None if shield_mask is None else np.asarray(shield_mask) != 0
+        self.continuous_shield = continuous_shield
         self.apply_shield = bool(apply_shield)
         self.evaluations: list[dict[str, float | int]] = []
 
@@ -498,6 +545,7 @@ class UnshieldedRewardCurveCallback(BaseCallback):
             seed=self.seed + int(timestep),
             reward_threshold=self.reward_threshold,
             shield_mask=self.shield_mask,
+            continuous_shield=self.continuous_shield,
             apply_shield=self.apply_shield,
         )
         log = (

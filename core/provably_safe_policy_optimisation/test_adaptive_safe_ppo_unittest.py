@@ -12,6 +12,7 @@ import torch as th
 from provably_safe_policy_optimisation import AdaptiveSafePPO
 from provably_safe_policy_optimisation import adaptive_safe_ppo as asp
 from provably_safe_policy_optimisation.adaptive_safe_ppo import (
+    verifier_compatible_actor,
     calibrate_inverse_temperature,
     select_certified_box,
     shield_safe_behaviour_dataset,
@@ -83,7 +84,7 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         extra.setdefault("n_epochs", 1)
         extra.setdefault("learning_rate", 1e-6)
         # Most tests below exercise the historical verify-first mechanics.
-        # Canonical PSPO-adaptive defaults are covered by the stage parser tests.
+        # Canonical PSPO defaults are covered by the stage parser tests.
         extra.setdefault("rashomon_multi_label_mode", "any")
         extra.setdefault("rashomon_surrogate", "auto")
         extra.setdefault("directional_rashomon_growth", False)
@@ -165,6 +166,20 @@ class AdaptiveSafePPOTests(unittest.TestCase):
     def test_invalid_rashomon_surrogate_raises(self) -> None:
         with self.assertRaises(ValueError):
             self._make(rashomon_surrogate="unknown")
+
+    def test_invalid_rashomon_objective_raises(self) -> None:
+        with self.assertRaisesRegex(ValueError, "rashomon_objective"):
+            self._make(rashomon_objective="unknown")
+
+    def test_projection_distance_requires_directional_target(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires directional"):
+            self._make(rashomon_objective="projection_distance")
+        with self.assertRaisesRegex(ValueError, "stop_when_proposal_contained"):
+            self._make(
+                rashomon_objective="projection_distance",
+                directional_rashomon_growth=True,
+                stop_when_proposal_contained=False,
+            )
 
     def test_default_strategy_is_rashomon_project(self) -> None:
         model = self._make()
@@ -287,6 +302,32 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         diag = model.adaptive_diagnostics()
         self.assertEqual(diag["rashomon_surrogate"], "logsumexp")
         self.assertEqual(diag["rashomon_resolved_surrogate"], "logsumexp")
+
+    def test_projection_distance_is_forwarded_with_candidate_target(self) -> None:
+        record: list = []
+        self._patch_engine(record)
+        model = self._make(
+            rashomon_objective="projection_distance",
+            directional_rashomon_growth=True,
+            stop_when_proposal_contained=True,
+        )
+        with th.no_grad():
+            model._live_actor_params[0].reshape(-1)[0].add_(0.25)
+        candidate = [param.detach().clone() for param in model._live_actor_params]
+        model._verify_greedy_safe = lambda: False  # type: ignore[method-assign]
+
+        model._accept_or_project_candidate()
+
+        self.assertEqual(len(record), 1)
+        self.assertEqual(record[0]["kwargs"]["rashomon_objective"], "projection_distance")
+        for actual, expected in zip(
+            record[0]["kwargs"]["stop_target_params"], candidate
+        ):
+            self.assertTrue(th.equal(actual, expected))
+        self.assertEqual(
+            model.adaptive_diagnostics()["rashomon_objective"],
+            "projection_distance",
+        )
 
     def test_no_certified_box_falls_back_to_revert(self) -> None:
         record: list = []
@@ -436,3 +477,52 @@ class HelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerifierCompatibleActorTests(unittest.TestCase):
+    """Leading no-op Flatten layers block CROWN, which has no Flatten node."""
+
+    def _actor(self) -> th.nn.Sequential:
+        return th.nn.Sequential(
+            th.nn.Flatten(), th.nn.Linear(8, 4), th.nn.Tanh(), th.nn.Linear(4, 3)
+        )
+
+    def test_ibp_keeps_the_model_untouched(self) -> None:
+        actor = self._actor()
+        self.assertIs(
+            verifier_compatible_actor(actor, "IBP", input_ndim=2), actor
+        )
+
+    def test_crown_drops_the_identity_flatten(self) -> None:
+        actor = self._actor()
+        stripped = verifier_compatible_actor(actor, "CROWN", input_ndim=2)
+        self.assertNotIsInstance(stripped[0], th.nn.Flatten)
+        self.assertEqual(len(stripped), len(actor) - 1)
+
+    def test_stripped_actor_shares_parameters_with_the_original(self) -> None:
+        actor = self._actor()
+        stripped = verifier_compatible_actor(actor, "CROWN", input_ndim=2)
+        originals = list(actor.parameters())
+        self.assertEqual(len(list(stripped.parameters())), len(originals))
+        for a, b in zip(stripped.parameters(), originals):
+            self.assertIs(a, b)
+
+    def test_stripped_actor_is_numerically_identical(self) -> None:
+        actor = self._actor()
+        stripped = verifier_compatible_actor(actor, "CROWN", input_ndim=2)
+        x = th.randn(5, 8)
+        self.assertTrue(th.equal(actor(x), stripped(x)))
+
+    def test_non_flat_input_keeps_the_flatten(self) -> None:
+        # There the Flatten genuinely reshapes, so removing it would be unsound;
+        # the verifier must be allowed to reject the model instead.
+        actor = self._actor()
+        self.assertIs(
+            verifier_compatible_actor(actor, "CROWN", input_ndim=3), actor
+        )
+
+    def test_reshaping_flatten_is_kept(self) -> None:
+        actor = th.nn.Sequential(th.nn.Flatten(start_dim=0), th.nn.Linear(8, 3))
+        self.assertIs(
+            verifier_compatible_actor(actor, "CROWN", input_ndim=2), actor
+        )

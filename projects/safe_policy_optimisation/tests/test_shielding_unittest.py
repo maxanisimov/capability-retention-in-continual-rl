@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import csv
 import importlib
 import io
@@ -30,9 +31,14 @@ from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import
     make_safe_behaviour_payload,
 )
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
+    normalized_safe_action_entropies,
+    safe_action_entropy_loss,
+    safe_action_initialisation_diagnostics,
     safe_action_margin_loss,
     safe_action_logit_interval_analysis_from_bounds,
     safe_action_margins,
+    safe_action_uniformity_loss,
+    safe_unsafe_mass_cross_entropy_loss,
 )
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     calibrate_inverse_temperature as calibrate_rashomon_inverse_temperature,
@@ -55,6 +61,8 @@ from projects.safe_policy_optimisation.utils.episode_recording import (
 )
 from projects.safe_policy_optimisation.stages.train_ppo_shield import (
     load_shield_mask,
+    make_continuous_state_shield,
+    resolve_continuous_shield_name,
     validate_shield_for_env,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (
@@ -143,6 +151,29 @@ class GenericShieldedPolicyTests(unittest.TestCase):
             mask = load_shield_mask(path, source="action_risk", risk_threshold=0.0)
 
             self.assertTrue(np.array_equal(mask, np.array([[1, 0], [0, 1]])))
+
+    def test_continuous_shield_factory_auto_selects_and_applies_config(self) -> None:
+        shield = make_continuous_state_shield(
+            "auto",
+            "MountainCar-v0",
+            {"unsafe_max_position": -1.05},
+        )
+
+        self.assertEqual(shield.n_actions, 3)
+        self.assertAlmostEqual(shield.config.unsafe_max_position, -1.05)
+        self.assertAlmostEqual(shield.config.critical_min_position, -1.05)
+
+    def test_continuous_shield_factory_rejects_environment_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "designed for CartPole-v1"):
+            resolve_continuous_shield_name("cartpole", "MountainCar-v0")
+
+    def test_validate_continuous_shield_for_mountaincar(self) -> None:
+        env = gym.make("MountainCar-v0")
+        try:
+            shield = make_continuous_state_shield("auto", "MountainCar-v0")
+            validate_shield_for_env(shield, env)
+        finally:
+            env.close()
 
     def test_validate_shield_shape_mismatch_raises(self) -> None:
         env = make_minipacman_env(max_episode_steps=5)
@@ -294,6 +325,193 @@ class ShieldRashomonDatasetTests(unittest.TestCase):
         self.assertEqual(
             float(safe_action_margin_loss(logits, safe_actions, target_margin=1.0, mode="all").item()),
             5.0,
+        )
+
+    def test_safe_action_entropy_is_normalized_and_ignores_unsafe_logits(self) -> None:
+        safe_actions = torch.tensor(
+            [[1.0, 0.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        )
+        logits = torch.tensor(
+            [[2.0, -100.0, 2.0], [8.0, 0.0, 50.0], [10.0, -4.0, -10.0]],
+            requires_grad=True,
+        )
+
+        entropies, multi_safe = normalized_safe_action_entropies(logits, safe_actions)
+        loss = safe_action_entropy_loss(logits, safe_actions)
+        loss.backward()
+
+        self.assertAlmostEqual(float(entropies[0].item()), 1.0, places=6)
+        self.assertLess(float(entropies[1].item()), 0.01)
+        self.assertEqual(float(entropies[2].item()), 1.0)
+        self.assertEqual(multi_safe.tolist(), [True, True, False])
+        self.assertGreater(float(loss.item()), 0.49)
+        self.assertTrue(torch.isfinite(logits.grad).all())
+        self.assertEqual(float(logits.grad[0, 1].item()), 0.0)
+        self.assertEqual(float(logits.grad[1, 2].item()), 0.0)
+
+        changed_unsafe_logits = logits.detach().clone()
+        changed_unsafe_logits[0, 1] = 100.0
+        changed_unsafe_logits[1, 2] = -100.0
+        changed_entropies, _ = normalized_safe_action_entropies(
+            changed_unsafe_logits, safe_actions
+        )
+        torch.testing.assert_close(changed_entropies, entropies.detach())
+
+    def test_safe_unsafe_mass_cross_entropy_has_finite_directed_optimum(self) -> None:
+        safe_actions = torch.tensor([[1.0, 1.0, 0.0]])
+        at_target = torch.tensor([[0.4, 0.4, 0.2]]).log()
+        too_safe = torch.tensor([[0.475, 0.475, 0.05]]).log()
+        too_unsafe = torch.tensor([[0.3, 0.3, 0.4]]).log()
+
+        target_loss = safe_unsafe_mass_cross_entropy_loss(
+            at_target, safe_actions, unsafe_mass_target=0.2
+        )
+        too_safe_loss = safe_unsafe_mass_cross_entropy_loss(
+            too_safe, safe_actions, unsafe_mass_target=0.2
+        )
+        too_unsafe_loss = safe_unsafe_mass_cross_entropy_loss(
+            too_unsafe, safe_actions, unsafe_mass_target=0.2
+        )
+
+        self.assertLess(float(target_loss), float(too_safe_loss))
+        self.assertLess(float(target_loss), float(too_unsafe_loss))
+
+    def test_safe_action_uniformity_loss_is_zero_only_at_uniform_safe_mass(self) -> None:
+        safe_actions = torch.tensor([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+        uniform_logits = torch.tensor(
+            [[2.0, -100.0, 2.0], [100.0, -4.0, -100.0]], requires_grad=True
+        )
+        concentrated_logits = torch.tensor([[8.0, 500.0, 0.0]])
+
+        uniform_loss = safe_action_uniformity_loss(uniform_logits, safe_actions)
+        concentrated_loss = safe_action_uniformity_loss(
+            concentrated_logits, safe_actions[:1]
+        )
+        uniform_loss.backward()
+
+        self.assertAlmostEqual(float(uniform_loss.item()), 0.0, places=6)
+        self.assertGreater(float(concentrated_loss.item()), 1.0)
+        self.assertTrue(torch.isfinite(uniform_logits.grad).all())
+        self.assertEqual(float(uniform_logits.grad[0, 1].item()), 0.0)
+        self.assertEqual(float(uniform_logits.grad[1, 0].item()), 0.0)
+        self.assertEqual(float(uniform_logits.grad[1, 2].item()), 0.0)
+
+    def test_safe_mass_base_fit_uses_mass_and_uniformity_not_margin_target(self) -> None:
+        mask = np.asarray(
+            [[1, 1, 0], [0, 1, 1], [1, 0, 0], [1, 1, 0]],
+            dtype=np.float32,
+        )
+        payload, _metadata = make_safe_behaviour_payload(mask)
+        model = build_shield_rashomon_policy(
+            input_dim=payload["state"].shape[1],
+            n_actions=payload["actions"].shape[1],
+            hidden_dim=8,
+            n_hidden=1,
+        )
+
+        metrics = fit_shield_rashomon_policy(
+            model,
+            payload,
+            lr=3e-2,
+            max_epochs=500,
+            batch_size=4,
+            seed=0,
+            device="cpu",
+            direct_linear_init=False,
+            target_margin=100.0,
+            margin_mode="all",
+            initialisation_objective="safe_mass",
+            unsafe_mass_target=0.01,
+            max_unsafe_mass=0.02,
+            safe_action_uniformity_weight=1.0,
+            min_safe_action_entropy=0.95,
+        )
+
+        self.assertTrue(metrics["reached_target"])
+        self.assertEqual(metrics["initialisation_objective"], "safe_mass")
+        self.assertLess(metrics["final_min_all_margin"], 100.0)
+        self.assertLessEqual(metrics["final_max_unsafe_action_mass"], 0.02)
+        self.assertGreaterEqual(
+            metrics["final_normalized_safe_action_entropy_min"], 0.95
+        )
+
+    def test_entropy_enabled_base_fit_reaches_safety_margin_and_entropy_targets(self) -> None:
+        mask = np.asarray(
+            [[1, 1, 0], [0, 1, 1], [1, 0, 0], [1, 1, 0]],
+            dtype=np.float32,
+        )
+        payload, _metadata = make_safe_behaviour_payload(mask)
+        model = build_shield_rashomon_policy(
+            input_dim=payload["state"].shape[1],
+            n_actions=payload["actions"].shape[1],
+            hidden_dim=8,
+            n_hidden=1,
+        )
+
+        metrics = fit_shield_rashomon_policy(
+            model,
+            payload,
+            lr=3e-2,
+            max_epochs=2000,
+            batch_size=4,
+            seed=0,
+            device="cpu",
+            direct_linear_init=False,
+            target_margin=1.0,
+            margin_mode="all",
+            safe_action_entropy_weight=1.0,
+            min_safe_action_entropy=0.95,
+        )
+        diagnostics = safe_action_initialisation_diagnostics(
+            model, payload, device="cpu"
+        )
+
+        self.assertTrue(metrics["reached_target"])
+        self.assertGreaterEqual(metrics["final_min_all_margin"], 1.0)
+        self.assertGreaterEqual(
+            diagnostics["normalized_safe_action_entropy_min"], 0.95
+        )
+        self.assertEqual(metrics["safe_action_entropy_weight"], 1.0)
+
+    def test_zero_entropy_weight_preserves_legacy_base_fit(self) -> None:
+        mask = np.asarray([[1, 1, 0], [0, 1, 0], [1, 0, 1]], dtype=np.float32)
+        payload, _metadata = make_safe_behaviour_payload(mask)
+        torch.manual_seed(17)
+        legacy_model = build_shield_rashomon_policy(
+            input_dim=payload["state"].shape[1],
+            n_actions=payload["actions"].shape[1],
+            hidden_dim=4,
+            n_hidden=1,
+        )
+        explicit_zero_model = copy.deepcopy(legacy_model)
+        common = {
+            "lr": 1e-2,
+            "max_epochs": 3,
+            "batch_size": 2,
+            "seed": 5,
+            "device": "cpu",
+            "direct_linear_init": False,
+            "target_margin": 100.0,
+            "margin_mode": "all",
+        }
+
+        legacy_metrics = fit_shield_rashomon_policy(
+            legacy_model, payload, **common
+        )
+        explicit_zero_metrics = fit_shield_rashomon_policy(
+            explicit_zero_model,
+            payload,
+            safe_action_entropy_weight=0.0,
+            **common,
+        )
+
+        for legacy, explicit_zero in zip(
+            legacy_model.parameters(), explicit_zero_model.parameters()
+        ):
+            torch.testing.assert_close(legacy, explicit_zero, rtol=0.0, atol=0.0)
+        self.assertEqual(
+            legacy_metrics["final_min_margin"],
+            explicit_zero_metrics["final_min_margin"],
         )
 
     def test_safe_action_logit_analysis_separates_surrogate_from_argmax_diversity(self) -> None:

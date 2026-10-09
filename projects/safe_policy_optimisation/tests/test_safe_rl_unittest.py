@@ -17,6 +17,7 @@ import torch
 from projects.safe_policy_optimisation.utils.learning_curves import (
     CallableUnshieldedRewardCurveCallback,
     LearningCurveLogger,
+    evaluate_shielded_total_rewards,
     evaluate_unshielded_total_rewards,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (
@@ -133,6 +134,33 @@ class LearningCurveLoggerTests(unittest.TestCase):
         self.assertEqual(rows[0]["unsafe_proposed_action_count"], 1)
         self.assertEqual(rows[0]["unsafe_proposed_action_rate"], 0.5)
         self.assertEqual(rows[0]["shield_alignment_rate"], 0.5)
+
+    def test_shielded_reward_evaluation_supports_continuous_shield_api(self) -> None:
+        class OnlyZeroShield:
+            n_actions = 2
+
+            @staticmethod
+            def is_safe_action(state, action):  # type: ignore[no-untyped-def]
+                del state
+                return int(action) == 0
+
+            @staticmethod
+            def shield_action(state, action):  # type: ignore[no-untyped-def]
+                del state, action
+                return 0
+
+        rows = evaluate_shielded_total_rewards(
+            AlwaysOnePolicy(),
+            lambda: TwoStepEnv(),
+            episodes=1,
+            seed=0,
+            reward_threshold=0.0,
+            continuous_shield=OnlyZeroShield(),
+        )
+
+        self.assertEqual(rows[0]["total_reward"], 0.0)
+        self.assertEqual(rows[0]["proposed_action_checks"], 2)
+        self.assertEqual(rows[0]["unsafe_proposed_action_count"], 2)
 
     def test_learning_curve_logger_writes_tensorboard_and_csv_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

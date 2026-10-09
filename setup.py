@@ -12,6 +12,7 @@ setup(
             "abstract_gradient_training*",
             "barrier_tools*",
             "certified_continual_learning*",
+            "continuous_state_shields*",
             "configs*",
             "provably_safe_policy_optimisation*",
             "safe_rl_baselines*",

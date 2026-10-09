@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
 from collections.abc import Callable
+from typing import Literal
 
 import torch
 
 from abstract_gradient_training import interval_arithmetic
-from abstract_gradient_training.bounded_models import BoundedModel
-from abstract_gradient_training.bounded_models import nominal_modules
+from abstract_gradient_training.bounded_models import BoundedModel, nominal_modules
+from abstract_gradient_training.bounded_models.state_id_lookup import (
+    StateIdLookupLinear,
+    validate_point_state_id_interval,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +81,7 @@ class IntervalBoundedModel(BoundedModel):
                     torch.nn.Tanh,
                     torch.nn.Flatten,
                     torch.nn.Dropout,
+                    StateIdLookupLinear,
                 ),
             ):
                 raise ValueError(f"Unsupported module type in IBP: {type(module)}")
@@ -125,7 +129,17 @@ class IntervalBoundedModel(BoundedModel):
         for module, params_l, params_u in zip(
             self.modules, self._param_l, self._param_u
         ):
-            if isinstance(module, torch.nn.Linear):
+            if isinstance(module, StateIdLookupLinear):
+                state_ids = validate_point_state_id_interval(
+                    x_l, x_u, n_states=module.in_features
+                )
+                W_l, W_u = params_l[0], params_u[0]
+                x_l = W_l.index_select(1, state_ids).transpose(0, 1)
+                x_u = W_u.index_select(1, state_ids).transpose(0, 1)
+                if len(params_l) == 2:
+                    x_l = x_l + params_l[1]
+                    x_u = x_u + params_u[1]
+            elif isinstance(module, torch.nn.Linear):
                 W_l, W_u = params_l[0], params_u[0]
                 x_l, x_u = interval_arithmetic.propagate_matmul(
                     x_l,
@@ -225,7 +239,12 @@ class IntervalBoundedModel(BoundedModel):
             reversed(self._inter_l),
             reversed(self._inter_u),
         ):
-            if isinstance(module, torch.nn.Linear):
+            if isinstance(module, StateIdLookupLinear):
+                raise NotImplementedError(
+                    "StateIdLookupLinear supports bounded forward verification, "
+                    "but not AGT's dense per-sample bound_backward API."
+                )
+            elif isinstance(module, torch.nn.Linear):
                 # compute the gradient wrt the bias of the module
                 if module.bias is not None:
                     grads_params_l.append(dl_dy_l)

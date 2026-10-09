@@ -71,6 +71,12 @@ def propagate_matmul(
         H_l (torch.Tensor): Lower bound of the output tensor.
         H_u (torch.Tensor): Upper bound of the output tensor.
     """
+    row_indices = _point_onehot_row_indices(A_l, A_u, B_l)
+    if row_indices is not None:
+        # A is a point matrix of one-hot rows, so A @ [B_l, B_u] is a row lookup
+        # into B and the interval below is exact for every method.
+        validate_interval(B_l, B_u, msg="input interval B")
+        return B_l.index_select(0, row_indices), B_u.index_select(0, row_indices)
     validate_interval(A_l, A_u, msg="input interval A")
     validate_interval(B_l, B_u, msg="input interval B")
     if interval_matmul == "rump":
@@ -101,6 +107,24 @@ def propagate_matmul_rump(
         H_l (torch.Tensor): Lower bound of the output tensor.
         H_u (torch.Tensor): Upper bound of the output tensor.
     """
+    # A point (degenerate) operand has a radius of exactly zero, so the terms it
+    # appears in as a radius vanish. Dropping them is bit-identical to computing
+    # them for finite inputs -- (a + a) / 2 == a and (a - a) / 2 == 0 exactly --
+    # and saves two of the four matmuls plus the radius temporaries, which are
+    # the dominant cost when A is a wide batch of certificate inputs.
+    if torch.equal(A_l, A_u):
+        B_mu = (B_u + B_l) / 2
+        B_r = (B_u - B_l) / 2
+        H_mu = A_l @ B_mu
+        H_r = torch.abs(A_l) @ B_r
+        return H_mu - H_r, H_mu + H_r
+    if torch.equal(B_l, B_u):
+        A_mu = (A_u + A_l) / 2
+        A_r = (A_u - A_l) / 2
+        H_mu = A_mu @ B_l
+        H_r = A_r @ torch.abs(B_l)
+        return H_mu - H_r, H_mu + H_r
+
     A_mu = (A_u + A_l) / 2
     A_r = (A_u - A_l) / 2
     B_mu = (B_u + B_l) / 2
@@ -111,6 +135,64 @@ def propagate_matmul_rump(
     H_l = H_mu - H_r
     H_u = H_mu + H_r
     return H_l, H_u
+
+
+def _point_onehot_row_indices(
+    A_l: torch.Tensor, A_u: torch.Tensor, B_l: torch.Tensor
+) -> torch.Tensor | None:
+    """
+    Detect the case where A is a point matrix whose rows are one-hot vectors.
+
+    When A_l == A_u and every row of A holds exactly one entry equal to one (all
+    others exactly zero), row i of A @ B is row idx_i of B, so the interval
+    A @ [B_l, B_u] is exactly [B_l[idx], B_u[idx]] -- no arithmetic is performed
+    and no rounding occurs. This is the form the safety certificate takes for
+    tabular environments, where A is a batch of one-hot state encodings of width
+    |S|: the general matmul costs O(batch * |S| * out) in time and allocates
+    several batch x |S| temporaries, while the lookup is constant in |S|.
+
+    The test is exact rather than tolerance-based: a reduction such as a row sum
+    can round a small stray entry away and report a one-hot row that is not one,
+    which would silently drop that entry's contribution to the bound. The
+    non-zero entries are enumerated instead. `nonzero` returns them in row-major
+    order, so comparing the row coordinates against `arange` rejects both empty
+    rows and rows holding more than one non-zero, once a global count has capped
+    how much `nonzero` can allocate.
+
+    Detecting the case costs a scan of A, which is the same order as
+    materialising it and an order below the matmul it replaces. It is not
+    memoised: the certificate builds a fresh one-hot batch for each call, so
+    there is nothing for a cache keyed on the operands to recognise.
+
+    Args:
+        A_l (torch.Tensor): Lower bound of the matrix A.
+        A_u (torch.Tensor): Upper bound of the matrix A.
+        B_l (torch.Tensor): Lower bound of the matrix B, used to check shapes.
+
+    Returns:
+        torch.Tensor | None: The column index of each row's non-zero entry, or
+        None if A is not a point matrix of one-hot rows.
+    """
+    if A_l.ndim != 2 or B_l.ndim != 2:
+        return None
+    if A_l.shape != A_u.shape or A_l.shape[1] != B_l.shape[0]:
+        return None
+    if not A_l.is_floating_point() or A_l.dtype != B_l.dtype:
+        return None  # a matmul would reject mismatched dtypes; so must the lookup
+    if A_l is not A_u and not torch.equal(A_l, A_u):  # A must be a point
+        return None
+    # Count first: `nonzero` allocates two indices per non-zero entry, which for
+    # a dense point matrix would be twice the size of A itself.
+    if int(torch.count_nonzero(A_l)) != A_l.shape[0]:
+        return None
+    non_zero = A_l.nonzero()
+    rows, columns = non_zero[:, 0], non_zero[:, 1]
+    expected_rows = torch.arange(A_l.shape[0], device=A_l.device)
+    if rows.shape != expected_rows.shape or not torch.equal(rows, expected_rows):
+        return None
+    if not bool((A_l[rows, columns] == 1).all()):
+        return None
+    return columns.to(B_l.device)
 
 
 def propagate_matmul_nguyen(

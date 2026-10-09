@@ -25,14 +25,21 @@ _defaults:
   training: &training
     total_timesteps: 2000
     learning_rate: 0.0003
-    n_steps: 512
-    batch_size: 128
-    n_epochs: 4
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
     gamma: 0.99
+    gae_lambda: 0.95
+    clip_range: 0.2
+    max_grad_norm: 0.5
+    ent_coef: 0.0
+    vf_coef: 0.5
+    cost_gamma: 0.99
+    cost_gae_lambda: 0.95
   rashomon_set: &rashomon_set
     rashomon_n_iters: 2000
     rashomon_checkpoint: 100
-    rashomon_batch_size: 500
+    rashomon_batch_size: auto
     certificate_samples: 1000
     # Base-policy architecture; also sets the PSPO actor/critic so it
     # matches the [64, 64] MLP used by every baseline.

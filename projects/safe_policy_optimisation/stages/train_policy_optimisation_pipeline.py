@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import json
+import math
 import multiprocessing as mp
 import os
 import sys
@@ -21,9 +22,14 @@ from projects.safe_policy_optimisation.stages import (  # noqa: E402
     train_cpo,
     train_ppo,
     train_ppo_lagrangian,
-    train_pspo_adaptive,
-    train_pspo_precomputed,
     train_ppo_shield,
+    train_pspo,
+    train_pspo_precomputed,
+)
+from projects.safe_policy_optimisation.utils.cli import (  # noqa: E402
+    add_legacy_option,
+    add_ppo_hyperparameter_args,
+    resolve_legacy_options,
 )
 from projects.safe_policy_optimisation.utils.config import (  # noqa: E402
     PIPELINES_FILE,
@@ -46,11 +52,30 @@ from projects.safe_policy_optimisation.utils.cpu_allocation import (  # noqa: E4
     worker_thread_count,
 )
 from projects.safe_policy_optimisation.utils.io import write_json  # noqa: E402
+from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
+from projects.safe_policy_optimisation.utils.pspo_defaults import (  # noqa: E402
+    BC_INITIALISATION_OBJECTIVE,
+    BC_MARGIN_LOSS_WEIGHT,
+    BC_MARGIN_MODE,
+    BC_MAX_UNSAFE_MASS,
+    BC_MIN_SAFE_ACTION_ENTROPY,
+    BC_SAFE_ACTION_ENTROPY_WEIGHT,
+    BC_SAFE_ACTION_UNIFORMITY_WEIGHT,
+    BC_TARGET_MARGIN,
+    BC_UNSAFE_MASS_TARGET,
+    RASHOMON_MULTI_LABEL_MODE,
+    RASHOMON_N_ITERS,
+    RASHOMON_OBJECTIVE,
+    RASHOMON_SURROGATE,
+    environment_defaults,
+)
+from projects.safe_policy_optimisation.utils.rashomon import (  # noqa: E402
+    parse_rashomon_batch_size,
+)
 from projects.safe_policy_optimisation.utils.safe_rl import (  # noqa: E402
     ALGORITHM_NAMES,
     PPO_LAGRANGIAN_ALGORITHM_NAMES,
 )
-from projects.safe_policy_optimisation.utils.log import log_info  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = (
     REPO_ROOT
@@ -63,8 +88,12 @@ DEFAULT_PIPELINES_FILE = PIPELINES_FILE
 DEFAULT_TASKS_FILE = TASKS_FILE
 
 
-def _parse_stage_args(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
-    return parser.parse_args(argv)
+def _parse_stage_args(module: Any, argv: list[str]) -> argparse.Namespace:
+    if module is train_pspo:
+        # PSPO resolves environment-specific defaults and normalises
+        # --freq into its internal granularity/interval fields in parse_args().
+        return module.parse_args(argv)
+    return module.build_parser().parse_args(argv)
 
 
 def _env_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -81,7 +110,10 @@ def _env_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
     # always wins (setdefault), so callers can still override per-env.
     state_representation = getattr(args, "state_representation", "one_hot")
     env_kwargs.setdefault(
-        "observation_mode", "index" if state_representation == "one_hot" else "features"
+        "observation_mode",
+        "index"
+        if state_representation in {"one_hot", "state_id_lookup"}
+        else "features",
     )
     return env_kwargs
 
@@ -149,6 +181,18 @@ def _rashomon_artifacts_reusable(
         return False, f"invalid Rashomon summary metadata: expected object in {summary_path}"
 
     expected_bc_mode = str(getattr(args, "bc_margin_mode", "any"))
+    expected_initialisation_objective = str(
+        getattr(args, "bc_initialisation_objective", "margin")
+    )
+    expected_margin_loss_weight = float(
+        getattr(args, "bc_margin_loss_weight", BC_MARGIN_LOSS_WEIGHT)
+    )
+    expected_entropy_weight = float(
+        getattr(args, "bc_safe_action_entropy_weight", 0.0)
+    )
+    expected_min_entropy = float(
+        getattr(args, "bc_min_safe_action_entropy", 0.95)
+    )
     expected_multi_label_mode = str(getattr(args, "rashomon_multi_label_mode", "any"))
     expected_surrogate = str(getattr(args, "rashomon_surrogate", "auto"))
     expected_zonotope_rank = getattr(args, "zonotope_rank", None)
@@ -157,6 +201,13 @@ def _rashomon_artifacts_reusable(
     if not isinstance(base_policy_summary, dict) or not isinstance(rashomon_summary, dict):
         return False, f"invalid Rashomon summary metadata: expected dict sections in {summary_path}"
     actual_bc_mode = base_policy_summary.get("bc_margin_mode")
+    actual_initialisation_objective = base_policy_summary.get(
+        "initialisation_objective", "margin"
+    )
+    actual_margin_loss_weight = float(base_policy_summary.get("margin_loss_weight", 1.0))
+    actual_entropy_weight = float(
+        base_policy_summary.get("safe_action_entropy_weight", 0.0)
+    )
     actual_multi_label_mode = rashomon_summary.get("multi_label_mode")
     actual_surrogate = rashomon_summary.get("surrogate", "auto")
     actual_shape = rashomon_summary.get("safe_region_shape", "orthotope")
@@ -180,6 +231,70 @@ def _rashomon_artifacts_reusable(
             "bc_margin_mode mismatch: "
             f"requested {expected_bc_mode!r}, artifact has {actual_bc_mode!r}",
         )
+    if actual_initialisation_objective != expected_initialisation_objective:
+        return (
+            False,
+            "bc_initialisation_objective mismatch: "
+            f"requested {expected_initialisation_objective!r}, artifact has "
+            f"{actual_initialisation_objective!r}",
+        )
+    if not math.isclose(
+        actual_margin_loss_weight,
+        expected_margin_loss_weight,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        return (
+            False,
+            "bc_margin_loss_weight mismatch: "
+            f"requested {expected_margin_loss_weight!r}, artifact has "
+            f"{actual_margin_loss_weight!r}",
+        )
+    if expected_initialisation_objective == "safe_mass":
+        for argument_name, metadata_name, default in (
+            ("bc_unsafe_mass_target", "unsafe_mass_target", 0.01),
+            ("bc_max_unsafe_mass", "max_unsafe_mass", 0.02),
+            (
+                "bc_safe_action_uniformity_weight",
+                "safe_action_uniformity_weight",
+                1.0,
+            ),
+            ("bc_min_safe_action_entropy", "min_safe_action_entropy", 0.95),
+        ):
+            requested = float(getattr(args, argument_name, default))
+            actual = base_policy_summary.get(metadata_name)
+            if actual is None or not math.isclose(
+                float(actual), requested, rel_tol=0.0, abs_tol=1e-12
+            ):
+                return (
+                    False,
+                    f"{argument_name} mismatch: requested {requested!r}, "
+                    f"artifact has {actual!r}",
+                )
+    if not math.isclose(
+        actual_entropy_weight,
+        expected_entropy_weight,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        return (
+            False,
+            "bc_safe_action_entropy_weight mismatch: "
+            f"requested {expected_entropy_weight!r}, artifact has {actual_entropy_weight!r}",
+        )
+    if expected_entropy_weight > 0.0:
+        actual_min_entropy = base_policy_summary.get("min_safe_action_entropy")
+        if actual_min_entropy is None or not math.isclose(
+            float(actual_min_entropy),
+            expected_min_entropy,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            return (
+                False,
+                "bc_min_safe_action_entropy mismatch: "
+                f"requested {expected_min_entropy!r}, artifact has {actual_min_entropy!r}",
+            )
     if actual_multi_label_mode != expected_multi_label_mode:
         return (
             False,
@@ -362,39 +477,55 @@ def build_parser() -> argparse.ArgumentParser:
         default=100_000,
         help="Shared training budget for every method before success-based early stopping.",
     )
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--n-steps", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--n-epochs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--clip-range", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.0)
-    parser.add_argument("--vf-coef", type=float, default=0.5)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    add_ppo_hyperparameter_args(parser)
     parser.add_argument("--cost-gamma", type=float, default=0.99)
     parser.add_argument("--cost-gae-lambda", type=float, default=0.95)
     parser.add_argument("--lagrangian-multiplier-init", type=float, default=0.0)
     parser.add_argument("--rashomon-n-iters", type=int, default=2000)
     parser.add_argument(
-        "--adaptive-rashomon-n-iters",
+        "--pspo-rashomon-n-iters",
+        dest="adaptive_rashomon_n_iters",
+        metavar="PSPO_RASHOMON_N_ITERS",
         type=int,
-        default=100,
-        help="Optimization budget of each on-demand Rashomon-set computation in PSPO "
-        "(adaptive), forwarded to train_pspo_adaptive.py's --rashomon-n-iters. "
+        default=RASHOMON_N_ITERS,
+        help="Optimization budget of each on-demand Rashomon-set computation in "
+        "PSPO, forwarded to train_pspo.py's --rashomon-n-iters. "
         "Independent of --rashomon-n-iters, which only sizes the one-off box built "
         "for PSPO (precomputed).",
     )
+    add_legacy_option(
+        parser,
+        "--adaptive-rashomon-n-iters",
+        "adaptive_rashomon_n_iters",
+        type=int,
+    )
     parser.add_argument("--rashomon-checkpoint", type=int, default=100)
-    parser.add_argument("--rashomon-batch-size", type=int, default=500)
+    parser.add_argument(
+        "--rashomon-batch-size",
+        type=parse_rashomon_batch_size,
+        default="auto",
+        help=(
+            "Safe-behaviour optimisation batch size. 'auto' (default) uses the "
+            "entire safe-behaviour demonstration dataset."
+        ),
+    )
     parser.add_argument("--certificate-samples", type=int, default=1000)
+    parser.add_argument(
+        "--bc-initialisation-objective",
+        choices=("margin", "safe_mass"),
+        default=BC_INITIALISATION_OBJECTIVE,
+        help=(
+            "Base-policy objective: legacy logit margin, or aggregate safe/unsafe "
+            "probability mass with uniform safe actions."
+        ),
+    )
     parser.add_argument(
         "--bc-target-margin",
         type=float,
-        default=10.0,
+        default=BC_TARGET_MARGIN,
         help=(
             "Minimum required gap between the best safe and best unsafe logit "
-            "in every state of the BC-fitted base policy (see "
+            "in every state of a margin-fitted base policy (see "
             "compute_shield_rashomon_set.py). Also sets --linear-init-margin, "
             "so the closed-form linear initialiser and the gradient path (used "
             "whenever the base policy has hidden layers) target the same "
@@ -404,9 +535,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--bc-margin-loss-weight",
+        type=compute_shield_rashomon_set.parse_nonnegative_finite_float,
+        default=BC_MARGIN_LOSS_WEIGHT,
+        help="Weight of the all-safe logit-margin hinge; 0 selects CE-only fitting.",
+    )
+    parser.add_argument(
         "--bc-margin-mode",
         choices=("any", "all"),
-        default="any",
+        default=BC_MARGIN_MODE,
         help=(
             "BC safety-margin semantics for the base policy used to compute the "
             "Rashomon set. 'any' keeps the historical criterion that at least "
@@ -415,9 +552,45 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--bc-safe-action-entropy-weight",
+        type=compute_shield_rashomon_set.parse_nonnegative_finite_float,
+        default=BC_SAFE_ACTION_ENTROPY_WEIGHT,
+        help=(
+            "Weight of the safe-action conditional-entropy regularizer used to "
+            "fit the PSPO base policy. Enabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--bc-min-safe-action-entropy",
+        type=compute_shield_rashomon_set.parse_unit_interval_float,
+        default=BC_MIN_SAFE_ACTION_ENTROPY,
+        help=(
+            "Required minimum normalized safe-action entropy when the entropy "
+            "regularizer is enabled."
+        ),
+    )
+    parser.add_argument(
+        "--bc-unsafe-mass-target",
+        type=compute_shield_rashomon_set.parse_unsafe_mass_target,
+        default=BC_UNSAFE_MASS_TARGET,
+        help="Target aggregate unsafe probability mass for safe_mass initialisation.",
+    )
+    parser.add_argument(
+        "--bc-max-unsafe-mass",
+        type=compute_shield_rashomon_set.parse_max_unsafe_mass,
+        default=BC_MAX_UNSAFE_MASS,
+        help="Maximum per-state unsafe mass used by the safe_mass stopping rule.",
+    )
+    parser.add_argument(
+        "--bc-safe-action-uniformity-weight",
+        type=compute_shield_rashomon_set.parse_nonnegative_finite_float,
+        default=BC_SAFE_ACTION_UNIFORMITY_WEIGHT,
+        help="Weight of the uniform-safe-action KL term for safe_mass initialisation.",
+    )
+    parser.add_argument(
         "--rashomon-multi-label-mode",
         choices=("any", "all"),
-        default="any",
+        default=RASHOMON_MULTI_LABEL_MODE,
         help=(
             "Admissible-set certificate/surrogate used for the Rashomon safe "
             "parameter set. 'any' requires at least one safe action logit to "
@@ -428,11 +601,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rashomon-surrogate",
         choices=("auto", "probability", "logsumexp"),
-        default="auto",
+        default=RASHOMON_SURROGATE,
         help=(
             "Soft constraint used for Rashomon-set growth. 'auto' preserves the "
             "historical per-mode formula; 'logsumexp' uses LSE for both modes."
         ),
+    )
+    parser.add_argument(
+        "--pspo-rashomon-objective",
+        dest="adaptive_rashomon_objective",
+        choices=("weighted_width", "projection_distance"),
+        default=RASHOMON_OBJECTIVE,
+        help=(
+            "Adaptive region-growth objective used only by PSPO. "
+            "'projection_distance' prioritizes carrying each reward-driven PPO "
+            "proposal into the next certified region."
+        ),
+    )
+    add_legacy_option(
+        parser,
+        "--adaptive-rashomon-objective",
+        "adaptive_rashomon_objective",
+        choices=("weighted_width", "projection_distance"),
     )
     parser.add_argument("--safe-region-shape", choices=("orthotope", "zonotope"), default="orthotope")
     parser.add_argument(
@@ -446,11 +636,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument(
         "--state-representation",
-        choices=("features", "one_hot"),
+        choices=("features", "one_hot", "state_id_lookup"),
         default="one_hot",
         help=(
             "Observation representation for every method: one-hot/index "
-            "(default) or decoded features. Drives both the actual env "
+            "(default), sparse state-ID lookup, or decoded features. Drives both the actual env "
             "observation (via env_kwargs['observation_mode'], unless "
             "explicitly overridden in --env-kwargs) and PSPO's BC-fitting "
             "representation, so all methods stay consistent with each other."
@@ -533,18 +723,20 @@ def build_parser() -> argparse.ArgumentParser:
             "Skip every non-PSPO method: vanilla/unshielded PPO, "
             "PPO-Lagrangian/PPO-PID-Lagrangian, CPO, and PPO-Shield. Makes "
             "--skip-ppo-policy and --skip-shielded-policy redundant (but "
-            "harmless) alongside it; PSPO (precomputed and adaptive) are "
-            "unaffected - use --skip-rashomon-policy / "
-            "--skip-rashomon-adaptive-policy for those."
+            "harmless) alongside it; PSPO and PSPO precomputed are "
+            "unaffected - use --skip-pspo-policy / "
+            "--skip-rashomon-policy for those."
         ),
     )
     parser.add_argument("--skip-shielded-policy", action="store_true")
     parser.add_argument("--skip-rashomon-policy", action="store_true")
     parser.add_argument(
+        "--skip-pspo-policy",
         "--skip-rashomon-adaptive-policy",
+        dest="skip_pspo_policy",
         action="store_true",
         help=(
-            "Skip PSPO (adaptive): shares the same base policy/Rashomon-set "
+            "Skip PSPO: shares the same base policy/Rashomon-set "
             "dependency as --skip-rashomon-policy (PSPO precomputed), but "
             "computes Rashomon sets on-demand per policy update instead of "
             "training against one fixed precomputed box."
@@ -560,6 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
             "cpo",
             "shielded",
             "rashomon",
+            "pspo",
             "rashomon_adaptive",
         ),
         default=[],
@@ -612,7 +805,7 @@ def _policy_optimisation_method_count(args: argparse.Namespace) -> int:
         count += 1
     if not args.skip_rashomon_policy:
         count += 1
-    if not args.skip_rashomon_adaptive_policy:
+    if not args.skip_pspo_policy:
         count += 1
     return count
 
@@ -624,7 +817,7 @@ def _independent_stage_slot_count(args: argparse.Namespace) -> int:
         + int(_cpo_enabled(args))
         + int(not _shielded_policy_skipped(args))
         + int(not args.skip_rashomon_policy)
-        + int(not args.skip_rashomon_adaptive_policy)
+        + int(not args.skip_pspo_policy)
     )
 
 
@@ -704,7 +897,8 @@ def _stage_module(stage: str) -> Any:
         "ppo_shield": train_ppo_shield,
         "rashomon_set": compute_shield_rashomon_set,
         "rashomon_policy": train_pspo_precomputed,
-        "rashomon_adaptive_policy": train_pspo_adaptive,
+        "pspo_policy": train_pspo,
+        "rashomon_adaptive_policy": train_pspo,
     }
     return modules[stage]
 
@@ -719,7 +913,7 @@ def _run_stage_worker(job: dict[str, Any]) -> dict[str, Any]:
         with contextlib.redirect_stdout(log_handle), contextlib.redirect_stderr(log_handle):
             log_info(f"Starting stage {job['stage']} on CPU ids {applied_cpu_ids}")
             module = _stage_module(str(job["stage"]))
-            stage_args = _parse_stage_args(module.build_parser(), list(job["argv"]))
+            stage_args = _parse_stage_args(module, list(job["argv"]))
             summary = module.run(stage_args)
             log_info(f"Finished stage {job['stage']}")
     finished_at = time.time()
@@ -745,7 +939,7 @@ def _run_stage_inline(
     _configure_worker_threads(torch_num_threads)
     started_at = time.time()
     module = _stage_module(stage)
-    stage_args = _parse_stage_args(module.build_parser(), argv)
+    stage_args = _parse_stage_args(module, argv)
     summary = module.run(stage_args)
     finished_at = time.time()
     return {
@@ -1034,15 +1228,28 @@ def _rashomon_set_argv(
             str(getattr(args, "growth_method", "IBP")),
             "--certification-method",
             str(getattr(args, "certification_method", "IBP")),
-            # Sets both the closed-form linear initialiser's target and the
-            # gradient path's target, so they stay matched (see --bc-target-margin
-            # help text).
+            # In margin mode this keeps the closed-form and gradient targets
+            # matched. In safe_mass mode both values are diagnostic only.
             "--bc-target-margin",
             str(getattr(args, "bc_target_margin", 10.0)),
+            "--bc-margin-loss-weight",
+            str(getattr(args, "bc_margin_loss_weight", BC_MARGIN_LOSS_WEIGHT)),
             "--linear-init-margin",
             str(getattr(args, "bc_target_margin", 10.0)),
             "--bc-margin-mode",
             str(getattr(args, "bc_margin_mode", "any")),
+            "--bc-initialisation-objective",
+            str(getattr(args, "bc_initialisation_objective", "margin")),
+            "--bc-safe-action-entropy-weight",
+            str(getattr(args, "bc_safe_action_entropy_weight", 0.0)),
+            "--bc-min-safe-action-entropy",
+            str(getattr(args, "bc_min_safe_action_entropy", 0.95)),
+            "--bc-unsafe-mass-target",
+            str(getattr(args, "bc_unsafe_mass_target", 0.01)),
+            "--bc-max-unsafe-mass",
+            str(getattr(args, "bc_max_unsafe_mass", 0.02)),
+            "--bc-safe-action-uniformity-weight",
+            str(getattr(args, "bc_safe_action_uniformity_weight", 1.0)),
             "--rashomon-multi-label-mode",
             str(getattr(args, "rashomon_multi_label_mode", "any")),
             "--rashomon-surrogate",
@@ -1138,26 +1345,28 @@ def _rashomon_policy_argv(
     return rashomon_policy_argv
 
 
-def _rashomon_adaptive_argv(
+def _pspo_argv(
     args: argparse.Namespace,
     run_dir: Path,
     shield_path: Path,
     base_policy_path: Path,
     env_kwargs: str,
 ) -> list[str]:
-    """PSPO (adaptive): shares the base policy built by the Rashomon-set stage
-    with PSPO (precomputed), but verifies and, if needed, corrects each policy
+    """PSPO shares the base policy built by the Rashomon-set stage with PSPO
+    precomputed, but verifies and, if needed, corrects each policy
     update on-demand instead of training against one fixed precomputed box.
     Adaptive-specific knobs (granularity, unsafe-update fallback) are left at
-    train_pspo_adaptive.py's own defaults - only the training hyperparameters
+    train_pspo.py's own defaults - only the training hyperparameters
     shared with every other method here, plus the on-demand Rashomon budget
-    (--adaptive-rashomon-n-iters), are forwarded.
+    (--pspo-rashomon-n-iters), are forwarded.
     """
-    rashomon_adaptive_argv = [
+    pspo_argv = [
         "--output-dir",
         str(run_dir),
         "--run-id",
-        "rashomon_adaptive_policy",
+        "pspo_policy",
+        "--freq",
+        environment_defaults(args.env_id).frequency,
         "--base-policy-path",
         str(base_policy_path),
         "--shield-path",
@@ -1214,20 +1423,23 @@ def _rashomon_adaptive_argv(
         str(getattr(args, "rashomon_multi_label_mode", "any")),
         "--rashomon-surrogate",
         str(getattr(args, "rashomon_surrogate", "auto")),
+        "--rashomon-objective",
+        str(getattr(args, "adaptive_rashomon_objective", "weighted_width")),
         "--safe-region-shape",
         str(getattr(args, "safe_region_shape", "orthotope")),
     ]
-    _append_optional_arg(rashomon_adaptive_argv, "--zonotope-rank", getattr(args, "zonotope_rank", None))
-    _append_monitoring_args(rashomon_adaptive_argv, args, run_dir, "rashomon_adaptive_policy")
-    _append_optional_arg(rashomon_adaptive_argv, "--max-episode-steps", args.max_episode_steps)
-    return rashomon_adaptive_argv
+    _append_optional_arg(pspo_argv, "--zonotope-rank", getattr(args, "zonotope_rank", None))
+    _append_monitoring_args(pspo_argv, args, run_dir, "pspo_policy")
+    _append_optional_arg(pspo_argv, "--max-episode-steps", args.max_episode_steps)
+    return pspo_argv
 
 
 _SKIP_METHOD_FLAGS: dict[str, str] = {
     "ppo": "skip_ppo_policy",
     "shielded": "skip_shielded_policy",
     "rashomon": "skip_rashomon_policy",
-    "rashomon_adaptive": "skip_rashomon_adaptive_policy",
+    "pspo": "skip_pspo_policy",
+    "rashomon_adaptive": "skip_pspo_policy",
 }
 _SKIP_METHOD_ALGORITHMS: frozenset[str] = frozenset({"ppo_lagrangian", "ppo_pid_lagrangian", "cpo"})
 
@@ -1364,6 +1576,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "cost_gae_lambda": float(args.cost_gae_lambda),
             "lagrangian_multiplier_init": float(args.lagrangian_multiplier_init),
         },
+        "base_policy_initialisation": {
+            "objective": str(getattr(args, "bc_initialisation_objective", "margin")),
+            "bc_margin_mode": str(args.bc_margin_mode),
+            "bc_target_margin": float(args.bc_target_margin),
+            "bc_margin_loss_weight": float(args.bc_margin_loss_weight),
+            "unsafe_mass_target": float(getattr(args, "bc_unsafe_mass_target", 0.01)),
+            "max_unsafe_mass": float(getattr(args, "bc_max_unsafe_mass", 0.02)),
+            "safe_action_uniformity_weight": float(
+                getattr(args, "bc_safe_action_uniformity_weight", 1.0)
+            ),
+            "safe_action_entropy_weight": float(args.bc_safe_action_entropy_weight),
+            "min_safe_action_entropy": float(args.bc_min_safe_action_entropy),
+        },
         "early_stop_eval_freq": int(args.early_stop_eval_freq),
         "early_stop_eval_episodes": int(args.early_stop_eval_episodes),
         "early_stop_success_rate": float(args.early_stop_success_rate),
@@ -1377,6 +1602,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "rashomon_evaluation_policy": args.rashomon_evaluation_policy,
         "safe_region_shape": args.safe_region_shape,
         "rashomon_surrogate": args.rashomon_surrogate,
+        "adaptive_rashomon_objective": args.adaptive_rashomon_objective,
         "zonotope_rank": args.zonotope_rank,
         "shield_path": str(shield_path),
         "stages": {},
@@ -1432,15 +1658,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "rashomon_dir": Path(rashomon_dir),
                     }
                 )
-            if not args.skip_rashomon_adaptive_policy:
+            if not args.skip_pspo_policy:
                 pending_specs.append(
                     {
-                        "stage": "rashomon_adaptive_policy",
+                        "stage": "pspo_policy",
                         "cpu_count": 1,
                         "rashomon_dir": Path(rashomon_dir),
                     }
                 )
-        elif not args.skip_rashomon_policy or not args.skip_rashomon_adaptive_policy:
+        elif not args.skip_rashomon_policy or not args.skip_pspo_policy:
             rashomon_argv, _rashomon_output_dir, _rashomon_run_id = _rashomon_set_argv(
                 args,
                 run_dir,
@@ -1518,10 +1744,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     torch_num_threads=args.torch_num_threads,
                     cpu_ids=assigned_cpu_ids,
                 )
-            if stage == "rashomon_adaptive_policy":
+            if stage == "pspo_policy":
                 return _stage_job(
                     stage=stage,
-                    argv=_rashomon_adaptive_argv(
+                    argv=_pspo_argv(
                         args,
                         run_dir,
                         shield_path,
@@ -1597,11 +1823,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                         "rashomon_dir": Path(rashomon_dir),
                                     },
                                 )
-                            if not args.skip_rashomon_adaptive_policy:
+                            if not args.skip_pspo_policy:
                                 pending_specs.insert(
                                     0,
                                     {
-                                        "stage": "rashomon_adaptive_policy",
+                                        "stage": "pspo_policy",
                                         "cpu_count": 1,
                                         "rashomon_dir": Path(rashomon_dir),
                                     },
@@ -1615,10 +1841,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                                     "evaluation_policy": args.rashomon_evaluation_policy,
                                 },
                             )
-                        elif stage == "rashomon_adaptive_policy":
+                        elif stage == "pspo_policy":
                             record_stage(
                                 stage_result,
-                                run_path=run_dir / "rashomon_adaptive_policy",
+                                run_path=run_dir / "pspo_policy",
                                 extra={
                                     "early_stop_eval_policy": "unshielded",
                                     "evaluation_policy": args.rashomon_evaluation_policy,
@@ -1677,7 +1903,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         if (
             not rashomon_artifacts_reusable
-            and (not args.skip_rashomon_policy or not args.skip_rashomon_adaptive_policy)
+            and (not args.skip_rashomon_policy or not args.skip_pspo_policy)
         ):
             rashomon_argv, _rashomon_output_dir, _rashomon_run_id = _rashomon_set_argv(
                 args,
@@ -1719,20 +1945,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 },
             )
 
-        if not args.skip_rashomon_adaptive_policy:
+        if not args.skip_pspo_policy:
             if rashomon_dir is None:
                 raise RuntimeError("Rashomon directory was not created or provided.")
-            rashomon_adaptive_result = _run_stage_inline(
-                "rashomon_adaptive_policy",
-                _rashomon_adaptive_argv(
+            pspo_result = _run_stage_inline(
+                "pspo_policy",
+                _pspo_argv(
                     args, run_dir, shield_path, _base_policy_path(Path(rashomon_dir)), env_kwargs,
                 ),
                 torch_num_threads=args.torch_num_threads,
                 cpu_ids=list(cpu_ids[:1]),
             )
             record_stage(
-                rashomon_adaptive_result,
-                run_path=run_dir / "rashomon_adaptive_policy",
+                pspo_result,
+                run_path=run_dir / "pspo_policy",
                 extra={
                     "early_stop_eval_policy": "unshielded",
                     "evaluation_policy": args.rashomon_evaluation_policy,
@@ -1747,9 +1973,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return summary
 
 
+PSPO_LEGACY_OPTIONS = (
+    (
+        "--adaptive-rashomon-n-iters",
+        "--pspo-rashomon-n-iters",
+        "adaptive_rashomon_n_iters",
+    ),
+    (
+        "--adaptive-rashomon-objective",
+        "--pspo-rashomon-objective",
+        "adaptive_rashomon_objective",
+    ),
+)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse pipeline arguments, folding in deprecated ``--adaptive-*`` spellings."""
+
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    args = parser.parse_args(raw_argv)
+    return resolve_legacy_options(parser, args, raw_argv, PSPO_LEGACY_OPTIONS)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = sys.argv[1:] if argv is None else list(argv)
-    args = build_parser().parse_args(raw_argv)
+    args = parse_args(raw_argv)
     args = apply_training_settings(args, explicit_flags=_cli_supplied_flags(raw_argv))
     run(args)
     return 0

@@ -36,7 +36,7 @@ def bound_forward_pass(
     model: torch.nn.Sequential,
     generators: torch.Tensor,
     coefficients: IntervalTensor,
-    inputs: torch.Tensor,
+    inputs: torch.Tensor | IntervalTensor,
     use_zonotopes: bool = True,
 ) -> IntervalTensor:
     """
@@ -46,7 +46,8 @@ def bound_forward_pass(
         model (torch.nn.Sequential): The neural network model (used as the center of the zonotopes).
         generators (torch.Tensor): The generators of the zonotope over parameter space.
         coefficients (IntervalTensor): The coefficients of the zonotope.
-        inputs (torch.Tensor): The input tensor to the model.
+        inputs (torch.Tensor): The input tensor to the model. An IntervalTensor may be passed
+            instead to certify over input boxes rather than points (continuous shields).
         use_zonotopes (bool): Whether to use zonotope verification. If False, uses interval tensors.
 
     Returns:
@@ -64,7 +65,7 @@ def bound_forward_pass(
         parameters = [p.concretize() for p in parameters]
 
     # Pass the input through the zonotope representation of the network
-    x = IntervalTensor(inputs)
+    x = inputs if isinstance(inputs, IntervalTensor) else IntervalTensor(inputs)
     for layer in model:
         if isinstance(layer, torch.nn.Linear):
             w, b = parameters.pop(0), parameters.pop(0)

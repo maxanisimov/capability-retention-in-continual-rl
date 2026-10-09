@@ -84,21 +84,21 @@ PAPER_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs
   projects/safe_policy_optimisation/scripts/run_seed_experiments.py
 ```
 
-Run canonical region-first PSPO adaptive with:
+Run canonical region-first PSPO with:
 
 ```bash
 ENVS=bridge_crossing_v2 \
 SEEDS=0,1,2,3,4,5,6,7,8,9 \
 ADAPTIVE_FREQ=update \
-ADAPTIVE_N_ITERS=100 \
-ADAPTIVE_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_adaptive_bridge_v2 \
+RASHOMON_N_ITERS=100 \
+PSPO_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_bridge_v2 \
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_adaptive_seed_experiments.py
+  projects/safe_policy_optimisation/scripts/run_pspo_seed_experiments.py
 ```
 
 See
 [`projects/safe_policy_optimisation/README.md`](projects/safe_policy_optimisation/README.md)
-for method groups, supported environments, adaptive modes, CPU controls,
+for method groups, supported environments, PSPO modes, CPU controls,
 specialised architecture launchers, output layout, and smoke-test commands.
 
 ## Notes

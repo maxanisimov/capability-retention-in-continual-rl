@@ -43,6 +43,18 @@ class SafeInitReport:
     all_certified: bool | None = None
 
 
+@dataclasses.dataclass
+class IntervalSafeInitReport:
+    """Outcome of sample-free optimization over complete input intervals."""
+
+    epochs: int
+    certificate_checks: int
+    initial_ibp_margin: float
+    final_ibp_margin: float
+    certified_fraction: float
+    all_certified: bool
+
+
 def _ibp_bounds(seq: nn.Sequential, x_l: th.Tensor, x_u: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
     """Differentiable interval bound propagation through a Linear/ReLU/Tanh/Flatten net."""
     lower, upper = x_l, x_u
@@ -144,6 +156,103 @@ def certified_refine(
         loss.backward()
         optimizer.step()
     return max_epochs
+
+
+def refine_intervals_until_certified(
+    seq: nn.Sequential,
+    x_l: th.Tensor,
+    x_u: th.Tensor,
+    safe_mask: th.Tensor,
+    params: Sequence[th.nn.Parameter],
+    *,
+    lr: float,
+    max_epochs: int,
+    target_margin: float = 0.1,
+    certification_method: str = "IBP",
+) -> IntervalSafeInitReport:
+    """Optimize complete input boxes until their greedy actions are certified.
+
+    No observations are sampled.  ``x_l`` and ``x_u`` describe every input
+    box, and the differentiable loss is the hinge on each box's sound IBP
+    margin.  The authoritative verifier is consulted after the initial policy
+    and after every optimizer step.  A positive ``target_margin`` is required
+    in addition to a pass so the saved policy is not balanced on an argmax tie.
+
+    Raises
+    ------
+    RuntimeError
+        If the requested certificate is not obtained within ``max_epochs``.
+    """
+
+    if x_l.shape != x_u.shape:
+        raise ValueError(
+            f"x_l and x_u must have the same shape; got {x_l.shape} and {x_u.shape}."
+        )
+    if x_l.ndim < 2 or x_l.shape[0] == 0:
+        raise ValueError("At least one batched input interval is required.")
+    if bool((x_l > x_u).any().item()):
+        raise ValueError("Every input-interval lower bound must be <= its upper bound.")
+    if safe_mask.ndim != 2 or safe_mask.shape[0] != x_l.shape[0]:
+        raise ValueError(
+            "safe_mask must have shape (n_intervals, n_actions); got "
+            f"{safe_mask.shape} for {x_l.shape[0]} intervals."
+        )
+    if not bool(safe_mask.bool().any(dim=1).all().item()):
+        raise ValueError("Every input interval must admit at least one action.")
+    if lr <= 0:
+        raise ValueError("lr must be positive.")
+    if max_epochs < 0:
+        raise ValueError("max_epochs must be non-negative.")
+    if target_margin <= 0:
+        raise ValueError("target_margin must be positive.")
+
+    trainable = list(params)
+    if not trainable:
+        raise ValueError("At least one trainable policy parameter is required.")
+    optimizer = th.optim.Adam(trainable, lr=lr)
+    safe_mask = safe_mask.to(device=x_l.device, dtype=th.bool)
+
+    initial_margin = float(
+        _worst_case_margin(seq, x_l, x_u, safe_mask).min().detach().cpu().item()
+    )
+    certificate_checks = 0
+    last_fraction = 0.0
+    last_certified = False
+
+    for epoch in range(max_epochs + 1):
+        margin = _worst_case_margin(seq, x_l, x_u, safe_mask)
+        minimum_margin = float(margin.min().detach().cpu().item())
+        last_fraction, last_certified = certify_with_verifier(
+            seq,
+            x_l,
+            x_u,
+            safe_mask,
+            method=certification_method,
+        )
+        certificate_checks += 1
+        if last_certified and minimum_margin >= target_margin:
+            return IntervalSafeInitReport(
+                epochs=epoch,
+                certificate_checks=certificate_checks,
+                initial_ibp_margin=initial_margin,
+                final_ibp_margin=minimum_margin,
+                certified_fraction=last_fraction,
+                all_certified=True,
+            )
+        if epoch == max_epochs:
+            break
+
+        loss = F.relu(float(target_margin) - margin).sum()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    raise RuntimeError(
+        "Interval-safe initialization failed to certify every input box after "
+        f"{max_epochs} epochs (certified_fraction={last_fraction:.3f}, "
+        f"final_ibp_margin={minimum_margin:.6f}, "
+        f"target_margin={target_margin:.6f})."
+    )
 
 
 def certify_with_verifier(

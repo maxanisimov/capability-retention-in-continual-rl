@@ -16,6 +16,8 @@ from src.interval_utils import (
     _create_hook,
     _get_min_acc,
     _magnitude_weighted_objective_fn,
+    _projection_distance_objective_fn,
+    _projection_distance_squared,
     _order_statistic_k,
     _order_statistic_select,
     _project_bounded_model,
@@ -330,6 +332,64 @@ class MagnitudeWeightedObjectiveTests(unittest.TestCase):
         weights[0].reshape(-1)[0] = -1.0
         with self.assertRaisesRegex(ValueError, "contains negative values"):
             _validate_param_objective_weights(weights, self.bounded_model)
+
+
+class ProjectionDistanceObjectiveTests(unittest.TestCase):
+    def setUp(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        self.bounded_model = IntervalBoundedModel(model)
+        with torch.no_grad():
+            for lower, upper in zip(
+                self.bounded_model.param_l, self.bounded_model.param_u
+            ):
+                lower.zero_()
+                upper.zero_()
+                lower.requires_grad_(True)
+                upper.requires_grad_(True)
+        self.target = [
+            torch.zeros_like(param) for param in self.bounded_model.param_l
+        ]
+        self.target[0].reshape(-1)[:2].copy_(torch.tensor([2.0, -4.0]))
+
+    def test_objective_is_normalized_distance_to_box(self):
+        initial_distance = _projection_distance_squared(
+            self.bounded_model, self.target
+        ).detach()
+        initial_objective = _projection_distance_objective_fn(
+            self.bounded_model, 0.0, self.target, initial_distance
+        )
+        self.assertAlmostEqual(initial_distance.item(), 20.0)
+        self.assertAlmostEqual(initial_objective.item(), -1.0)
+
+        with torch.no_grad():
+            self.bounded_model.param_u[0].reshape(-1)[0] = 1.0
+            self.bounded_model.param_l[0].reshape(-1)[1] = -2.0
+        partial_objective = _projection_distance_objective_fn(
+            self.bounded_model, 0.0, self.target, initial_distance
+        )
+        self.assertAlmostEqual(partial_objective.item(), -0.25)
+
+        with torch.no_grad():
+            self.bounded_model.param_u[0].reshape(-1)[0] = 2.0
+            self.bounded_model.param_l[0].reshape(-1)[1] = -4.0
+        contained_objective = _projection_distance_objective_fn(
+            self.bounded_model, 0.0, self.target, initial_distance
+        )
+        self.assertAlmostEqual(contained_objective.item(), 0.0)
+
+    def test_objective_gradients_expand_bounds_toward_target(self):
+        initial_distance = _projection_distance_squared(
+            self.bounded_model, self.target
+        ).detach()
+        objective = _projection_distance_objective_fn(
+            self.bounded_model, 0.0, self.target, initial_distance
+        )
+        objective.backward()
+
+        upper_gradient = self.bounded_model.param_u[0].grad.reshape(-1)[0]
+        lower_gradient = self.bounded_model.param_l[0].grad.reshape(-1)[1]
+        self.assertGreater(upper_gradient.item(), 0.0)
+        self.assertLess(lower_gradient.item(), 0.0)
 
 
 class OrderStatisticTests(unittest.TestCase):
@@ -693,6 +753,41 @@ class ComputeRashomonSetSmokeTests(unittest.TestCase):
 
         self.assertTrue(result.target_contained_and_certified)
         self.assertEqual(result.iterations_run, 1)
+
+    def test_projection_distance_grows_certified_box_toward_target(self):
+        model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+        with torch.no_grad():
+            model[0].weight.zero_()
+            model[0].bias.copy_(torch.tensor([10.0, 0.0]))
+        inputs = torch.zeros(4, 2)
+        targets = torch.tensor([[1.0, 0.0]]).expand(4, -1).clone()
+        dataset = torch.utils.data.TensorDataset(inputs, targets)
+        proposal = [param.detach().clone() for param in model.parameters()]
+        proposal[0].reshape(-1)[0].add_(0.01)
+        lower_mask = [torch.ones_like(param, dtype=torch.bool) for param in proposal]
+        upper_mask = [torch.ones_like(param, dtype=torch.bool) for param in proposal]
+        upper_mask[0].reshape(-1)[0] = False
+
+        result = compute_rashomon_set(
+            model,
+            dataset,
+            1.0,
+            batch_size=4,
+            certificate_samples=4,
+            n_iters=5,
+            checkpoint=1,
+            temperatures={None: 0.1},
+            param_l_mask=lower_mask,
+            param_u_mask=upper_mask,
+            stop_target_params=proposal,
+            rashomon_objective="projection_distance",
+        )
+
+        self.assertTrue(result.target_contained_and_certified)
+        self.assertLess(result.iterations_run, 5)
+        self.assertTrue(
+            _bounded_model_contains_params(result.bounded_models[-1], proposal)
+        )
 
     def test_explicit_temperatures_override_skips_calibration(self):
         torch.manual_seed(0)

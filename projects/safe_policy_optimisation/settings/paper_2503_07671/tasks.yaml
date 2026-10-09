@@ -12,6 +12,22 @@ tasks:
       episode_length: 40
       c_threshold: 20
 
+  paper_2503_07671_media_streaming_b128:
+    description: >-
+      Scaled-up Media Streaming task: 16,512 states against 462 for the main-paper
+      task, reached by growing the buffer and the episode together with the
+      fast-action budget held at half the episode so the constraint keeps binding.
+    env_id: CustomMediaStreamingV2-v0
+    shield_task: custommediastreamingv2_paper_2503_07671_b128
+    max_episode_steps: 254
+    env_kwargs:
+      fast_rate: 0.9
+      slow_rate: 0.1
+      out_rate: 0.7
+      buffer_size: 128
+      episode_length: 254
+      c_threshold: 127
+
   paper_2503_07671_colour_bomb:
     description: Paper 2503.07671 Colour Bomb v1 task using the local five-action gridworld.
     env_id: CustomColourBombGridWorld-v0

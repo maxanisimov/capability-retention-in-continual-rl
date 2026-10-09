@@ -13,7 +13,19 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
+
+from projects.safe_policy_optimisation.utils.pspo_defaults import (
+    BC_INITIALISATION_OBJECTIVE,
+    BC_MARGIN_MODE,
+    BC_MAX_UNSAFE_MASS,
+    BC_MIN_SAFE_ACTION_ENTROPY,
+    BC_SAFE_ACTION_ENTROPY_WEIGHT,
+    BC_SAFE_ACTION_UNIFORMITY_WEIGHT,
+    BC_UNSAFE_MASS_TARGET,
+    RASHOMON_OBJECTIVE,
+    RASHOMON_SURROGATE,
+)
 
 T = TypeVar("T")
 
@@ -98,7 +110,7 @@ class RashomonSetCfg:
     rashomon_dir: str
     rashomon_n_iters: int
     rashomon_checkpoint: int
-    rashomon_batch_size: int
+    rashomon_batch_size: int | Literal["auto"]
     certificate_samples: int
     safe_region_shape: str = "orthotope"
     zonotope_rank: int | None = None
@@ -107,8 +119,19 @@ class RashomonSetCfg:
     # [64, 64] Tanh MLP used by every baseline.
     n_hidden: int = 2
     hidden_dim: int = 64
-    bc_margin_mode: str = "any"
-    rashomon_surrogate: str = "auto"
+    bc_margin_mode: str = BC_MARGIN_MODE
+    bc_initialisation_objective: Literal[
+        "margin", "safe_mass"
+    ] = BC_INITIALISATION_OBJECTIVE
+    bc_safe_action_entropy_weight: float = BC_SAFE_ACTION_ENTROPY_WEIGHT
+    bc_min_safe_action_entropy: float = BC_MIN_SAFE_ACTION_ENTROPY
+    bc_unsafe_mass_target: float = BC_UNSAFE_MASS_TARGET
+    bc_max_unsafe_mass: float = BC_MAX_UNSAFE_MASS
+    bc_safe_action_uniformity_weight: float = BC_SAFE_ACTION_UNIFORMITY_WEIGHT
+    rashomon_surrogate: str = RASHOMON_SURROGATE
+    adaptive_rashomon_objective: Literal[
+        "weighted_width", "projection_distance"
+    ] = RASHOMON_OBJECTIVE
 
 
 @dataclass

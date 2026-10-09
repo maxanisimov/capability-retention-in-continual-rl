@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 REPO = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = (
     REPO
@@ -346,7 +345,7 @@ def write_manifest(path: Path, output_dir: Path, summary_rows: list[dict[str, An
         ],
         "excluded_methods": [
             "rashomon_policy",
-            "rashomon_adaptive_policy",
+            "pspo_policy",
         ],
         "source_roots": [
             {

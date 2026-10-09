@@ -3,8 +3,13 @@ Nominal (non-interval) forward and backward passes of torch.nn.Modules. Backward
 for per-sample gradients, so we can't use torch.autograd.
 """
 
-import torch
 import numpy as np
+import torch
+
+from abstract_gradient_training.bounded_models.state_id_lookup import (
+    StateIdLookupLinear,
+    _state_ids,
+)
 
 
 def module_forward_pass(
@@ -27,7 +32,12 @@ def module_forward_pass(
     Returns:
         torch.Tensor: Output of the module.
     """
-    if isinstance(module, torch.nn.Linear):
+    if isinstance(module, StateIdLookupLinear):
+        ids = _state_ids(x, n_states=module.in_features)
+        x = params[0].index_select(1, ids).transpose(0, 1)
+        if len(params) == 2:
+            x = x + params[1]
+    elif isinstance(module, torch.nn.Linear):
         x = torch.nn.functional.linear(
             x, *params
         )  # this unpacking works even when bias=None
@@ -73,7 +83,12 @@ def module_backward_pass(
 
     grads = []
 
-    if isinstance(module, torch.nn.Linear):
+    if isinstance(module, StateIdLookupLinear):
+        raise NotImplementedError(
+            "StateIdLookupLinear supports bounded/nominal forward verification, "
+            "but not AGT's dense per-sample backward API."
+        )
+    elif isinstance(module, torch.nn.Linear):
         # compute the gradients wrt the bias of the module
         if module.bias is not None:
             grads.append(dl_dy)

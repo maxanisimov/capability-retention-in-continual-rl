@@ -22,7 +22,7 @@ from projects.safe_policy_optimisation.run_experiment import (
 from projects.safe_policy_optimisation.run_experiment import (
     build_parser as build_experiment_launcher_parser,
 )
-from projects.safe_policy_optimisation.scripts import run_pspo_hparam_sweep
+from projects.safe_policy_optimisation.stages import train_pspo
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     build_parser as build_shield_rashomon_parser,
 )
@@ -52,17 +52,21 @@ from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline
     _pipeline_cpu_allocation,
     _rashomon_artifacts_reusable,
     _policy_optimisation_method_count,
+    _parse_stage_args,
     _rashomon_set_argv,
 )
 from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
     build_parser as build_deterministic_pipeline_parser,
 )
+from projects.safe_policy_optimisation.stages.train_policy_optimisation_pipeline import (
+    parse_args as parse_deterministic_pipeline_args,
+)
 from projects.safe_policy_optimisation.stages.train_ppo import (
     build_parser as build_ppo_parser,
 )
-from projects.safe_policy_optimisation.stages.train_pspo_adaptive import (
-    build_parser as build_adaptive_safe_ppo_parser,
-    parse_args as parse_adaptive_safe_ppo_args,
+from projects.safe_policy_optimisation.stages.train_pspo import (
+    build_parser as build_pspo_parser,
+    parse_args as parse_pspo_args,
 )
 from projects.safe_policy_optimisation.stages.train_pspo_precomputed import (
     build_parser as build_rashomon_shielded_ppo_parser,
@@ -87,6 +91,7 @@ from projects.safe_policy_optimisation.utils.cpu_allocation import (
     worker_thread_count,
 )
 from projects.safe_policy_optimisation.utils.safe_rl import (
+    DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS,
     EpisodeMetrics,
     aggregate_training_violations,
     aggregate_violations,
@@ -104,6 +109,41 @@ from projects.safe_policy_optimisation.tests.helpers import (
 )
 
 class CliParsingTests(unittest.TestCase):
+    def test_ppo_family_uses_canonical_optimisation_defaults(self) -> None:
+        expected = {
+            "learning_rate": 3e-4,
+            "n_steps": 2048,
+            "batch_size": 64,
+            "n_epochs": 10,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "clip_range": 0.2,
+            "ent_coef": 0.0,
+            "vf_coef": 0.5,
+            "max_grad_norm": 0.5,
+        }
+        parsed = {
+            "ppo": build_ppo_parser().parse_args(["--env-id", "CustomMiniPacman-v0"]),
+            "ppo_lagrangian_and_pid": build_train_parser().parse_args([]),
+            "cpo": build_cpo_parser().parse_args([]),
+            "pspo_precomputed": build_rashomon_shielded_ppo_parser().parse_args(
+                ["--rashomon-dir", "rashomon_run", "--shield-path", "shield_q.pt"]
+            ),
+            "pspo": build_pspo_parser().parse_args(
+                ["--base-policy-path", "base_policy.pt", "--shield-path", "shield_q.pt"]
+            ),
+            "pipeline": build_deterministic_pipeline_parser().parse_args([]),
+        }
+
+        for method, args in parsed.items():
+            with self.subTest(method=method):
+                for key, value in expected.items():
+                    self.assertEqual(getattr(args, key), value)
+
+        for key, value in expected.items():
+            self.assertEqual(DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS[key], value)
+        self.assertEqual(DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS["cost_gae_lambda"], 0.95)
+
     def test_train_parser_accepts_ppo_lagrangian_subset_and_cost_limit(self) -> None:
         args = build_train_parser().parse_args(
             [
@@ -225,6 +265,7 @@ class CliParsingTests(unittest.TestCase):
 
         self.assertEqual(args.jobs, 0)
         self.assertIsNone(args.cpu_ids)
+        self.assertEqual(args.rashomon_batch_size, "auto")
 
     def test_auto_parallelism_counts_policy_methods(self) -> None:
         args = build_deterministic_pipeline_parser().parse_args([])
@@ -239,7 +280,7 @@ class CliParsingTests(unittest.TestCase):
             cpu_ids=cpu_ids,
         )
 
-        self.assertEqual(method_count, 6)
+        self.assertEqual(method_count, 7)
         self.assertEqual(jobs, method_count)
         self.assertEqual(baseline_jobs, 2)
         self.assertEqual(allocation["worker_cpu_ids"], cpu_ids[:method_count])
@@ -252,227 +293,9 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(worker_thread_count(1, None), None)
         self.assertEqual(parse_cpu_ids("3,5,3"), [3, 5])
 
-    def test_pspo_hparam_sweep_parser_accepts_two_swept_dimensions(self) -> None:
-        args = run_pspo_hparam_sweep.parse_args(
-            [
-                "--env",
-                "mini_pacman",
-                "--method",
-                "both",
-                "--seeds",
-                "0",
-                "1",
-                "--rashomon-iters",
-                "100",
-                "2000",
-                "--bc-target-margins",
-                "0.5",
-                "1",
-                "--n-hidden",
-                "0",
-                "--state-representation",
-                "one_hot",
-                "--bc-margin-mode",
-                "all",
-                "--rashomon-surrogate",
-                "logsumexp",
-                "--safe-region-shape",
-                "zonotope",
-                "--zonotope-rank",
-                "4",
-                "--dry-run",
-            ]
-        )
 
-        self.assertEqual(args.env, "mini_pacman")
-        self.assertEqual(args.method, "both")
-        self.assertEqual(args.seeds, [0, 1])
-        self.assertEqual(args.rashomon_iters, [100, 2000])
-        self.assertEqual(args.bc_target_margins, [0.5, 1.0])
-        self.assertEqual(args.n_hidden, 0)
-        self.assertEqual(args.state_representation, "one_hot")
-        self.assertEqual(args.bc_margin_mode, "all")
-        self.assertEqual(args.rashomon_surrogate, "logsumexp")
-        self.assertEqual(args.safe_region_shape, "zonotope")
-        self.assertEqual(args.zonotope_rank, 4)
 
-    def test_pspo_hparam_sweep_builds_only_method_iter_margin_grid(self) -> None:
-        settings = run_pspo_hparam_sweep.build_settings(
-            ["precomputed", "adaptive"],
-            [100, 200],
-            [0.5, 1.0],
-        )
 
-        self.assertEqual(len(settings), 8)
-        self.assertEqual(settings[0].tag, "precomputed/iters_100__margin_0p5")
-        self.assertEqual(settings[-1].tag, "adaptive/iters_200__margin_1")
-
-        all_mode_settings = run_pspo_hparam_sweep.build_settings(
-            ["precomputed"],
-            [100],
-            [0.5],
-            bc_margin_mode="all",
-            rashomon_surrogate="logsumexp",
-        )
-
-        self.assertEqual(
-            all_mode_settings[0].tag,
-            "precomputed/iters_100__margin_0p5__bc_all__surrogate_logsumexp",
-        )
-
-    def test_pspo_hparam_sweep_resolves_disjoint_cpu_slots(self) -> None:
-        args = argparse.Namespace(
-            cpu_ids=[2, 4, 6, 8],
-            cores_per_setting=1,
-            max_parallel=3,
-        )
-        slots = run_pspo_hparam_sweep.resolve_slots(args, n_settings=5)
-
-        self.assertEqual(slots, [[2], [4], [6]])
-        self.assertEqual(len({cpu for slot in slots for cpu in slot}), 3)
-
-    def test_pspo_hparam_sweep_command_interprets_iters_by_method(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            payload = {
-                "sweep_root": tmp,
-                "config": {
-                    "shield_path": "projects/safe_policy_optimisation/artifacts/shield_q.pt",
-                    "env_id": "CustomMiniPacman-v0",
-                    "env_kwargs": {"ghost_rand_prob": 0.6},
-                    "max_episode_steps": 1000,
-                    "cost_limit": 0.01,
-                    "total_timesteps": 500000,
-                    "eval_episodes": 100,
-                    "learning_rate": 3e-4,
-                    "n_steps": 2048,
-                    "batch_size": 64,
-                    "n_epochs": 10,
-                    "gamma": 0.99,
-                    "gae_lambda": 0.95,
-                    "clip_range": 0.2,
-                    "ent_coef": 0.0,
-                    "vf_coef": 0.5,
-                    "max_grad_norm": 0.5,
-                    "early_stop_eval_freq": 0,
-                    "early_stop_eval_episodes": 100,
-                    "early_stop_success_rate": 1.0,
-                    "success_reward_threshold": 0.0,
-                    "curve_eval_freq": 2048,
-                    "curve_eval_episodes": 20,
-                    "rashomon_evaluation_policy": "unshielded",
-                    "rashomon_checkpoint": 100,
-                    "certificate_samples": 1000,
-                },
-                "state_representation": "one_hot",
-                "device": "cpu",
-                "hidden_dim": 64,
-                "n_hidden": 0,
-                "safety_demo_size": 8880,
-                "adaptive_base_set_iters": 2000,
-                "safe_region_shape": "zonotope",
-                "zonotope_rank": 3,
-            }
-            pre = run_pspo_hparam_sweep.Setting(
-                method="precomputed",
-                rashomon_iters=10000,
-                bc_target_margin=1.0,
-            )
-            adaptive = run_pspo_hparam_sweep.Setting(
-                method="adaptive",
-                rashomon_iters=100,
-                bc_target_margin=1.0,
-            )
-            pre_all = run_pspo_hparam_sweep.Setting(
-                method="precomputed",
-                rashomon_iters=10000,
-                bc_target_margin=1.0,
-                bc_margin_mode="all",
-            )
-
-            pre_set_cmd = run_pspo_hparam_sweep.build_set_command(
-                payload,
-                setting=pre,
-                n_iters=pre.rashomon_iters,
-                cpu_ids=[2],
-            )
-            adaptive_set_cmd = run_pspo_hparam_sweep.build_set_command(
-                payload,
-                setting=adaptive,
-                n_iters=payload["adaptive_base_set_iters"],
-                cpu_ids=[4],
-            )
-            pre_train_cmd = run_pspo_hparam_sweep.build_precomputed_train_command(
-                payload,
-                setting=pre,
-                seed=0,
-                cpu_ids=[2],
-            )
-            adaptive_train_cmd = run_pspo_hparam_sweep.build_adaptive_train_command(
-                payload,
-                setting=adaptive,
-                seed=0,
-                cpu_ids=[4],
-            )
-            pre_all_set_cmd = run_pspo_hparam_sweep.build_set_command(
-                payload,
-                setting=pre_all,
-                n_iters=pre_all.rashomon_iters,
-                cpu_ids=[2],
-            )
-
-        self.assertEqual(
-            pre_set_cmd[pre_set_cmd.index("--rashomon-n-iters") + 1],
-            "10000",
-        )
-        self.assertEqual(
-            adaptive_set_cmd[adaptive_set_cmd.index("--rashomon-n-iters") + 1],
-            "2000",
-        )
-        self.assertEqual(
-            adaptive_train_cmd[adaptive_train_cmd.index("--rashomon-n-iters") + 1],
-            "100",
-        )
-        self.assertEqual(
-            adaptive_train_cmd[adaptive_train_cmd.index("--rashomon-surrogate") + 1],
-            "auto",
-        )
-        self.assertEqual(
-            pre_set_cmd[pre_set_cmd.index("--bc-target-margin") + 1],
-            "1.0",
-        )
-        self.assertEqual(
-            pre_all_set_cmd[pre_all_set_cmd.index("--bc-margin-mode") + 1],
-            "all",
-        )
-        self.assertIn("__bc_all", pre_all_set_cmd[pre_all_set_cmd.index("--output-dir") + 1])
-        self.assertEqual(
-            pre_set_cmd[pre_set_cmd.index("--rashomon-batch-size") + 1],
-            "8880",
-        )
-        self.assertEqual(
-            pre_set_cmd[pre_set_cmd.index("--safe-region-shape") + 1],
-            "zonotope",
-        )
-        self.assertEqual(
-            pre_set_cmd[pre_set_cmd.index("--zonotope-rank") + 1],
-            "3",
-        )
-        self.assertEqual(
-            pre_train_cmd[pre_train_cmd.index("--safe-region-shape") + 1],
-            "zonotope",
-        )
-        self.assertEqual(
-            adaptive_train_cmd[adaptive_train_cmd.index("--safe-region-shape") + 1],
-            "zonotope",
-        )
-        self.assertEqual(
-            pre_train_cmd[pre_train_cmd.index("--state-representation") + 1],
-            "one_hot",
-        )
-        self.assertEqual(
-            adaptive_train_cmd[adaptive_train_cmd.index("--state-representation") + 1],
-            "one_hot",
-        )
 
     def test_deterministic_pipeline_parser_accepts_monitoring_settings(self) -> None:
         args = build_deterministic_pipeline_parser().parse_args(
@@ -567,6 +390,24 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.env_id, "CustomMiniPacman-v0")
         self.assertEqual(args.env_kwargs, '{"ghost_rand_prob": 0.0}')
         self.assertEqual(args.shield_action_storage, "proposed")
+
+    def test_generic_shielded_parser_accepts_continuous_shield(self) -> None:
+        args = build_generic_shielded_parser().parse_args(
+            [
+                "--continuous-shield",
+                "auto",
+                "--continuous-shield-config",
+                '{"unsafe_max_position": -1.05}',
+                "--env-id",
+                "MountainCar-v0",
+            ]
+        )
+
+        self.assertIsNone(args.shield_path)
+        self.assertEqual(args.continuous_shield, "auto")
+        self.assertEqual(
+            args.continuous_shield_config, '{"unsafe_max_position": -1.05}'
+        )
 
     def test_plain_ppo_parser_accepts_env_without_shield(self) -> None:
         args = build_ppo_parser().parse_args(
@@ -683,6 +524,18 @@ class CliParsingTests(unittest.TestCase):
                 "0",
                 "--bc-margin-mode",
                 "all",
+                "--bc-safe-action-entropy-weight",
+                "1.0",
+                "--bc-min-safe-action-entropy",
+                "0.97",
+                "--bc-initialisation-objective",
+                "safe_mass",
+                "--bc-unsafe-mass-target",
+                "0.01",
+                "--bc-max-unsafe-mass",
+                "0.02",
+                "--bc-safe-action-uniformity-weight",
+                "1.5",
                 "--rashomon-surrogate",
                 "logsumexp",
                 "--safe-region-shape",
@@ -696,18 +549,64 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.base_policy_only)
         self.assertEqual(args.rashomon_n_iters, 0)
         self.assertEqual(args.bc_margin_mode, "all")
+        self.assertEqual(args.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(args.bc_min_safe_action_entropy, 0.97)
+        self.assertEqual(args.bc_initialisation_objective, "safe_mass")
+        self.assertEqual(args.bc_unsafe_mass_target, 0.01)
+        self.assertEqual(args.bc_max_unsafe_mass, 0.02)
+        self.assertEqual(args.bc_safe_action_uniformity_weight, 1.5)
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
         self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.zonotope_rank, 5)
+        self.assertEqual(args.rashomon_batch_size, "auto")
         # Default base-policy depth, which also sets the PSPO actor/critic to the
         # [64, 64] MLP the baselines use.
         self.assertEqual(args.n_hidden, 2)
         self.assertEqual(args.hidden_dim, 64)
 
+        for flag, value in (
+            ("--bc-safe-action-entropy-weight", "-0.1"),
+            ("--bc-safe-action-entropy-weight", "nan"),
+            ("--bc-min-safe-action-entropy", "1.1"),
+            ("--bc-unsafe-mass-target", "0"),
+            ("--bc-max-unsafe-mass", "0.5"),
+            ("--bc-safe-action-uniformity-weight", "-0.1"),
+        ):
+            with self.subTest(flag=flag, value=value), self.assertRaises(SystemExit):
+                build_shield_rashomon_parser().parse_args(
+                    ["--shield-path", "shield_q.pt", flag, value]
+                )
+
+    def test_pspo_initial_policy_defaults_to_best_safe_entropy_settings(self) -> None:
+        base_args = build_shield_rashomon_parser().parse_args(
+            ["--shield-path", "shield_q.pt", "--base-policy-only"]
+        )
+        self.assertEqual(base_args.linear_init_margin, 2.0)
+        self.assertEqual(base_args.bc_target_margin, 2.0)
+        self.assertEqual(base_args.bc_margin_mode, "all")
+        self.assertEqual(base_args.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(base_args.bc_min_safe_action_entropy, 0.95)
+        self.assertEqual(base_args.rashomon_multi_label_mode, "all")
+        self.assertEqual(base_args.rashomon_surrogate, "logsumexp")
+
+        pipeline_args = build_deterministic_pipeline_parser().parse_args([])
+        self.assertEqual(pipeline_args.bc_target_margin, 2.0)
+        self.assertEqual(pipeline_args.bc_margin_mode, "all")
+        self.assertEqual(pipeline_args.bc_safe_action_entropy_weight, 1.0)
+        self.assertEqual(pipeline_args.rashomon_multi_label_mode, "all")
+        self.assertEqual(pipeline_args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(pipeline_args.adaptive_rashomon_n_iters, 200)
+
     def test_pipeline_forwards_bc_margin_mode_to_rashomon_set_stage(self) -> None:
         args = argparse.Namespace(
             bc_margin_mode="all",
+            bc_initialisation_objective="safe_mass",
             bc_target_margin=0.5,
+            bc_safe_action_entropy_weight=1.0,
+            bc_min_safe_action_entropy=0.97,
+            bc_unsafe_mass_target=0.01,
+            bc_max_unsafe_mass=0.02,
+            bc_safe_action_uniformity_weight=1.5,
             certificate_samples=1000,
             certification_method="IBP",
             device="cpu",
@@ -735,6 +634,20 @@ class CliParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(argv[argv.index("--bc-margin-mode") + 1], "all")
+        self.assertEqual(
+            argv[argv.index("--bc-initialisation-objective") + 1], "safe_mass"
+        )
+        self.assertEqual(
+            argv[argv.index("--bc-safe-action-entropy-weight") + 1], "1.0"
+        )
+        self.assertEqual(
+            argv[argv.index("--bc-min-safe-action-entropy") + 1], "0.97"
+        )
+        self.assertEqual(argv[argv.index("--bc-unsafe-mass-target") + 1], "0.01")
+        self.assertEqual(argv[argv.index("--bc-max-unsafe-mass") + 1], "0.02")
+        self.assertEqual(
+            argv[argv.index("--bc-safe-action-uniformity-weight") + 1], "1.5"
+        )
         self.assertEqual(argv[argv.index("--rashomon-multi-label-mode") + 1], "all")
         self.assertEqual(argv[argv.index("--rashomon-surrogate") + 1], "logsumexp")
         self.assertEqual(argv[argv.index("--safe-region-shape") + 1], "zonotope")
@@ -758,6 +671,37 @@ class CliParsingTests(unittest.TestCase):
 
         self.assertTrue(reusable)
         self.assertIsNone(reason)
+
+    def test_pipeline_rashomon_cache_includes_entropy_initialisation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rashomon_dir = Path(tmp)
+            (rashomon_dir / "rashomon_param_bounds.pt").write_bytes(b"bounds")
+            (rashomon_dir / "base_policy.pt").write_bytes(b"policy")
+            (rashomon_dir / "summary.json").write_text(
+                (
+                    '{"base_policy": {"bc_margin_mode": "all", '
+                    '"safe_action_entropy_weight": 1.0, '
+                    '"min_safe_action_entropy": 0.95}, '
+                    '"rashomon": {"multi_label_mode": "all"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                bc_margin_mode="all",
+                bc_safe_action_entropy_weight=1.0,
+                bc_min_safe_action_entropy=0.95,
+                rashomon_multi_label_mode="all",
+            )
+
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+            self.assertTrue(reusable)
+            self.assertIsNone(reason)
+
+            args.bc_min_safe_action_entropy = 0.9
+            reusable, reason = _rashomon_artifacts_reusable(rashomon_dir, args)
+
+        self.assertFalse(reusable)
+        self.assertIn("bc_min_safe_action_entropy mismatch", reason)
 
     def test_pipeline_reuses_zonotope_artifacts_with_matching_shape_and_rank(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -887,7 +831,7 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.evaluation_policy, "unshielded")
 
     def test_adaptive_safe_ppo_parser_accepts_base_policy_and_adaptive_settings(self) -> None:
-        args = build_adaptive_safe_ppo_parser().parse_args(
+        args = build_pspo_parser().parse_args(
             [
                 "--base-policy-path",
                 "rashomon_run/base_policy.pt",
@@ -906,16 +850,17 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.shield_path, Path("shield_q.pt"))
         self.assertEqual(args.adaptive_granularity, "gradient_step")
         self.assertEqual(args.unsafe_update_strategy, "rashomon_project")
-        self.assertEqual(args.rashomon_n_iters, 100)
+        self.assertEqual(args.rashomon_n_iters, 200)
         self.assertEqual(args.safe_region_shape, "zonotope")
         self.assertEqual(args.zonotope_rank, 6)
-        self.assertIsNone(args.rashomon_checkpoint)
+        self.assertEqual(args.rashomon_checkpoint, 100)
+        self.assertEqual(args.rashomon_batch_size, "auto")
         self.assertIsNone(args.certificate_samples)
         self.assertIsNone(args.rashomon_inverse_temp)
         self.assertEqual(args.shield_action_storage, "proposed")
         self.assertEqual(args.evaluation_policy, "unshielded")
 
-        overridden = build_adaptive_safe_ppo_parser().parse_args(
+        overridden = build_pspo_parser().parse_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -936,8 +881,8 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(overridden.rashomon_n_iters, 50)
         self.assertEqual(overridden.rashomon_checkpoint, 5)
 
-    def test_unified_pspo_adaptive_defaults_to_region_first_directional_all_lse(self) -> None:
-        args = parse_adaptive_safe_ppo_args(
+    def test_pspo_defaults_to_region_first_directional_all_lse(self) -> None:
+        args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -947,14 +892,74 @@ class CliParsingTests(unittest.TestCase):
         )
         self.assertFalse(args.verify_first)
         self.assertEqual(args.state_representation, "one_hot")
-        self.assertEqual(args.freq, "update")
-        self.assertEqual(args.adaptive_granularity, "gradient_step")
+        self.assertEqual(args.freq, "1")
+        self.assertEqual(args.adaptive_granularity, "train_phase")
+        self.assertEqual(args.total_timesteps, 100_000)
+        self.assertEqual(args.early_stop_eval_freq, 0)
         self.assertTrue(args.directional_rashomon_growth)
         self.assertEqual(args.rashomon_multi_label_mode, "all")
         self.assertEqual(args.rashomon_surrogate, "logsumexp")
+        self.assertEqual(args.rashomon_objective, "weighted_width")
+        self.assertEqual(args.rashomon_batch_size, "auto")
 
-    def test_unified_pspo_adaptive_accepts_static_initial_region_command(self) -> None:
-        args = parse_adaptive_safe_ppo_args(
+        mini_pacman_args = parse_pspo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+            ]
+        )
+        self.assertEqual(mini_pacman_args.freq, "100")
+        self.assertEqual(mini_pacman_args.total_timesteps, 2_000_000)
+
+        overridden_mini_pacman_args = parse_pspo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+                "--freq",
+                "update",
+                "--total-timesteps",
+                "7",
+            ]
+        )
+        self.assertEqual(overridden_mini_pacman_args.freq, "update")
+        self.assertEqual(overridden_mini_pacman_args.total_timesteps, 7)
+
+        pipeline_stage_args = _parse_stage_args(
+            train_pspo,
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--env-id",
+                "CustomMiniPacman-v0",
+            ],
+        )
+        self.assertEqual(pipeline_stage_args.adaptive_granularity, "train_phase")
+        self.assertEqual(pipeline_stage_args.adaptive_frequency, 100)
+
+        projection_args = parse_pspo_args(
+            [
+                "--base-policy-path",
+                "base_policy.pt",
+                "--shield-path",
+                "shield.pt",
+                "--rashomon-objective",
+                "projection_distance",
+            ]
+        )
+        self.assertEqual(projection_args.rashomon_objective, "projection_distance")
+
+    def test_pspo_accepts_static_initial_region_command(self) -> None:
+        args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -974,8 +979,8 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.compute_region_once)
         self.assertFalse(args.directional_rashomon_growth)
 
-    def test_unified_pspo_adaptive_numeric_frequency_means_rollouts(self) -> None:
-        args = parse_adaptive_safe_ppo_args(
+    def test_pspo_numeric_frequency_means_rollouts(self) -> None:
+        args = parse_pspo_args(
             [
                 "--base-policy-path",
                 "base_policy.pt",
@@ -1114,22 +1119,24 @@ class CliParsingTests(unittest.TestCase):
     def test_deterministic_pipeline_reads_rashomon_training_settings(self) -> None:
         args = build_deterministic_pipeline_parser().parse_args(
             [
+                "--pipeline", "deterministic_minipacman",
                 "--rashomon-dir",
                 "projects/safe_policy_optimisation/artifacts/shield_rashomon/minipacman_default",
             ]
         )
         args = apply_training_settings(args, explicit_flags={"rashomon_dir"})
 
-        self.assertEqual(args.run_id, "minipacman_default_yaml")
+        self.assertEqual(args.run_id, "minipacman_default")
         self.assertEqual(args.total_timesteps, 2_000)
         self.assertEqual(args.algorithms, ["ppo_lagrangian", "ppo_pid_lagrangian", "cpo"])
         self.assertEqual(args.shielded_evaluation_policy, "unshielded")
         self.assertEqual(args.rashomon_evaluation_policy, "unshielded")
-        self.assertTrue(str(args.training_settings_file).endswith("training_settings.yaml"))
+        self.assertTrue(str(args.training_settings_file).endswith("deterministic/pipelines.yaml"))
 
     def test_deterministic_pipeline_cli_overrides_training_settings(self) -> None:
         args = build_deterministic_pipeline_parser().parse_args(
             [
+                "--pipeline", "deterministic_minipacman",
                 "--rashomon-dir",
                 "projects/safe_policy_optimisation/artifacts/shield_rashomon/minipacman_default",
                 "--total-timesteps",
@@ -1194,7 +1201,7 @@ class CliParsingTests(unittest.TestCase):
             "paper_2503_07671_colour_bomb_v2": "paper_2503_07671_colour_bomb_v2",
             "paper_2503_07671_bridge_crossing": "paper_2503_07671_bridge_crossing",
             "paper_2503_07671_bridge_crossing_v2": "paper_2503_07671_bridge_crossing_v2",
-            "paper_2503_07671_pacman": "paper_2503_07671_pacman",
+            "paper_2503_07671_minipacman": "paper_2503_07671_mini_pacman",
         }
         for pipeline_name, task_name in expected_pipelines.items():
             self.assertEqual(pipelines[pipeline_name].default_task, task_name)
@@ -1208,7 +1215,7 @@ class CliParsingTests(unittest.TestCase):
             "paper_2503_07671_colour_bomb_v2": "CustomColourBombGridWorldV3-v0",
             "paper_2503_07671_bridge_crossing": "CustomBridgeCrossing-v0",
             "paper_2503_07671_bridge_crossing_v2": "CustomBridgeCrossingV2-v0",
-            "paper_2503_07671_pacman": "CustomPacman-v0",
+            "paper_2503_07671_mini_pacman": "CustomMiniPacman-v0",
         }
         for task_name, env_id in expected_tasks.items():
             self.assertEqual(tasks[task_name]["env_id"], env_id)
@@ -1229,15 +1236,15 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(args.cost_gae_lambda, 0.95)
         self.assertEqual(args.lagrangian_multiplier_init, 10.0)
         self.assertEqual(args.algorithms, ["ppo_lagrangian", "ppo_pid_lagrangian", "cpo"])
-        self.assertEqual(args.early_stop_eval_freq, 2048)
+        self.assertEqual(args.early_stop_eval_freq, 0)
         self.assertEqual(args.early_stop_eval_episodes, 100)
         self.assertEqual(args.early_stop_success_rate, 1.0)
         self.assertEqual(args.curve_eval_freq, 2048)
         self.assertEqual(args.curve_eval_episodes, 20)
         self.assertFalse(args.skip_rashomon_policy)
-        self.assertEqual(args.shielded_evaluation_policy, "shielded")
+        self.assertEqual(args.shielded_evaluation_policy, "unshielded")
 
-    def test_all_paper_pipelines_enable_success_rate_early_stopping(self) -> None:
+    def test_all_paper_pipelines_use_fixed_training_budgets(self) -> None:
         for pipeline_name in available_pipelines():
             if not pipeline_name.startswith("paper_2503_07671_"):
                 continue
@@ -1250,7 +1257,7 @@ class CliParsingTests(unittest.TestCase):
                     settings_file=Path("paper_2503_07671/pipelines.yaml"),
                 )
 
-                self.assertEqual(args.early_stop_eval_freq, 2048)
+                self.assertEqual(args.early_stop_eval_freq, 0)
                 self.assertEqual(args.early_stop_eval_episodes, 100)
                 self.assertEqual(args.early_stop_success_rate, 1.0)
 
@@ -1275,15 +1282,15 @@ class CliParsingTests(unittest.TestCase):
             finally:
                 env.close()
 
-    def test_paper_pacman_uses_large_sparse_local_state_space(self) -> None:
-        settings, _pipeline, _task = compose_pipeline_settings("paper_2503_07671_pacman")
+    def test_paper_minipacman_uses_sparse_local_state_space(self) -> None:
+        settings, _pipeline, _task = compose_pipeline_settings("paper_2503_07671_minipacman")
         env = make_safe_rl_env(
             settings["env_id"],
             max_episode_steps=settings["max_episode_steps"],
             env_kwargs=settings["env_kwargs"],
         )
         try:
-            self.assertGreater(env.unwrapped._n_states, 100_000)
+            self.assertEqual(env.unwrapped._n_states, 9248)
             self.assertEqual(env.unwrapped.action_space.n, 5)
         finally:
             env.close()
@@ -1339,6 +1346,135 @@ class CliParsingTests(unittest.TestCase):
                 },
                 task_settings={"env_kwargs": []},
             )
+
+
+class DeprecatedPspoOptionAliasTests(unittest.TestCase):
+    """The renamed PSPO flags keep their old spellings working for one release."""
+
+    def test_legacy_spellings_are_hidden_from_help(self) -> None:
+        help_text = build_deterministic_pipeline_parser().format_help()
+        self.assertNotIn("--adaptive-rashomon-n-iters", help_text)
+        self.assertNotIn("--adaptive-rashomon-objective", help_text)
+        self.assertIn("--pspo-rashomon-n-iters", help_text)
+        self.assertIn("--pspo-rashomon-objective", help_text)
+
+    def test_canonical_spellings_populate_the_shared_dest(self) -> None:
+        args = parse_deterministic_pipeline_args(
+            ["--pspo-rashomon-n-iters", "55", "--pspo-rashomon-objective", "projection_distance"]
+        )
+        self.assertEqual(args.adaptive_rashomon_n_iters, 55)
+        self.assertEqual(args.adaptive_rashomon_objective, "projection_distance")
+        self.assertFalse(hasattr(args, "legacy_adaptive_rashomon_n_iters"))
+        self.assertFalse(hasattr(args, "legacy_adaptive_rashomon_objective"))
+
+    def test_legacy_spelling_still_works_and_warns(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            args = parse_deterministic_pipeline_args(["--adaptive-rashomon-n-iters", "77"])
+        self.assertEqual(args.adaptive_rashomon_n_iters, 77)
+        self.assertIn("--adaptive-rashomon-n-iters is deprecated", stderr.getvalue())
+        self.assertIn("--pspo-rashomon-n-iters", stderr.getvalue())
+
+    def test_combining_both_spellings_is_an_error(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                parse_deterministic_pipeline_args(
+                    ["--adaptive-rashomon-n-iters", "1", "--pspo-rashomon-n-iters", "2"]
+                )
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_plot_script_adaptive_root_alias(self) -> None:
+        plots = importlib.import_module(
+            "projects.safe_policy_optimisation.scripts.plot_extended_budget_learning_curves"
+        )
+        canonical = plots.parse_args(["--pspo-root", "/tmp/pspo-root"])
+        self.assertEqual(canonical.adaptive_root, Path("/tmp/pspo-root"))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            legacy = plots.parse_args(["--adaptive-root", "/tmp/pspo-root"])
+        self.assertEqual(legacy.adaptive_root, Path("/tmp/pspo-root"))
+        self.assertIn("--adaptive-root is deprecated", stderr.getvalue())
+
+
+class PspoRashomonBudgetOptionTests(unittest.TestCase):
+    """Split Rashomon budgets are reachable from the CLI again."""
+
+    BASE = [
+        "--env-id",
+        "CustomMiniPacman-v0",
+        "--base-policy-path",
+        "base_policy.pt",
+        "--shield-path",
+        "shield_q.pt",
+    ]
+
+    def _parse(self, *extra: str) -> argparse.Namespace:
+        return parse_pspo_args([*self.BASE, *extra])
+
+    def test_default_budget_is_unchanged_per_computation(self) -> None:
+        args = self._parse()
+        self.assertEqual(args.rashomon_budget_mode, "per_computation")
+        self.assertIsNone(args.rashomon_total_iters)
+        self.assertEqual(args.rashomon_initial_n_iters, args.rashomon_n_iters)
+        self.assertEqual(args.rashomon_recompute_n_iters, args.rashomon_n_iters)
+
+    def test_total_iters_switches_the_budget_mode(self) -> None:
+        args = self._parse("--rashomon-total-iters", "5000")
+        self.assertEqual(args.rashomon_budget_mode, "total")
+        self.assertEqual(args.rashomon_total_iters, 5000)
+        self.assertEqual(args.rashomon_initial_n_iters, 5000)
+        self.assertEqual(args.rashomon_recompute_n_iters, 5000)
+
+    def test_matched_per_seed_budgets_survive_parsing(self) -> None:
+        args = self._parse(
+            "--rashomon-total-iters",
+            "5000",
+            "--rashomon-initial-n-iters",
+            "800",
+            "--rashomon-recompute-n-iters",
+            "200",
+        )
+        self.assertEqual(args.rashomon_budget_mode, "total")
+        self.assertEqual(args.rashomon_total_iters, 5000)
+        self.assertEqual(args.rashomon_initial_n_iters, 800)
+        self.assertEqual(args.rashomon_recompute_n_iters, 200)
+        self.assertGreater(args.rashomon_max_region_computations, 0)
+
+    def test_recompute_defaults_to_the_initial_budget(self) -> None:
+        args = self._parse("--rashomon-initial-n-iters", "300")
+        self.assertEqual(args.rashomon_budget_mode, "per_computation")
+        self.assertEqual(args.rashomon_initial_n_iters, 300)
+        self.assertEqual(args.rashomon_recompute_n_iters, 300)
+
+    def test_non_positive_and_over_total_budgets_are_rejected(self) -> None:
+        for extra in (
+            ("--rashomon-total-iters", "0"),
+            ("--rashomon-initial-n-iters", "0"),
+            ("--rashomon-recompute-n-iters", "-1"),
+            ("--rashomon-total-iters", "100", "--rashomon-initial-n-iters", "500"),
+            ("--rashomon-total-iters", "100", "--rashomon-recompute-n-iters", "500"),
+        ):
+            with self.subTest(extra=extra):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        self._parse(*extra)
+                self.assertEqual(caught.exception.code, 2)
+
+    def test_one_env_runner_forwards_the_budget_variables(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "run_pspo_one_env.sh"
+        ).read_text(encoding="utf-8")
+        for name, flag in (
+            ("RASHOMON_TOTAL_ITERS", "--rashomon-total-iters"),
+            ("RASHOMON_INITIAL_N_ITERS", "--rashomon-initial-n-iters"),
+            ("RASHOMON_RECOMPUTE_N_ITERS", "--rashomon-recompute-n-iters"),
+        ):
+            with self.subTest(name=name):
+                self.assertIn(f'{name}="${{{name}:-}}"', script)
+                self.assertIn(f'os.environ["{name}"]', script)
+                self.assertIn(flag, script)
 
 
 if __name__ == "__main__":

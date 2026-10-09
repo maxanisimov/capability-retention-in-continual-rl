@@ -23,17 +23,20 @@ import gymnasium as gym
 import numpy as np
 import torch as th
 from PIL import Image
-from safe_rl_baselines import CPO, PPOLagrangian, PPOPIDLagrangian
+from safe_rl_baselines import CPO, PPOLagrangian, PPOPIDLagrangian, RLSGF
 
+from projects.safe_policy_optimisation.utils.cli import PPO_HYPERPARAMETER_DEFAULTS
 from projects.safe_policy_optimisation.utils.safe_crl_bridge import make_custom_masa_env
 
 PPO_LAGRANGIAN_ALGORITHM_NAMES = ("ppo_lagrangian", "ppo_pid_lagrangian")
 CPO_ALGORITHM_NAMES = ("cpo",)
-ALGORITHM_NAMES = (*PPO_LAGRANGIAN_ALGORITHM_NAMES, *CPO_ALGORITHM_NAMES)
+RL_SGF_ALGORITHM_NAMES = ("rl_sgf",)
+ALGORITHM_NAMES = (*PPO_LAGRANGIAN_ALGORITHM_NAMES, *CPO_ALGORITHM_NAMES, *RL_SGF_ALGORITHM_NAMES)
 DEFAULT_TOTAL_TIMESTEPS = {
     "ppo_lagrangian": 10_000,
     "ppo_pid_lagrangian": 10_000,
     "cpo": 12_000,
+    "rl_sgf": 12_000,
 }
 SAFE_RL_BASELINE_HYPERPARAMS = (
     "learning_rate",
@@ -49,18 +52,20 @@ SAFE_RL_BASELINE_HYPERPARAMS = (
     "cost_gamma",
     "cost_gae_lambda",
     "lagrangian_multiplier_init",
+    "rl_sgf_step_size",
+    "rl_sgf_alpha",
+    "rl_sgf_episodes_per_iter",
+    "rl_sgf_baseline",
 )
+# RL-SGF-specific CLI keys -> RLSGF constructor arguments (only forwarded to rl_sgf).
+RL_SGF_HYPERPARAM_KEYS = {
+    "rl_sgf_step_size": "step_size",
+    "rl_sgf_alpha": "alpha",
+    "rl_sgf_episodes_per_iter": "episodes_per_iter",
+    "rl_sgf_baseline": "baseline",
+}
 DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS: dict[str, Any] = {
-    "learning_rate": 3e-4,
-    "n_steps": 512,
-    "batch_size": 128,
-    "n_epochs": 4,
-    "gamma": 0.99,
-    "gae_lambda": 0.95,
-    "clip_range": 0.2,
-    "ent_coef": 0.0,
-    "vf_coef": 0.5,
-    "max_grad_norm": 0.5,
+    **PPO_HYPERPARAMETER_DEFAULTS,
     "cost_gamma": 0.99,
     "cost_gae_lambda": 0.95,
     "lagrangian_multiplier_init": 0.0,
@@ -177,7 +182,7 @@ def build_safe_rl_baseline(
     net_arch: tuple[int, ...] = (64, 64),
     **hyperparameters: Any,
 ) -> Any:
-    """Build one safe-RL baseline with smoke-friendly tabular defaults."""
+    """Build one safe-RL baseline with the canonical PPO-family defaults."""
 
     if algorithm not in ALGORITHM_NAMES:
         raise ValueError(f"Unknown algorithm {algorithm!r}. Expected one of {ALGORITHM_NAMES}.")
@@ -190,6 +195,11 @@ def build_safe_rl_baseline(
             if key in SAFE_RL_BASELINE_HYPERPARAMS and value is not None
         }
     )
+    rl_sgf_kwargs = {
+        RL_SGF_HYPERPARAM_KEYS[key]: baseline_hyperparameters.pop(key)
+        for key in list(baseline_hyperparameters)
+        if key in RL_SGF_HYPERPARAM_KEYS
+    }
     common: dict[str, Any] = {
         "cost_fn": make_state_cost_fn(env),
         "cost_limit": cost_limit,
@@ -207,6 +217,12 @@ def build_safe_rl_baseline(
     if algorithm == "ppo_pid_lagrangian":
         return PPOPIDLagrangian(
             env,
+            **common,
+        )
+    if algorithm == "rl_sgf":
+        return RLSGF(
+            env,
+            **rl_sgf_kwargs,
             **common,
         )
     return CPO(
