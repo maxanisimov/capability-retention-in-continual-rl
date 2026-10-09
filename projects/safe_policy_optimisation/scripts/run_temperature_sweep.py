@@ -47,6 +47,17 @@ DEFAULT_OUTPUT_DIR = (
     / "projects/safe_policy_optimisation/artifacts/paper_2503_07671"
     / "analysis/temperature_sweep"
 )
+RUNS_ROOT = REPO / "projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs"
+# Every Colour Bomb v2 checkpoint evaluated here was trained before the
+# 2026-10-07 slip fix, when movement was deterministic. The fixed environment
+# with slip_prob 0 reproduces those dynamics exactly, and their shield now
+# lives in _pre_slipfix_20261007.
+PRE_FIX_CB2_SHIELD = (
+    RUNS_ROOT.parent / "inputs/colour_bomb_v2/_pre_slipfix_20261007/shield_q.pt"
+)
+PRE_FIX_CB2_SHIELD_SHA256 = (
+    "dcb1582b89b3ae928a89bb7a412d2c26bfee4159ea29adb43d7f1b2591176654"
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +77,9 @@ class VariantSpec:
     adaptive: bool = False
     # Apply the runtime shield to the sampled action before stepping.
     shielded: bool = False
+    # Read seed<k>/ from RUNS_ROOT/<cohort>/two_hidden/<env> instead of the
+    # environment's default adaptive/baseline root.
+    cohort: str | None = None
 
 
 VARIANTS = (
@@ -88,6 +102,10 @@ VARIANTS = (
         "model.zip", "sb3",
     ),
     VariantSpec("pspo", "PSPO", ".", "model.zip", "sb3", adaptive=True),
+    VariantSpec(
+        "pspo_ls", "PSPO-LS", ".", "model.zip", "sb3", adaptive=True,
+        cohort="segment_lid",
+    ),
 )
 VARIANT_BY_KEY = {spec.key: spec for spec in VARIANTS}
 
@@ -100,7 +118,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--variant", action="append", choices=tuple(VARIANT_BY_KEY),
-        help="Variant to evaluate; repeat as needed (default: all seven).",
+        help="Variant to evaluate; repeat as needed (default: all eight).",
     )
     parser.add_argument("--seed", action="append", type=int, help="Seeds (default: 0-9).")
     parser.add_argument(
@@ -137,6 +155,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _unit_path(output_dir: Path, env_key: str, seed: int, variant: str) -> Path:
     return output_dir / env_key / f"seed{seed}" / f"{variant}.json"
+
+
+def _paper_colour_bomb_v2(config: dict) -> dict:
+    """Evaluate Colour Bomb v2 on the slip-free dynamics it was trained on."""
+    if config.get("env_id") != "CustomColourBombGridWorldV3-v0":
+        return config
+    recorded = config.get("shield_sha256")
+    if recorded is not None and recorded != PRE_FIX_CB2_SHIELD_SHA256:
+        raise ValueError(
+            "Colour Bomb v2 run was not trained with the pre-fix shield; "
+            f"recorded shield sha256 {recorded}"
+        )
+    return {
+        **config,
+        "env_kwargs": {**config.get("env_kwargs", {}), "slip_prob": 0.0},
+        "shield_path": str(PRE_FIX_CB2_SHIELD),
+    }
 
 
 def _logits_fn(model, family: str):
@@ -253,9 +288,14 @@ def evaluate_unit(
     from projects.safe_policy_optimisation.utils.shield import load_shield_mask
 
     spec = VARIANT_BY_KEY[variant_key]
-    root = Path(adaptive_root if spec.adaptive else baseline_root)
+    if spec.cohort is not None:
+        root = RUNS_ROOT / spec.cohort / "two_hidden" / env_key
+    else:
+        root = Path(adaptive_root if spec.adaptive else baseline_root)
     run_dir = (root / f"seed{seed}" / spec.stage_dir).resolve()
-    config = json.loads((run_dir / "config.json").read_text())
+    config = _paper_colour_bomb_v2(
+        json.loads((run_dir / "config.json").read_text())
+    )
 
     started = time.perf_counter()
     env = make_unshielded_env(
@@ -402,6 +442,8 @@ def evaluate_unit(
         "reset_seed_base": base_seed,
         "reset_seed_mode": reset_seed_mode,
         "run_dir": str(run_dir),
+        "env_kwargs": config.get("env_kwargs", {}),
+        "shield_path": config["shield_path"],
         "load_seconds": load_seconds,
         "elapsed_seconds": time.perf_counter() - started,
         "results": results,

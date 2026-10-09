@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import csv
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -75,6 +77,47 @@ class InferenceTimingTests(unittest.TestCase):
         self.assertEqual(len(manifest["jobs"]), 120)
         self.assertEqual(len({job["id"] for job in manifest["jobs"]}), 120)
         self.assertTrue(all(job["steps"] == 1000000 for job in manifest["jobs"]))
+
+    def test_segment_manifest_uses_region_first_checkpoints(self):
+        manifest = benchmark.build_manifest(
+            Path("/tmp/inference-segment-manifest-test"), list(range(10)), None,
+            1000000, 1000, pspo_variant="segment",
+        )
+        self.assertEqual(len(manifest["jobs"]), 120)
+        for job in manifest["jobs"]:
+            if job["method"] == "pspo":
+                self.assertIn("/segment_lid/two_hidden/", job["model_path"])
+                self.assertFalse(job["config"]["adaptive"]["verify_first"])
+                self.assertEqual(job["config"]["adaptive"]["safe_region_shape"], "segment")
+
+    def test_table_uses_paired_reductions_and_one_standard_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = {"output_dir": directory, "pspo_variant": "segment",
+                        "jobs": [{"environment": "toy", "environment_label": "Toy"}]}
+            pspo = [float(seed + 1) for seed in range(10)]
+            shield = [2 * value + 3 for value in pspo]
+            groups = {( "toy", method): [
+                {"seed": seed, "environment_steps": 1000000, "inference_s": value}
+                for seed, value in enumerate(values)
+            ] for method, values in (("pspo", pspo), ("ppo_shield", shield))}
+            benchmark.write_latency_table(manifest, groups)
+            with (Path(directory) / "latency_summary.csv").open() as handle:
+                row = next(csv.DictReader(handle))
+            percentages = [100 * (s - p) / s for p, s in zip(pspo, shield)]
+            self.assertAlmostEqual(float(row["reduction_s_mean"]), np.mean(np.subtract(shield, pspo)))
+            self.assertAlmostEqual(float(row["reduction_percent_mean"]), np.mean(percentages))
+            self.assertAlmostEqual(float(row["reduction_percent_se"]), np.std(percentages, ddof=1) / np.sqrt(10))
+            self.assertAlmostEqual(float(row["pspo_inference_s_se"]), np.std(pspo, ddof=1) / np.sqrt(10))
+            table = (Path(directory) / "latency_table.tex").read_text()
+            self.assertIn("PSPO-LS", table)
+            self.assertIn("standard error over 10 paired seeds", table)
+
+    def test_table_requires_all_ten_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = {"output_dir": directory, "pspo_variant": "segment",
+                        "jobs": [{"environment": "toy", "environment_label": "Toy"}]}
+            benchmark.write_latency_table(manifest, {})
+            self.assertFalse((Path(directory) / "latency_table.tex").exists())
 
 
 if __name__ == "__main__":

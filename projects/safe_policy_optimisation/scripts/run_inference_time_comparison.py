@@ -9,6 +9,7 @@ import hashlib
 import math
 import os
 import socket
+import statistics
 import subprocess
 import sys
 import time
@@ -32,9 +33,12 @@ def build_manifest(
     environments: list[str] | None,
     steps: int,
     warmup: int,
+    pspo_variant: str = "orthotope",
 ) -> dict:
-    from plot_extended_budget_learning_curves import ENVIRONMENTS
+    from plot_extended_budget_learning_curves import ENVIRONMENTS, RUNS
 
+    if pspo_variant not in {"orthotope", "segment"}:
+        raise ValueError("Unknown PSPO variant")
     if environments and set(environments) - {env.key for env in ENVIRONMENTS}:
         raise ValueError("Unknown environment")
     jobs = []
@@ -43,7 +47,8 @@ def build_manifest(
             continue
         for seed in seeds:
             for method, root in (
-                ("pspo", env.adaptive_root),
+                ("pspo", RUNS / "segment_lid/two_hidden" / env.key
+                 if pspo_variant == "segment" else env.adaptive_root),
                 ("ppo_shield", env.baseline_root),
             ):
                 source = root / f"seed{seed}"
@@ -54,6 +59,10 @@ def build_manifest(
                 if not model.is_file() or not config.is_file():
                     raise FileNotFoundError(f"Missing checkpoint or config in {source}")
                 values = read_json(config)
+                if method == "pspo" and pspo_variant == "segment":
+                    adaptive = values["adaptive"]
+                    if adaptive["safe_region_shape"] != "segment" or adaptive["verify_first"]:
+                        raise ValueError(f"Not region-first PSPO-LS: {config}")
                 if method == "ppo_shield" and not Path(values["shield_path"]).is_file():
                     raise FileNotFoundError(values["shield_path"])
                 jobs.append(
@@ -66,6 +75,7 @@ def build_manifest(
                         "model_path": str(model),
                         "configuration_source": str(config),
                         "config": values,
+                        "model_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
                         "steps": steps,
                         "warmup_steps": warmup,
                     }
@@ -73,6 +83,7 @@ def build_manifest(
     return {
         "output_dir": str(output),
         "created_at_utc": utc_now(),
+        "pspo_variant": pspo_variant,
         "jobs": jobs,
         "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "protocol": {
@@ -80,7 +91,8 @@ def build_manifest(
             "batch_size": 1,
             "device": "cpu",
             "torch_threads": 1,
-            "pspo": "Unshielded saved default PSPO actor",
+            "pspo": ("Unshielded saved region-first PSPO-LS actor" if pspo_variant == "segment"
+                     else "Unshielded saved default orthotope PSPO actor"),
             "ppo_shield": "Saved actor plus canonical Shield override (shield on)",
             "inference_s": "Sum of per-step wall times: predict, action conversion, and runtime shield if applicable; excludes env.step/reset",
             "rollout_s": "Full measured rollout including decisions, env.step/reset, and loop overhead; excludes setup, warmup, and progress-file writes",
@@ -88,6 +100,7 @@ def build_manifest(
             "saved_metrics": "Timing and progress only; no rewards or safety rates",
             "error_bar": "2 * sample standard deviation (ddof=1) / sqrt(seed count)",
             "checkpoint_cohort": "Existing main-performance cohorts, not timing-only retraining",
+            "latency_table_error_bar": "sample standard deviation (ddof=1) / sqrt(10); reductions computed within each seed pair",
         },
     }
 
@@ -236,6 +249,68 @@ def mean_two_se(values: list[float]) -> tuple[float, float]:
     return mean, 2 * math.sqrt(variance / len(values))
 
 
+def write_latency_table(manifest: dict, groups: dict) -> None:
+    """Export the paper table only after ten complete paired million-step runs."""
+    if manifest["pspo_variant"] != "segment":
+        return
+    labels = dict((job["environment"], job["environment_label"]) for job in manifest["jobs"])
+    rows, pairs = [], []
+    for environment, label in labels.items():
+        by_method = {
+            method: {result["seed"]: result for result in groups.get((environment, method), [])}
+            for method in ("pspo", "ppo_shield")
+        }
+        if any(set(results) != set(range(10)) for results in by_method.values()):
+            return
+        times, reductions, percentages = [], [], []
+        for seed in range(10):
+            pspo, shield = (by_method[method][seed] for method in ("pspo", "ppo_shield"))
+            if pspo["environment_steps"] != 1_000_000 or shield["environment_steps"] != 1_000_000:
+                return
+            pspo_time, shield_time = pspo["inference_s"], shield["inference_s"]
+            if not (math.isfinite(pspo_time) and math.isfinite(shield_time)
+                    and pspo_time > 0 and shield_time > 0):
+                raise ValueError("Invalid paired inference timing")
+            delta = shield_time - pspo_time
+            percent = 100 * delta / shield_time
+            times.append(pspo_time)
+            reductions.append(delta)
+            percentages.append(percent)
+            pairs.append({"environment": environment, "seed": seed,
+                          "pspo_ls_inference_s": pspo_time, "ppo_shield_inference_s": shield_time,
+                          "latency_reduction_s": delta, "latency_reduction_percent": percent})
+        row = {"environment": environment, "label": label, "n": 10}
+        for field, values in (("pspo_inference_s", times), ("reduction_s", reductions),
+                              ("reduction_percent", percentages)):
+            row.update({f"{field}_mean": statistics.mean(values),
+                        f"{field}_se": statistics.stdev(values) / math.sqrt(10)})
+        rows.append(row)
+    root = Path(manifest["output_dir"])
+    for name, records in (("latency_paired_seeds.csv", pairs), ("latency_summary.csv", rows)):
+        with (root / name).open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=list(records[0]))
+            writer.writeheader()
+            writer.writerows(records)
+    lines = [
+        r"\begin{table}[h]", r"  \centering",
+        r"  \caption{PSPO inference time per 1 million environment steps (in seconds) compared to PPO-Shield (mean $\pm$ standard error over 10 paired seeds). PSPO uses PSPO-LS checkpoints without runtime shielding.}",
+        r"  \label{tab:pspo-latency}", "", r"  \small",
+        r"  \setlength{\tabcolsep}{3pt}", r"  \renewcommand{\arraystretch}{1.08}", "",
+        r"  \begin{tabular}{@{}lccc@{}}", r"    \toprule",
+        r"    Environment &",
+        r"    \makecell{PSPO\\inference (s)} &",
+        r"    \makecell{Latency reduction\\vs PPO-Shield (s)} &",
+        r"    \makecell{Latency reduction\\vs PPO-Shield (\%)} \\",
+        r"    \midrule",
+    ]
+    for row in rows:
+        cells = [f"${row[field + '_mean']:.2f} \\pm {row[field + '_se']:.2f}$"
+                 for field in ("pspo_inference_s", "reduction_s", "reduction_percent")]
+        lines.append("    " + row["label"] + " & " + " & ".join(cells) + r" \\")
+    lines += [r"    \bottomrule", r"  \end{tabular}", r"\end{table}"]
+    (root / "latency_table.tex").write_text("\n".join(lines) + "\n")
+
+
 def aggregate(manifest: dict) -> None:
     root = Path(manifest["output_dir"])
     groups = {}
@@ -293,6 +368,8 @@ def aggregate(manifest: dict) -> None:
             f"{row['rollout_s_mean']:.3f} +/- {row['rollout_s_two_se']:.3f} |"
         )
     (root / "report.md").write_text("\n".join(lines) + "\n")
+    if manifest.get("pspo_variant") == "segment":
+        write_latency_table(manifest, groups)
 
 
 def supervise(path: Path) -> int:
@@ -377,6 +454,8 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=1000000)
     parser.add_argument("--warmup-steps", type=int, default=1000)
     parser.add_argument("--max-parallel", type=int, default=120)
+    parser.add_argument("--pspo-variant", choices=("orthotope", "segment"), default="orthotope")
+    parser.add_argument("--cpu-ids", help="Comma-separated host CPU IDs to use (default: affinity minus eight reserved CPUs).")
     parser.add_argument("--launch", action="store_true")
     parser.add_argument("--supervise", action="store_true")
     parser.add_argument("--worker", action="store_true")
@@ -411,10 +490,20 @@ def main() -> int:
     ):
         parser.error("Invalid seeds, steps, warmup, or parallelism")
     manifest = build_manifest(
-        output, seeds, args.environments, args.steps, args.warmup_steps
+        output, seeds, args.environments, args.steps, args.warmup_steps, args.pspo_variant
     )
-    cpus = sorted(os.sched_getaffinity(0))
-    parallel = min(args.max_parallel, max(1, len(cpus) - 8))
+    available = sorted(os.sched_getaffinity(0))
+    if args.cpu_ids:
+        try:
+            cpus = [int(value) for value in args.cpu_ids.split(",")]
+        except ValueError:
+            parser.error("--cpu-ids must contain comma-separated integers")
+        if not cpus or len(cpus) != len(set(cpus)) or set(cpus) - set(available):
+            parser.error("--cpu-ids must contain unique CPUs in the process affinity")
+        parallel = min(args.max_parallel, len(cpus))
+    else:
+        cpus = available
+        parallel = min(args.max_parallel, max(1, len(cpus) - 8))
     manifest.update(max_parallel=parallel, cpu_ids=cpus[-parallel:])
     path = output / "manifest.json"
     write_json(path, manifest)

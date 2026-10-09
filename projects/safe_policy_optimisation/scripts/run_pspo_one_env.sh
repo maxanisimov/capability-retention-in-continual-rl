@@ -191,6 +191,17 @@ if not ADAPTIVE_FREQ:
 
 pipeline, label = PIPELINES[ENV_NAME]
 cfg, _, _ = compose_pipeline_settings(pipeline)
+# Optional per-launch task overrides, e.g. Colour Bomb v2 without random actions
+# ({"slip_prob": 0.0}), which needs the shield synthesised for those dynamics.
+ENV_KWARGS_OVERRIDE = os.environ.get("ENV_KWARGS_OVERRIDE", "")
+SHIELD_PATH_OVERRIDE = os.environ.get("SHIELD_PATH_OVERRIDE", "")
+if ENV_KWARGS_OVERRIDE:
+    overrides = json.loads(ENV_KWARGS_OVERRIDE)
+    if not isinstance(overrides, dict):
+        raise SystemExit("ENV_KWARGS_OVERRIDE must be a JSON object")
+    cfg["env_kwargs"] = {**(cfg.get("env_kwargs") or {}), **overrides}
+if SHIELD_PATH_OVERRIDE:
+    cfg["shield_path"] = SHIELD_PATH_OVERRIDE
 best_path = (
     REPO
     / "projects/safe_policy_optimisation/docs/pspo_precomputed"

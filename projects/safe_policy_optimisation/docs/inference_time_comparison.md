@@ -56,3 +56,27 @@ MPLCONFIGDIR=/tmp/pspo-aamas-matplotlib .venv/bin/python \
 
 Detached launches must execute on the actual host, not inside an ephemeral
 sandbox. Read `status.json` and per-job `progress.json` to monitor the run.
+
+## PSPO-LS inference table
+
+Pass `--pspo-variant segment` to benchmark the saved region-first PSPO-LS
+actors in `segment_lid/two_hidden`, alongside fresh measurements of the same
+PPO-Shield checkpoint cohort. `--cpu-ids` selects explicit host CPUs; each
+worker still uses one numerical-library thread and remains pinned to its CPU.
+The manifest records the variant and each checkpoint's SHA-256 hash.
+
+After all ten seed pairs in every selected environment complete exactly one
+million measured transitions, the supervisor also writes `latency_table.tex`,
+`latency_summary.csv`, and `latency_paired_seeds.csv`. This paper table uses
+**one standard error**, unlike the existing aggregate report's two-standard-
+error convention. For each seed, let \(P_s\) and \(S_s\) be PSPO-LS and
+PPO-Shield inference seconds. The three columns summarise \(P_s\),
+\(S_s-P_s\), and \(100(S_s-P_s)/S_s\), respectively. Each cell is the mean
+plus/minus sample standard deviation divided by \(\sqrt{10}\). Percentage
+reductions are averaged over the paired seed percentages, rather than formed
+from aggregate method means.
+
+PSPO-LS uses the ordinary saved neural policy at deployment; segment search
+and safety certification occur during training and are excluded from these
+inference timings. Its checkpoint must nevertheless be measured directly:
+the existing orthotope timings cannot be relabelled as PSPO-LS timings.

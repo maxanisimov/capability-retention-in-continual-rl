@@ -48,17 +48,30 @@ METHODS = {
         "PPO-PID-Lagrangian + projection", "PPO-PID-Lagrangian projected", "ppo_pid_lagrangian"
     ),
     "cpo": ("CPO + projection", "CPO projected", "cpo"),
-    "ppo_shield": ("PPO-Shield + projection", "PPO-Shield projected", "ppo_shield"),
+    "rl_sgf": ("RL-SGF + projection", "RL-SGF projected", "rl_sgf"),
+    # Evaluated without its runtime shield (nominal policy), hence "shield off".
+    "ppo_shield": (
+        "PPO-Shield (shield off) + projection", "PPO-Shield (shield off) projected",
+        "ppo_shield_nominal",
+    ),
 }
 SEEDS = tuple(range(10))
 STEM = "pspo_vs_safe_projection_reward"
 
 # Keep PSPO in the final bar position, matching the other reward/safety figures.
 PLOT_METHODS = tuple(method for method in METHODS if method != "pspo") + ("pspo",)
-# Projected baselines are hatched; PSPO stays solid. Hatch lines take the patch
+# RL-SGF is not in _paper_style; brown matches its learning curves and AAMAS bars.
+# PPO-Shield (shield off) is light purple, as in the AAMAS final-policy bars.
+COLORS = {**METHOD_COLORS, "rl_sgf": "brown", "ppo_shield_nominal": "#C9A0DC"}
+# RL-SGF's runs live in their own study directory, laid out like the baselines'
+# (<environment>/rl_sgf/seed<k>/postprocess_metrics.json).
+SEPARATE_ROOT_METHODS = frozenset({"rl_sgf"})
+# Projected baselines are cross-hatched; PSPO stays solid. Hatch lines take the patch
 # edge colour, so the white hatch and the dark outline are drawn as two layers
 # (a dark hatch would vanish on the black PPO bars).
-PROJECTED_HATCH = "//////"
+PROJECTED_HATCH = "xxxx"
+# Reward axes start a quarter of the lowest mean's magnitude below that mean.
+REWARD_BOTTOM_FRACTION = 0.25
 HATCH_COLOR = "white"
 OUTLINE_COLOR = "#252525"
 
@@ -73,7 +86,9 @@ def summarise(values: list[float]) -> tuple[float, float]:
     return statistics.fmean(values), 2 * statistics.stdev(values) / math.sqrt(len(values))
 
 
-def collect(baseline_root: Path, lid_root: Path) -> tuple[list[dict], list[dict]]:
+def collect(
+    baseline_root: Path, lid_root: Path, rl_sgf_root: Path
+) -> tuple[list[dict], list[dict]]:
     rows, sources = [], []
     for environment in ENVIRONMENTS:
         manifest_path = lid_root / environment / "comparison_manifest.json"
@@ -96,7 +111,8 @@ def collect(baseline_root: Path, lid_root: Path) -> tuple[list[dict], list[dict]
                     reward = float(data["reward"]["mean_total_reward"])
                     safety = float(data["safety"]["safety_rate"])
                 else:
-                    path = baseline_root / environment / method / f"seed{seed}" / "postprocess_metrics.json"
+                    root = rl_sgf_root if method in SEPARATE_ROOT_METHODS else baseline_root
+                    path = root / environment / method / f"seed{seed}" / "postprocess_metrics.json"
                     data = read_json(path)
                     if data["status"] != "complete" or data["smoke"]:
                         raise ValueError(f"Not a completed production run: {path}")
@@ -129,10 +145,12 @@ def write_table(output: Path, rows: list[dict]) -> None:
         "% Generated from unrounded per-seed evaluations; requires booktabs and graphicx.",
         r"\begin{table}[t]", r"\centering", r"\small",
         r"\setlength{\tabcolsep}{4pt}", r"\resizebox{\linewidth}{!}{%",
-        r"\begin{tabular}{lcccccc}", r"\toprule",
-        r"Environment & \shortstack{PSPO\\(adaptive LID)} & \shortstack{PPO\\+ proj.} & \shortstack{PPO-Lag.\\+ proj.} & \shortstack{PPO-PID-Lag.\\+ proj.} & \shortstack{CPO\\+ proj.} & \shortstack{PPO-Shield\\+ proj.} \\",
+        r"\begin{tabular}{l" + "c" * len(METHODS) + "}", r"\toprule",
+        r"Environment & \shortstack{PSPO\\(adaptive LID)} & \shortstack{PPO\\+ proj.} & \shortstack{PPO-Lag.\\+ proj.} & \shortstack{PPO-PID-Lag.\\+ proj.} & \shortstack{CPO\\+ proj.} & \shortstack{RL-SGF\\+ proj.} & \shortstack{PPO-Shield\\(shield off)\\+ proj.} \\",
         r"\midrule",
     ]
+    if len(lines[-2].split(" & ")) != len(METHODS) + 1:
+        raise ValueError("Table header does not match METHODS")
     for environment, label in ENVIRONMENTS.items():
         best = max(lookup[environment, m]["mean_total_reward"] for m in METHODS)
         cells = []
@@ -151,7 +169,13 @@ def write_table(output: Path, rows: list[dict]) -> None:
     (output / "reward_table.tex").write_text("\n".join(lines) + "\n")
 
 
-FIGURE_HEIGHT_IN = 2.85
+# 2.85 in fitted three legend rows; each further row (two methods per row) adds
+# LEGEND_ROW_IN without changing panel heights or typography.
+BASE_FIGURE_HEIGHT_IN = 2.85
+BASE_LEGEND_ROWS = 3
+LEGEND_ROW_IN = 0.13
+LEGEND_ROWS = math.ceil(len(METHODS) / 2)
+FIGURE_HEIGHT_IN = BASE_FIGURE_HEIGHT_IN + LEGEND_ROW_IN * (LEGEND_ROWS - BASE_LEGEND_ROWS)
 
 
 def validate_rows(rows: list[dict]) -> None:
@@ -187,20 +211,28 @@ def build_reward_figure(rows: list[dict]):
     apply_aamas_style()
     lookup = {(r["environment"], r["method"]): r for r in rows}
     fig, axes = plt.subplots(3, 2, figsize=(COLUMN_WIDTH_IN, FIGURE_HEIGHT_IN), squeeze=False)
-    fig.subplots_adjust(left=0.155, right=0.99, bottom=0.22, top=0.88,
+    extra = FIGURE_HEIGHT_IN - BASE_FIGURE_HEIGHT_IN
+    fig.subplots_adjust(left=0.155, right=0.99,
+                        bottom=(0.22 * BASE_FIGURE_HEIGHT_IN + extra) / FIGURE_HEIGHT_IN,
+                        top=1 - 0.12 * BASE_FIGURE_HEIGHT_IN / FIGURE_HEIGHT_IN,
                         wspace=0.35, hspace=0.75)
     positions = list(range(len(PLOT_METHODS)))
-    colors = [METHOD_COLORS[METHODS[method][2]] for method in PLOT_METHODS]
+    colors = [COLORS[METHODS[method][2]] for method in PLOT_METHODS]
     hatches = [None if method == "pspo" else PROJECTED_HATCH for method in PLOT_METHODS]
     for ax, (environment, title) in zip(axes.flat, ENVIRONMENTS.items()):
         rewards = [lookup[environment, method]["mean_total_reward"] for method in PLOT_METHODS]
         errors = [lookup[environment, method]["reward_2se"] for method in PLOT_METHODS]
-        # Preserve the original baseline convention: zero for nonnegative
-        # panels, panel minimum minus slack if any uncertainty extends below zero.
+        # The top limit keeps the original convention (zero, or the lowest error
+        # extent minus slack when uncertainty reaches below zero); the bottom limit
+        # is the lowest mean minus REWARD_BOTTOM_FRACTION of its magnitude, so
+        # methods with similar rewards stay distinguishable. Bars start at it.
         lowest_error_extent = min(reward - error for reward, error in zip(rewards, errors))
-        bottom = (lowest_error_extent - 0.05 * max(abs(lowest_error_extent), 1.0)
-                  if lowest_error_extent < 0 else 0.0)
+        reference_bottom = (lowest_error_extent - 0.05 * max(abs(lowest_error_extent), 1.0)
+                            if lowest_error_extent < 0 else 0.0)
         upper = max(reward + error for reward, error in zip(rewards, errors))
+        top = upper + 0.10 * max(upper - reference_bottom, 0.01)
+        lowest_mean = min(rewards)
+        bottom = lowest_mean - REWARD_BOTTOM_FRACTION * abs(lowest_mean)
         heights = [reward - bottom for reward in rewards]
         filled = ax.bar(positions, heights, bottom=bottom, width=0.76, color=colors,
                         edgecolor=HATCH_COLOR, linewidth=0, zorder=3)
@@ -209,7 +241,7 @@ def build_reward_figure(rows: list[dict]):
         ax.bar(positions, heights, bottom=bottom, yerr=errors, width=0.76, fill=False,
                edgecolor=OUTLINE_COLOR, linewidth=0.35, capsize=1.3,
                error_kw={"elinewidth": 0.65, "capthick": 0.65}, zorder=3)
-        ax.set_ylim(bottom, upper + 0.10 * max(upper - bottom, 0.01))
+        ax.set_ylim(bottom, top)
         ax.set_title(panel_title(title), fontsize=8, fontweight="bold", pad=4,
                      linespacing=0.95)
         ax.set_xlim(-0.60, len(PLOT_METHODS) - 0.40)
@@ -230,8 +262,10 @@ def build_reward_figure(rows: list[dict]):
     indices = legend_indices(len(labels), 2)
     fig.legend([handles[i] for i in indices], [labels[i] for i in indices],
                loc="lower center", bbox_to_anchor=(0.52, 0.015), ncol=2,
-               frameon=False, fontsize=7, columnspacing=0.75, handletextpad=0.4,
-               handlelength=1.1, labelspacing=0.3)
+               # 6.5 pt with tighter spacing so "PPO-Shield (shield off) projected"
+               # fits the native 3.33 in column width.
+               frameon=False, fontsize=6.5, columnspacing=0.5, handletextpad=0.3,
+               handlelength=1.0, labelspacing=0.3)
     return fig
 
 
@@ -250,18 +284,19 @@ def write_figure_snippet(output: Path) -> None:
         "\\caption{Final total reward: adaptive-LID PSPO versus safe-initialised baselines "
         "with conditional projection into a fixed safe LID. Bars show means and error bars "
         "show two standard errors over ten seeds (100 evaluation episodes per seed). "
-        "Each panel has an independent reward scale; panels with negative rewards use "
-        "a lower anchor rather than zero. All final nominal policies attain "
+        "Each panel has an independent reward scale whose axis starts 25\\% of the "
+        "panel's lowest mean below that mean, so compare axis values rather than bar "
+        "lengths. All final nominal policies attain "
         "100\\% measured trajectory safety; no runtime shield is used at evaluation. "
-        "Hatched bars are the projected baselines.}\n"
+        "Cross-hatched bars are the projected baselines.}\n"
         "\\label{fig:pspo-safe-projection-reward}\n"
         "\\Description{Six environment panels compare total reward of adaptive-LID PSPO "
-        "with PPO, PPO-Lagrangian, PPO-PID-Lagrangian, CPO and PPO-Shield baselines "
+        "with PPO, PPO-Lagrangian, PPO-PID-Lagrangian, CPO, RL-SGF and PPO-Shield (shield off) baselines "
         "using safe initialisation and conditional final projection into a fixed LID. "
         "Panels run left to right and top to bottom: Media Streaming, Colour Bomb v1, "
         "Colour Bomb v2, Bridge Crossing v1, Bridge Crossing v2, MiniPacman. "
         "Colours and the shared legend identify the methods; the projected baselines' bars "
-        "are diagonally hatched and PSPO's bars are solid. "
+        "are cross-hatched and PSPO's bars are solid. "
         "Error bars show two standard errors across ten seeds.}\n"
         "\\end{figure}\n"
     )
@@ -271,6 +306,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-root", type=Path, default=RUNS / "safe_initialised_baseline_projection")
     parser.add_argument("--lid-root", type=Path, default=RUNS / "static_lid_ablation_masa_matched")
+    parser.add_argument("--rl-sgf-root", type=Path,
+                        default=RUNS / "rl_sgf_safe_initialised_projection")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--figure-only", action="store_true",
                         help="Update only the figure and snippet from the existing unrounded CSV.")
@@ -282,7 +319,9 @@ def main() -> int:
         write_figure_snippet(output)
         print(f"Updated AAMAS single-column figure from unchanged CSV in {output}")
         return 0
-    rows, sources = collect(args.baseline_root.resolve(), args.lid_root.resolve())
+    rows, sources = collect(
+        args.baseline_root.resolve(), args.lid_root.resolve(), args.rl_sgf_root.resolve()
+    )
     if any(r["mean_safety_rate"] != 1 or r["safety_2se"] != 0 for r in rows):
         raise ValueError("Caption assumes every final policy has 100% measured safety.")
     output = args.output_dir.resolve()
@@ -306,7 +345,8 @@ def main() -> int:
         "\\providecommand{\\Description}[1]{}\n\\begin{document}\n"
         "\\input{reward_table.tex}\n\\input{reward_figure.tex}\n\\end{document}\n"
     )
-    print(f"Generated {len(rows)} method-environment summaries from 360 seed evaluations in {output}")
+    print(f"Generated {len(rows)} method-environment summaries from "
+          f"{len(rows) * len(SEEDS)} seed evaluations in {output}")
     return 0
 
 
