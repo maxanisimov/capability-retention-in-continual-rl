@@ -78,8 +78,18 @@ METHODS: dict[str, tuple[str, list[str]]] = {
     ),
     "cpo": ("train_cpo.py", []),
     "ppo_shield": ("train_ppo_shield.py", []),
+    # RL-SGF (Mestres et al. 2025) with its single untuned setting; opt-in only.
+    "rl_sgf": (
+        "train_rl_sgf.py",
+        [
+            "--rl-sgf-step-size", "0.1",
+            "--rl-sgf-alpha", "1.0",
+            "--rl-sgf-episodes-per-iter", "20",
+        ],
+    ),
 }
-DEFAULT_METHODS = tuple(METHODS)
+# rl_sgf must be requested explicitly so existing default sweeps are unchanged.
+DEFAULT_METHODS = tuple(method for method in METHODS if method != "rl_sgf")
 
 
 @dataclass(frozen=True)

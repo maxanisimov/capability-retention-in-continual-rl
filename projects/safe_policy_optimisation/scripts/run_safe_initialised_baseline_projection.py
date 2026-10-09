@@ -72,6 +72,8 @@ DEFAULT_LID_ROOT = RUNS / "static_lid_ablation_masa_matched"
 DEFAULT_OUTPUT_ROOT = RUNS / "safe_initialised_baseline_projection"
 ENVIRONMENTS = baseline_suite.ENVIRONMENTS
 METHODS = baseline_suite.DEFAULT_METHODS
+# Every method a job may name, including opt-in ones (rl_sgf) left out of METHODS.
+ALL_METHODS = tuple(baseline_suite.METHODS)
 METHOD_PRIORITY = (
     "ppo",
     "ppo_lagrangian",
@@ -79,7 +81,7 @@ METHOD_PRIORITY = (
     "cpo",
     "ppo_shield",
 )
-CUSTOM_METHODS = {"ppo_lagrangian", "ppo_pid_lagrangian", "cpo"}
+CUSTOM_METHODS = {"ppo_lagrangian", "ppo_pid_lagrangian", "cpo", "rl_sgf"}
 SB3_METHODS = {"ppo", "ppo_shield"}
 THREAD_ENV = {
     "OMP_NUM_THREADS": "1",
@@ -97,6 +99,8 @@ SOURCE_FILES = (
     Path("projects/safe_policy_optimisation/stages/train_ppo_lagrangian.py"),
     Path("projects/safe_policy_optimisation/stages/train_cpo.py"),
     Path("projects/safe_policy_optimisation/stages/train_ppo_shield.py"),
+    Path("projects/safe_policy_optimisation/stages/train_rl_sgf.py"),
+    Path("core/safe_rl_baselines/rl_sgf.py"),
     Path("core/provably_safe_policy_optimisation/projection.py"),
 )
 
@@ -1027,10 +1031,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--environment", choices=ENVIRONMENTS)
-    parser.add_argument("--method", choices=METHODS)
+    parser.add_argument("--method", choices=ALL_METHODS)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--envs", nargs="+", choices=ENVIRONMENTS, default=list(ENVIRONMENTS))
-    parser.add_argument("--methods", nargs="+", choices=METHODS, default=None)
+    parser.add_argument("--methods", nargs="+", choices=ALL_METHODS, default=None)
     parser.add_argument("--seeds", nargs="+", type=int, default=list(range(10)))
     parser.add_argument("--lid-root", type=Path, default=DEFAULT_LID_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)

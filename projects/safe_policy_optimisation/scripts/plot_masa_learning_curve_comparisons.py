@@ -37,7 +37,7 @@ from plot_pspo_variant_reward_time_aamas import ALL_VARIANTS, cohort_name
 RUNS = canon.RUNS
 FIGURES = REPO / "projects/safe_policy_optimisation/figures"
 DEFAULT_OUTPUT = FIGURES / "masa_learning_curve_comparisons"
-RL_SGF_RUNS = REPO / ".claude/worktrees/rl-sgf/projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs"
+RL_SGF_RUNS = RUNS
 COMPARISONS = {
     "a_pspo_vs_baselines": "(a) PSPO versus baselines",
     "b_pspo_vs_projected_baselines": "(b) PSPO versus baselines with final projection",

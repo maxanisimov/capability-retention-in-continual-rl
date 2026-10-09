@@ -204,7 +204,8 @@ def _parse_json_dict(value: str | None) -> dict[str, Any]:
 
 
 def _baseline_hyperparameters_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    return {key: getattr(args, key) for key in SAFE_RL_BASELINE_HYPERPARAMS}
+    # Algorithm-specific keys (e.g. rl_sgf_*) only exist on that algorithm's parser.
+    return {key: getattr(args, key, None) for key in SAFE_RL_BASELINE_HYPERPARAMS}
 
 
 def _env_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
