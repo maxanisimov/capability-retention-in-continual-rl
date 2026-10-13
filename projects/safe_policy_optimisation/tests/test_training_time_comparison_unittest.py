@@ -12,8 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import generate_training_time_comparison as timing
+import projects.safe_policy_optimisation.scripts.plots.generate_training_time_comparison as timing
 
 
 def record(event):

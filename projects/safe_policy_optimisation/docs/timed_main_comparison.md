@@ -7,6 +7,14 @@ independently across seeds 0–9: 420 training jobs. Twelve additional jobs fres
 fit a reward-free PSPO base policy once per environment and representation, with
 initialisation seed 0. Each base is shared across its ten RL seeds.
 
+Use `--methods` to choose a subset or include RL-SGF. All six baselines across
+the six environments and ten seeds require 360 training jobs and no PSPO
+initialisation jobs. RL-SGF reuses its saved safe initial actor; its original
+actor fitting time is excluded from these fresh training timings.
+New RL-SGF jobs default to PPO proposals filtered by SGF; select
+`--rl-sgf-update-mode reinforce` for the original algorithm. Existing manifests
+without a mode continue to use REINFORCE. See [RL-SGF update modes](rl_sgf_update_modes.md).
+
 | Environment | Nominal training steps |
 |---|---:|
 | Media Streaming | 25,000 |
@@ -16,21 +24,28 @@ initialisation seed 0. Each base is shared across its ten RL seeds.
 | Bridge Crossing v2 | 1,600,000 |
 | MiniPacman | 2,000,000 |
 
-Two 64-unit hidden layers, CPU execution, and the canonical orthotope,
-region-first PSPO configuration are retained. Each worker is pinned to one core
+Two 64-unit hidden layers, CPU execution, and the line-segment,
+region-first PSPO configuration by default are retained. Each worker is pinned to one core
 and Torch/BLAS use one thread. Eight cores are reserved. Pending jobs are queued
 when the requested concurrency exceeds capacity; no CPU oversubscription is used.
+
+Use `--safe-region-shape orthotope` for the original geometry or `--verify-first`
+for proposal verification before segment/orthotope search. The manifest and each
+PSPO job record these choices; old saved configurations supply matched
+hyperparameters and are not relabelled as new timing runs.
 
 ## Output policy
 
 Every training job writes `training_time.json`. Only lookup PSPO additionally
 writes `metrics.json`, containing final deterministic evaluation mean total
 reward, safety rate, and episode count (100 for full runs).
+When the sweep finishes, `training_times.csv` collects one row per training job,
+including environment, method, seed, completion status, and timing fields.
 
 Normal trainer JSON/CSV/TensorBoard outputs, episode histories, model checkpoints,
 and console output are suppressed rather than written and subsequently deleted.
 Periodic and final evaluations still execute for matched workloads. Their results
-are not persisted for the six standard methods. Accordingly `training_loop_s`
+are not persisted for the other methods. Accordingly `training_loop_s`
 includes periodic evaluation, but excludes final evaluation outside `learn()`.
 
 Initialisation retains only the base parameters required by training, a minimal
@@ -68,9 +83,19 @@ an ephemeral sandbox so the detached supervisor survives the launching shell:
 
 ```bash
 MPLCONFIGDIR=/tmp/pspo-aamas-matplotlib .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_timed_main_comparison.py \
+  projects/safe_policy_optimisation/scripts/experiments/run_timed_main_comparison.py \
   --output-dir projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/timing_main_NEW_RUN \
   --max-parallel 120 --launch
+```
+
+To time all MASA baselines, use a fresh directory and select all six methods:
+
+```bash
+MPLCONFIGDIR=/tmp/pspo-aamas-matplotlib .venv/bin/python \
+  projects/safe_policy_optimisation/scripts/experiments/run_timed_main_comparison.py \
+  --methods ppo ppo_lagrangian ppo_pid_lagrangian cpo rl_sgf ppo_shield \
+  --output-dir projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/masa_baseline_times_NEW_RUN \
+  --max-parallel 16 --launch
 ```
 
 `manifest.json` records all jobs, dependencies, original configuration sources,

@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import torch
 
-from projects.safe_policy_optimisation.scripts.compare_pspo_initial_final_rewards import (
+from projects.safe_policy_optimisation.scripts.experiments.compare_pspo_initial_final_rewards import (
     BasePolicyPredictor,
     build_parser,
     exhaustive_shield_alignment,

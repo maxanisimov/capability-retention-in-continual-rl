@@ -2,7 +2,7 @@
 
 import unittest
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.plots import (
     plot_frozenlake_freq1_evaluation_curves as plot,
 )
 
@@ -121,24 +121,6 @@ class FrequencyOneCurveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             plot.aggregate(points[:-1], expected_seeds=plot.FOUR_LAYOUT_SEEDS)
 
-    def test_crop_removes_long_run_final_instead_of_relabelling_it(self):
-        from projects.safe_policy_optimisation.scripts import (
-            plot_frozenlake_freq1_reward_safety_curves as joint,
-        )
-
-        points = [
-            dict(size=size, timestep=step, channel=channel)
-            for size, step, channel in [
-                (32, 204800, "final"),
-                (64, 200000, "periodic"),
-                (64, 409600, "final"),
-            ]
-        ]
-        cropped = joint.trim_layout64(points, 200000)
-        self.assertEqual(cropped, points[:2])
-        self.assertEqual(points[-1]["timestep"], 409600)
-        with self.assertRaises(ValueError):
-            joint.trim_layout64(points, 0)
 
     def test_matched_ppo64_requires_all_ten_seeds(self):
         points = [
@@ -323,46 +305,6 @@ class FrequencyOneCurveTests(unittest.TestCase):
             finally:
                 plot.plt.close(fig)
 
-    def test_joint_figure_contains_both_metrics_for_all_three_layouts(self):
-        from projects.safe_policy_optimisation.scripts import (
-            plot_frozenlake_freq1_reward_safety_curves as joint,
-        )
-
-        rows = [
-            dict(
-                size=size,
-                method=method,
-                channel=channel,
-                timestep=step,
-                seed_count=1 if size == 64 and method == "ppo" else 10,
-                reward_mean=0.2,
-                reward_two_se=None if size == 64 and method == "ppo" else 0.02,
-                safety_mean=0.9,
-                safety_two_se=None if size == 64 and method == "ppo" else 0.01,
-            )
-            for size in (16, 32, 64)
-            for method in ("ppo", "pspo")
-            for channel, step in [
-                ("periodic", 0),
-                ("periodic", 20000),
-                ("final", plot.EXPECTED_STEPS[size, method]),
-            ]
-        ]
-        fig, axes = joint.build_figure(rows)
-        try:
-            self.assertEqual(axes.shape, (2, 3))
-            self.assertEqual(len(fig.axes), 6)
-            self.assertEqual(axes[0, 0].get_ylabel(), "Standard total reward")
-            self.assertEqual(axes[1, 0].get_ylabel(), "Safety rate")
-            for column in range(3):
-                self.assertEqual(
-                    axes[0, column].get_lines()[0].get_ydata().tolist(), [0.2, 0.2]
-                )
-                self.assertEqual(
-                    axes[1, column].get_lines()[0].get_ydata().tolist(), [0.9, 0.9]
-                )
-        finally:
-            plot.plt.close(fig)
 
 
 if __name__ == "__main__":

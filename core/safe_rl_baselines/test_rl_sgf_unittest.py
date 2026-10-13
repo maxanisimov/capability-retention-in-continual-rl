@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import unittest
 import warnings
+from unittest.mock import patch
 
 import gymnasium as gym
 import numpy as np
@@ -165,7 +166,7 @@ class EstimatorTests(unittest.TestCase):
     GAMMA, COST_GAMMA = 0.9, 0.8
 
     def _model(self, env, **extra) -> RLSGF:
-        return RLSGF(env, net_arch=(8,), gamma=self.GAMMA, cost_gamma=self.COST_GAMMA, cost_limit=0.1,
+        return RLSGF(env, update_mode="reinforce", net_arch=(8,), gamma=self.GAMMA, cost_gamma=self.COST_GAMMA, cost_limit=0.1,
                      seed=0, device="cpu", **extra)
 
     def test_discounted_returns_to_go(self) -> None:
@@ -208,7 +209,7 @@ class StuckAtZeroBudgetTests(unittest.TestCase):
     def test_zero_budget_without_cost_never_moves(self) -> None:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            model = RLSGF(NoCostEnv(), net_arch=(8,), cost_limit=0.0, episodes_per_iter=5, seed=0, device="cpu")
+            model = RLSGF(NoCostEnv(), update_mode="reinforce", net_arch=(8,), cost_limit=0.0, episodes_per_iter=5, seed=0, device="cpu")
         self.assertTrue(any("cost_limit <= 0" in str(w.message) for w in caught))
         before = model._flat_params().clone()
         model.learn(total_timesteps=30)
@@ -242,7 +243,7 @@ class ValidationAndBoundsTests(unittest.TestCase):
 class CartPoleSmokeTests(unittest.TestCase):
     def test_learns_and_reduces_cost_on_cartpole(self) -> None:
         model = RLSGF(
-            gym.make("CartPole-v1"), cost_fn=_left_cost, cost_limit=5.0, gamma=0.99, cost_gamma=0.99,
+            gym.make("CartPole-v1"), update_mode="reinforce", cost_fn=_left_cost, cost_limit=5.0, gamma=0.99, cost_gamma=0.99,
             step_size=0.05, alpha=1.0, episodes_per_iter=10, seed=0, device="cpu", net_arch=(32,),
         )
         before = model._flat_params().clone()
@@ -254,6 +255,130 @@ class CartPoleSmokeTests(unittest.TestCase):
         self.assertIn(int(action), (0, 1))
         for attr in ("actor", "reward_critic", "cost_critic"):
             self.assertTrue(hasattr(model, attr))
+
+
+class PPOHybridTests(unittest.TestCase):
+    def _model(self, **kwargs):
+        settings = dict(net_arch=(8,), cost_limit=10.0, seed=0, n_steps=4,
+                        batch_size=2, n_epochs=3, episodes_per_iter=2)
+        settings.update(kwargs)
+        return RLSGF(NoCostEnv(), **settings)
+
+    def test_default_uses_ppo_epochs_and_trains_reward_critic_without_dual_updates(self):
+        model = self._model(lagrangian_multiplier_init=7.0)
+        self.addCleanup(model.close)
+        before = model.reward_critic[0].weight.detach().clone()
+        callbacks = []
+        model.learn(1, callback=lambda m: callbacks.append(m.num_timesteps) or True)
+        self.assertEqual(model.update_mode, "ppo")
+        self.assertEqual(model.ppo_minibatch_updates, 6)
+        self.assertEqual(model.ppo_timesteps, 4)
+        self.assertEqual(model.constraint_timesteps, 4)
+        self.assertEqual(model.num_timesteps, 8)
+        self.assertEqual(callbacks, [8])
+        self.assertEqual(model.lagrangian_multiplier, 7.0)
+        self.assertFalse(th.equal(before, model.reward_critic[0].weight))
+        self.assertEqual(model.last_stats["method_label"], "RL-SGF-PPO")
+        self.assertEqual({r["sampling_phase"] for r in model.training_episodes}, {"ppo", "constraint"})
+
+    def test_constraint_sampling_preserves_ppo_environment_and_rollout_state(self):
+        model = self._model(n_steps=1)
+        self.addCleanup(model.close)
+        model.env.reset(seed=0)
+        model.collect_rollout()
+        obs, state = model._last_obs, model.env._state
+        model.collect_episodes(2, constraint=True)
+        self.assertIsNot(model.env, model.constraint_env)
+        self.assertEqual(model._last_obs, obs)
+        self.assertEqual(model.env._state, state)
+
+    def test_two_sampling_phases_and_budget_are_reproducible(self):
+        results = []
+        for _ in range(2):
+            model = self._model()
+            self.addCleanup(model.close)
+            model.env.reset(seed=0)
+            model.learn(9)
+            self.assertEqual(model.num_timesteps, 16)
+            self.assertEqual(model.update_count, 2)
+            self.assertEqual(model.num_timesteps, model.ppo_timesteps + model.constraint_timesteps)
+            results.append((model._flat_params().clone(), model.training_episodes))
+        th.testing.assert_close(results[0][0], results[1][0], rtol=0, atol=0)
+        self.assertEqual(results[0][1], results[1][1])
+
+    def _apply_proposal(self, model, proposal, gradient, v1):
+        old = model._flat_params().clone()
+        estimate = {"grad_v1": gradient, "v1_hat": v1, "v0_hat": 0.0,
+                    "mean_episode_cost": 0.0, "mean_episode_reward": 0.0}
+        def propose():
+            model._set_flat_params(old + proposal)
+            return {"policy_loss": 0.0, "ppo_value_loss": 0.0}
+        with patch.object(model, "estimate", return_value=estimate), patch.object(model, "_ppo_proposal", side_effect=propose):
+            model.train()
+        return model._flat_params() - old
+
+    def test_feasible_proposal_is_preserved(self):
+        model = self._model()
+        proposal = th.zeros_like(model._flat_params()); proposal[0] = 0.01
+        actual = self._apply_proposal(model, proposal, th.zeros_like(proposal), -10.0)
+        th.testing.assert_close(actual, proposal, atol=1e-7, rtol=0)
+        self.assertEqual(model.last_stats["case"], "unconstrained")
+
+    def test_unsafe_proposal_is_projected_onto_sampled_constraint(self):
+        model = self._model()
+        proposal = th.zeros_like(model._flat_params()); proposal[0] = 1.0
+        gradient = th.zeros_like(proposal); gradient[0] = 1.0
+        actual = self._apply_proposal(model, proposal, gradient, -0.1)
+        # Independent geometric projection onto the SGF constraint ball.
+        centre = -model.step_size * gradient
+        radius = model.step_size * math.sqrt(float(gradient @ gradient) + 0.2)
+        expected = centre + (proposal - centre) / th.linalg.vector_norm(proposal - centre) * radius
+        th.testing.assert_close(actual, expected, atol=1e-7, rtol=0)
+        self.assertEqual(model.last_stats["case"], "constrained")
+        self.assertLessEqual(model.last_stats["sampled_constraint_value"], 1e-6)
+
+    def test_infeasible_estimate_retains_cost_descent_recovery(self):
+        model = self._model()
+        proposal = th.zeros_like(model._flat_params()); proposal[0] = 1.0
+        gradient = th.zeros_like(proposal); gradient[0] = 0.1
+        actual = self._apply_proposal(model, proposal, gradient, 2.0)
+        th.testing.assert_close(actual, -model.step_size * gradient, atol=1e-7, rtol=0)
+        self.assertEqual(model.last_stats["case"], "infeasible")
+
+    def test_nonfinite_proposal_restores_original_actor(self):
+        model = self._model()
+        old = model._flat_params().clone()
+        proposal = th.full_like(old, float("nan"))
+        with self.assertRaisesRegex(FloatingPointError, "proposal"):
+            self._apply_proposal(model, proposal, th.zeros_like(old), -1.0)
+        th.testing.assert_close(model._flat_params(), old, rtol=0, atol=0)
+
+    def test_continuous_action_log_std_is_part_of_filtered_proposal(self):
+        env = gym.make("Pendulum-v1")
+        self.addCleanup(env.close)
+        model = RLSGF(env, net_arch=(8,), cost_limit=1.0, seed=0)
+        proposal = th.zeros_like(model._flat_params()); proposal[-1] = 1.0
+        self._apply_proposal(model, proposal, th.zeros_like(proposal), -0.01)
+        self.assertGreater(float(model.log_std.detach()), 0.0)
+        self.assertLess(float(model.log_std.detach()), 1.0)
+
+    def test_ppo_clipping_changes_multi_epoch_proposal(self):
+        proposals = []
+        for clip in (0.0, 10.0):
+            model = self._model(clip_range=clip, learning_rate=0.1, n_epochs=8)
+            model.env.reset(seed=0)
+            model.collect_rollout()
+            before = model._flat_params().clone()
+            model._ppo_proposal()
+            proposals.append(model._flat_params() - before)
+        self.assertFalse(th.allclose(proposals[0], proposals[1]))
+
+    def test_mode_validation_and_independent_environment_validation(self):
+        with self.assertRaisesRegex(ValueError, "update_mode"):
+            self._model(update_mode="invalid")
+        env = NoCostEnv()
+        with self.assertRaisesRegex(ValueError, "independent"):
+            RLSGF(env, constraint_env=env, cost_limit=1.0)
 
 
 if __name__ == "__main__":

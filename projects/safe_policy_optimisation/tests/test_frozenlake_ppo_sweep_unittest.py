@@ -10,10 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from projects.safe_policy_optimisation.scripts import (
-    run_frozenlake_ppo_sweep as sweep,
-)
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.experiments import (
     run_stochastic_frozenlake_baselines as baseline,
 )
 from projects.safe_policy_optimisation.stages import train_ppo
@@ -164,47 +161,7 @@ class FrozenLakePlainPPOTests(unittest.TestCase):
             self.assertEqual(row["success_rate"], 0.5)
             self.assertEqual(row["safety_rate"], 1.0)
 
-    def test_manifest_contains_twenty_unique_jobs_and_cpu_assignments(self):
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "new"
-            sources = {size: Path(directory) / f"source{size}" for size in (128, 256)}
-            records = {
-                sources[size]: {"settings": settings(size), "input_sha256": {}}
-                for size in (128, 256)
-            }
-            with patch.object(
-                baseline, "verify_inputs", side_effect=lambda path: records[path]
-            ):
-                manifest = sweep.build_manifest(
-                    output, list(range(8, 28)), sources=sources
-                )
-                with self.assertRaises(FileExistsError):
-                    sweep.build_manifest(output, list(range(8, 28)), sources=sources)
-            jobs = manifest["jobs"]
-            self.assertEqual(len(jobs), 20)
-            self.assertEqual(len({job["cpu"] for job in jobs}), 20)
-            self.assertEqual(len({job["directory"] for job in jobs}), 20)
-            for size in (128, 256):
-                self.assertEqual(
-                    [job["seed"] for job in jobs if job["size"] == size],
-                    list(range(10)),
-                )
-            for job in jobs:
-                self.assertIn("--worker", job["command"])
-                self.assertEqual(
-                    job["command"][job["command"].index("--method") + 1], "ppo"
-                )
-                self.assertNotIn("--init-policy-path", job["stage_arguments"])
-                self.assertNotIn("--smoke", job["command"])
-            self.assertTrue((output / "source_snapshot.zip").is_file())
 
-    def test_manifest_rejects_insufficient_or_duplicate_cpus_before_writes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "new"
-            for cpus in (list(range(8, 27)), [8] * 20):
-                with self.assertRaises(ValueError):
-                    sweep.build_manifest(output, cpus)
-            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

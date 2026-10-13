@@ -1,7 +1,7 @@
 # FrozenLake training-only potential shaping
 
 Implementation: `utils/frozen_lake_reward_shaping.py`.
-PPO test runner: `scripts/run_frozenlake_ppo_shaping.py`.
+PPO test runner: `scripts/experiments/run_frozenlake_ppo_shaping.py`.
 
 The opt-in Gymnasium wrapper returns
 `r_train = r_raw + scale * (gamma * Phi(next_state) - Phi(state))`.
@@ -45,13 +45,13 @@ against overwriting. They may run concurrently in separate processes.
 
 ```bash
 PYTHONPATH=core:. OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  .venv/bin/python projects/safe_policy_optimisation/scripts/run_frozenlake_ppo_shaping.py \
+  .venv/bin/python projects/safe_policy_optimisation/scripts/experiments/run_frozenlake_ppo_shaping.py \
   --size 16 --seed 0 --total-timesteps 200000 --shaping-scale 1 \
   --output-dir projects/safe_policy_optimisation/artifacts/frozenlake_shaping_example \
   --run-id shaped_seed0
 
 PYTHONPATH=core:. OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  .venv/bin/python projects/safe_policy_optimisation/scripts/run_frozenlake_ppo_shaping.py \
+  .venv/bin/python projects/safe_policy_optimisation/scripts/experiments/run_frozenlake_ppo_shaping.py \
   --size 16 --seed 0 --total-timesteps 200000 --shaping-scale 0 \
   --output-dir projects/safe_policy_optimisation/artifacts/frozenlake_shaping_example \
   --run-id unshaped_seed0
@@ -95,7 +95,7 @@ Full audited results and artifacts:
 
 ## PSPO with shaping and safety-only initialization
 
-PSPO pilot runner: `scripts/run_frozenlake_pspo_shaping.py`. It builds the actor
+PSPO pilot runner: `scripts/experiments/run_frozenlake_pspo_shaping.py`. It builds the actor
 only from the safety action mask, with equal logits for every safe action. The
 raw PSPO model is constructed and audited before the shaping wrapper is created.
 An exact actor hash check ensures that attaching shaping does not alter the
@@ -104,7 +104,7 @@ not inputs to actor initialization.
 
 ```bash
 PYTHONPATH=core:. OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  .venv/bin/python projects/safe_policy_optimisation/scripts/run_frozenlake_pspo_shaping.py \
+  .venv/bin/python projects/safe_policy_optimisation/scripts/experiments/run_frozenlake_pspo_shaping.py \
   --size 64 --seed 0 --total-timesteps 200000 --shaping-scale 1 --gamma 0.999 \
   --max-episode-steps 2500 --eval-episodes 100 \
   --output-dir projects/safe_policy_optimisation/artifacts/frozenlake_pspo_shaping_example \
@@ -132,7 +132,7 @@ audit in `_inputs/`, pre-finalization raw metrics, an exhaustive greedy
 
 ## Ten-seed three-method screen sweep
 
-`scripts/run_frozenlake_shaping_sweep.py` prepares 30 CPU-pinned jobs: PSPO,
+`scripts/experiments/run_frozenlake_shaping_sweep.py` prepares 30 CPU-pinned jobs: PSPO,
 PPO-Shield and PPO, each with seeds 0--9. It selects distinct idle physical cores
 after checking both hyperthreads, limits each worker to one compute thread, and
 refuses existing output roots. The supervisor validates source hashes and holds
@@ -148,7 +148,7 @@ training-only and final greedy evaluation is unshielded for both methods.
 
 For all four established safe-RL baselines, select
 `--methods ppo_lagrangian ppo_pid_lagrangian cpo ppo_shield` (40 jobs across
-seeds 0--9). The dedicated `run_frozenlake_safe_baseline_shaping.py` worker
+seeds 0--9). The dedicated `experiments/run_frozenlake_safe_baseline_shaping.py` worker
 uses the existing baseline factory without changing its optimization rules:
 cost limit 0, cost discount 0.99, cost GAE 0.95, Lagrangian multiplier initially
 0, Lagrangian dual learning rate 0.1, and the established PID gains. CPO retains
@@ -177,12 +177,12 @@ Run from the repository root with a new output path:
 ```bash
 task_run=projects/safe_policy_optimisation/artifacts/frozenlake32_shaping_example
 PYTHONPATH=core:. .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_frozenlake_shaping_sweep.py \
+  projects/safe_policy_optimisation/scripts/experiments/run_frozenlake_shaping_sweep.py \
   --size 32 --total-timesteps 200000 --eval-episodes 100 \
   --screen-session frozenlake32-shaping --output-dir "$task_run"
 screen -L -Logfile "$task_run/_logs/supervisor.log" -dmS frozenlake32-shaping \
   env PYTHONPATH=core:. .venv/bin/python -u \
-  projects/safe_policy_optimisation/scripts/run_frozenlake_shaping_sweep.py \
+  projects/safe_policy_optimisation/scripts/experiments/run_frozenlake_shaping_sweep.py \
   --supervise "$task_run/_orchestrator/launch_manifest.json"
 ```
 

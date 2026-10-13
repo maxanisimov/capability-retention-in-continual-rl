@@ -1,6 +1,6 @@
 # Inference timing comparison
 
-`scripts/run_inference_time_comparison.py` benchmarks the existing main-paper
+`scripts/experiments/run_inference_time_comparison.py` benchmarks the existing main-paper
 PSPO and PPO-Shield checkpoints for six environments, across seeds 0–9.
 It never retrains or overwrites the source runs. The timing-only retraining
 sweep did not save final models, so its policies cannot be used here.
@@ -49,7 +49,7 @@ Example launch (the output directory must not already exist):
 
 ```bash
 MPLCONFIGDIR=/tmp/pspo-aamas-matplotlib .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_inference_time_comparison.py \
+  projects/safe_policy_optimisation/scripts/experiments/run_inference_time_comparison.py \
   --output-dir projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/inference_main_TIMESTAMP \
   --launch
 ```

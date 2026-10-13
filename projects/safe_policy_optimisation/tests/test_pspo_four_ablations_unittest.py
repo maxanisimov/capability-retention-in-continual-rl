@@ -15,7 +15,7 @@ import torch
 from core.provably_safe_policy_optimisation.adaptive_safe_ppo import AdaptiveSafePPO
 from core.provably_safe_policy_optimisation.adaptive_safe_ppo_v2 import AdaptiveSafePPOV2
 from provably_safe_policy_optimisation.regions import OrthotopeRegion
-from projects.safe_policy_optimisation.scripts import run_pspo_four_ablations as ablations
+from projects.safe_policy_optimisation.scripts.experiments import run_pspo_four_ablations as ablations
 from projects.safe_policy_optimisation.stages.compute_shield_rashomon_set import (
     build_base_policy,
     fit_base_policy,
@@ -288,14 +288,14 @@ class OrchestratorTests(unittest.TestCase):
                 architecture="two_hidden", source=source,
                 output_root=root / "out", dry_run=True,
                 total_timesteps_override=None,
-                smoke=False,
+                smoke=False, safe_region_shape="orthotope",
             )
             no_gradient = ablations.variant_environment(
                 "no_gradient", "media_streaming", 0, cpu=0,
                 architecture="two_hidden", source=source,
                 output_root=root / "out", dry_run=True,
                 total_timesteps_override=None,
-                smoke=False,
+                smoke=False, safe_region_shape="orthotope",
             )
             no_entropy = ablations.variant_environment(
                 "no_entropy", "media_streaming", 0, cpu=0,

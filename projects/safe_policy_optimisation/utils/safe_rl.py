@@ -56,6 +56,7 @@ SAFE_RL_BASELINE_HYPERPARAMS = (
     "rl_sgf_alpha",
     "rl_sgf_episodes_per_iter",
     "rl_sgf_baseline",
+    "rl_sgf_update_mode",
 )
 # RL-SGF-specific CLI keys -> RLSGF constructor arguments (only forwarded to rl_sgf).
 RL_SGF_HYPERPARAM_KEYS = {
@@ -63,6 +64,7 @@ RL_SGF_HYPERPARAM_KEYS = {
     "rl_sgf_alpha": "alpha",
     "rl_sgf_episodes_per_iter": "episodes_per_iter",
     "rl_sgf_baseline": "baseline",
+    "rl_sgf_update_mode": "update_mode",
 }
 DEFAULT_SAFE_RL_BASELINE_HYPERPARAMS: dict[str, Any] = {
     **PPO_HYPERPARAMETER_DEFAULTS,
@@ -180,6 +182,7 @@ def build_safe_rl_baseline(
     seed: int,
     device: str = "cpu",
     net_arch: tuple[int, ...] = (64, 64),
+    constraint_env: gym.Env | None = None,
     **hyperparameters: Any,
 ) -> Any:
     """Build one safe-RL baseline with the canonical PPO-family defaults."""
@@ -222,6 +225,7 @@ def build_safe_rl_baseline(
     if algorithm == "rl_sgf":
         return RLSGF(
             env,
+            constraint_env=constraint_env,
             **rl_sgf_kwargs,
             **common,
         )
@@ -385,6 +389,8 @@ def write_training_episode_csv(path: Path, rows: Iterable[dict[str, Any]]) -> No
         "unsafe_state_visit_count",
         "safe_trajectory",
     ]
+    if any("sampling_phase" in row for row in rows):
+        fieldnames.append("sampling_phase")
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -417,6 +423,14 @@ def save_checkpoint(path: Path, model: Any, *, algorithm: str, metadata: dict[st
     """Save model parameters and run metadata for later inspection."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = dict(metadata)
+    if algorithm == "rl_sgf":
+        metadata.update(model.update_metadata())
+        metadata["baseline_hyperparameters"] = {
+            **metadata.get("baseline_hyperparameters", {}),
+            **model.hyperparameter_metadata(),
+        }
+        metadata["net_arch"] = [layer.out_features for layer in model.actor if isinstance(layer, th.nn.Linear)][:-1]
     payload: dict[str, Any] = {
         "algorithm": algorithm,
         "metadata": metadata,
@@ -443,12 +457,20 @@ def load_checkpoint_model(
     checkpoint = th.load(checkpoint_path, map_location=device, weights_only=False)
     algorithm = checkpoint["algorithm"]
     metadata = dict(checkpoint.get("metadata", {}))
+    hyperparameters = {}
+    if algorithm == "rl_sgf":
+        hyperparameters = dict(metadata.get("baseline_hyperparameters", {}))
+        hyperparameters["rl_sgf_update_mode"] = metadata.get(
+            "rl_sgf_update_mode", hyperparameters.get("rl_sgf_update_mode", "reinforce")
+        )
     model = build_safe_rl_baseline(
         algorithm,
         env,
         cost_limit=float(metadata.get("cost_limit", 0.0)),
         seed=int(metadata.get("seed", 0)),
         device=device,
+        net_arch=tuple(metadata.get("net_arch", (64, 64))),
+        **hyperparameters,
     )
     model.actor.load_state_dict(checkpoint["actor_state_dict"])
     model.reward_critic.load_state_dict(checkpoint["reward_critic_state_dict"])
@@ -457,6 +479,12 @@ def load_checkpoint_model(
         model.log_std.data.copy_(checkpoint["log_std"].to(model.device))
     model.num_timesteps = int(checkpoint.get("num_timesteps", 0))
     model.last_stats = dict(checkpoint.get("last_stats", {}))
+    if algorithm == "rl_sgf":
+        for field in ("ppo_timesteps", "constraint_timesteps", "reinforce_timesteps",
+                      "ppo_minibatch_updates", "update_count"):
+            fallback = model.num_timesteps if field == "reinforce_timesteps" and model.update_mode == "reinforce" else 0
+            setattr(model, field, int(metadata.get(field, fallback)))
+        model.case_counts = dict(model.last_stats.get("case_counts", {}))
     return model, checkpoint
 
 

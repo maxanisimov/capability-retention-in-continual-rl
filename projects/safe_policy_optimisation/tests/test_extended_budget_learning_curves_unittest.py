@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.plots import (
     plot_extended_budget_learning_curves as curves,
 )
 

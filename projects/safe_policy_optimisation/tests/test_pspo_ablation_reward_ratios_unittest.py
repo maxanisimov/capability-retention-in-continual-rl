@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.plots import (
     compute_pspo_ablation_reward_ratios as ratios,
 )
 

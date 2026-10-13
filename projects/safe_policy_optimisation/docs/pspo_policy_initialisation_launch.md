@@ -78,7 +78,7 @@ HOSTS_TSV=/tmp/pspo_policy_initialisation_hosts.tsv
 cd "$LAUNCH_ROOT"
 
 $LAUNCH_ROOT/.venv/bin/python \
-  $LAUNCH_ROOT/projects/safe_policy_optimisation/scripts/lab_cluster/pspo_initialisation.py \
+  $LAUNCH_ROOT/projects/safe_policy_optimisation/scripts/experiments/lab_cluster/pspo_initialisation.py \
   probe --source-root "$LAUNCH_ROOT" --out "$HOSTS_TSV" \
   --minimum-idle 90 --reserve 2 --samples 5
 ```
@@ -93,7 +93,7 @@ fit; otherwise production launch aborts without starting a partial wave.
 
 ```bash
 OUTPUT_ROOT=/vol/bitbucket/ma5923/_projects/CertifiedContinualLearning/artifacts/ablation_studies/pspo_four_ablations
-TOOL=$LAUNCH_ROOT/projects/safe_policy_optimisation/scripts/lab_cluster/pspo_initialisation.py
+TOOL=$LAUNCH_ROOT/projects/safe_policy_optimisation/scripts/experiments/lab_cluster/pspo_initialisation.py
 
 $LAUNCH_ROOT/.venv/bin/python "$TOOL" dispatch \
   --hosts-tsv "$HOSTS_TSV" --source-root "$LAUNCH_ROOT" \
@@ -150,7 +150,7 @@ the policy-initialisation analysis variants:
 
 ```bash
 $LAUNCH_ROOT/.venv/bin/python \
-  $LAUNCH_ROOT/projects/safe_policy_optimisation/scripts/analyse_pspo_four_ablations.py \
+  $LAUNCH_ROOT/projects/safe_policy_optimisation/scripts/plots/analyse_pspo_four_ablations.py \
   --root "$OUTPUT_ROOT" --variants control no_entropy ce_only \
   --output-dir "$OUTPUT_ROOT/analysis/policy_initialisation"
 ```

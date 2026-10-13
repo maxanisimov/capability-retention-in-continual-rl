@@ -1,6 +1,6 @@
 # Verify-first PSPO with certified line segments
 
-`scripts/run_pspo_verify_first_segment.py` prepares and supervises 60 parallel
+`scripts/experiments/run_pspo_verify_first_segment.py` prepares and supervises 60 parallel
 jobs: the six main paper environments and seeds 0–9. Each worker is pinned to
 its own CPU, with numerical-library threads set to one. CPU selection samples
 five seconds of host idle time and requires at least 90% idle, reserving CPU
@@ -25,7 +25,7 @@ Prepare on the actual host, using a new run name:
 ```bash
 MPLCONFIGDIR=/tmp/pspo-aamas-matplotlib OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_pspo_verify_first_segment.py \
+  projects/safe_policy_optimisation/scripts/experiments/run_pspo_verify_first_segment.py \
   --run-name pspo_verifyfirst_segment_masa_TIMESTAMP
 ```
 
@@ -36,7 +36,7 @@ screen -dmS pspo-verifyfirst-segment-TIMESTAMP \
   -L -Logfile projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_verifyfirst_segment_masa_TIMESTAMP/_orchestrator/screen.log \
   env MPLCONFIGDIR=/tmp/pspo-aamas-matplotlib OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONUNBUFFERED=1 \
-  .venv/bin/python projects/safe_policy_optimisation/scripts/run_pspo_verify_first_segment.py \
+  .venv/bin/python projects/safe_policy_optimisation/scripts/experiments/run_pspo_verify_first_segment.py \
   --supervise projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/pspo_verifyfirst_segment_masa_TIMESTAMP/_orchestrator/launch_manifest.json
 ```
 

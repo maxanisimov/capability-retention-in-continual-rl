@@ -170,7 +170,7 @@ Recommended paper wording:
 
 ## Code references
 
-- Current construction and column audit: `scripts/run_stochastic_frozenlake_pspo.py`,
+- Current construction and column audit: `scripts/experiments/run_stochastic_frozenlake_pspo.py`,
   `build_safe_actor` (lines 97--157).
 - Generic dataset and fitted initialization: `stages/compute_shield_rashomon_set.py`,
   `make_safe_behaviour_payload` (line 96), `safe_action_bc_loss` (line 459),

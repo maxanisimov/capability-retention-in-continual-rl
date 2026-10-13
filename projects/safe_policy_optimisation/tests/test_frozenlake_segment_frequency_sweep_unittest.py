@@ -2,7 +2,7 @@
 
 import unittest
 
-from projects.safe_policy_optimisation.scripts.run_frozenlake_segment_frequency_sweep import (
+from projects.safe_policy_optimisation.scripts.experiments.run_frozenlake_segment_frequency_sweep import (
     set_frequency,
 )
 

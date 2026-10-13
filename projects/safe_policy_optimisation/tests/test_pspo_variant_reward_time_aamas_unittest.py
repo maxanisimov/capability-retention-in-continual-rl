@@ -10,7 +10,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from projects.safe_policy_optimisation.scripts.plot_pspo_variant_reward_time_aamas import (
+from projects.safe_policy_optimisation.scripts.plots.plot_pspo_variant_reward_time_aamas import (
     ALL_VARIANTS,
     COLUMN_HEIGHT_IN,
     COLUMN_WIDTH_IN,

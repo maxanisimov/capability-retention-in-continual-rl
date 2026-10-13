@@ -2,7 +2,7 @@
 
 import unittest
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.plots import (
     plot_frozenlake_scalability as plot,
 )
 
