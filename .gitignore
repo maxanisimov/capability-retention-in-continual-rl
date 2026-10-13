@@ -211,6 +211,9 @@ artifacts/
 outputs/
 results/
 plots/
+# The revamped PSPO plots directory contains source code, not generated plots.
+!projects/safe_policy_optimisation/scripts/plots/
+!projects/safe_policy_optimisation/scripts/plots/*.py
 tables/
 logs/
 experiments/pipelines/outputs/

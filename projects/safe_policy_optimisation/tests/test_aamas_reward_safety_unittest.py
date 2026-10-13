@@ -7,7 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from projects.safe_policy_optimisation.scripts._aamas_reward_safety import (
+from projects.safe_policy_optimisation.scripts.plots._aamas_reward_safety import (
     BarMethod, BarPanel, COLUMN_WIDTH_IN, ENVIRONMENT_ORDER, FULL_WIDTH_IN,
     GRID_HEIGHT_IN, SINGLE_HEIGHT_IN, compact_figure, legend_indices,
     ordered_panels, save_compact_figure, TRANSPOSED_SINGLE_HEIGHT_IN,
@@ -36,7 +36,7 @@ class AamasRewardSafetyTests(unittest.TestCase):
         labels = ["MiniPacman", "Bridge Crossing v2", "Bridge Crossing",
                   "Colour Bomb v2", "Colour Bomb", "Media Streaming"]
         panels = [BarPanel(label, [1], [0], [1], [0]) for label in labels]
-        from projects.safe_policy_optimisation.scripts._aamas_reward_safety import canonical_label
+        from projects.safe_policy_optimisation.scripts.plots._aamas_reward_safety import canonical_label
         self.assertEqual(tuple(canonical_label(p.label) for p in ordered_panels(panels)),
                          ENVIRONMENT_ORDER)
 
@@ -118,7 +118,7 @@ class AamasRewardSafetyTests(unittest.TestCase):
         self.assert_legend_fits(fig)
 
     def test_shield_off_bar_sits_between_ppo_shield_and_pspo(self):
-        from projects.safe_policy_optimisation.scripts.plot_final_policy_reward_safety_bars import (
+        from projects.safe_policy_optimisation.scripts.plots.plot_final_policy_reward_safety_bars import (
             bar_methods,
         )
         self.assertEqual([spec.key for spec in bar_methods()][-2:], ["ppo_shield", "pspo"])

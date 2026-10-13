@@ -3,16 +3,77 @@
 from __future__ import annotations
 
 import json
+import csv
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import run_timed_main_comparison as sweep
+import projects.safe_policy_optimisation.scripts.experiments.run_timed_main_comparison as sweep
 
 
 class TimingSweepTests(unittest.TestCase):
+    def test_all_baselines_have_360_jobs_without_pspo_initialisation(self):
+        manifest = sweep.build_manifest(
+            Path("/tmp/all-baseline-timing-test"), list(range(10)), None, False,
+            methods=list(sweep.BASELINE_METHODS),
+        )
+        self.assertEqual(len(manifest["jobs"]), 360)
+        self.assertEqual({job["method"] for job in manifest["jobs"]}, set(sweep.BASELINE_METHODS))
+        self.assertTrue(all(job["kind"] == "training" for job in manifest["jobs"]))
+        self.assertEqual(len({job["environment"] for job in manifest["jobs"]}), 6)
+        for job in manifest["jobs"]:
+            if job["method"] != "rl_sgf":
+                continue
+            values = sweep.training_values(job, Path("/tmp/rl-sgf-timing-test"), 0, False)
+            self.assertEqual(values["init_policy_path"], job["config"]["init_policy_path"])
+            self.assertEqual(values["cost_limit"], job["config"]["cost_limit"])
+            self.assertEqual(values["rl_sgf_update_mode"], "ppo")
+
+    def test_rl_sgf_new_manifests_and_legacy_jobs_keep_distinct_modes(self):
+        for mode in ("ppo", "reinforce"):
+            manifest = sweep.build_manifest(Path("/tmp/sgf-timing-mode-test"), [0],
+                ["media_streaming"], False, methods=["rl_sgf"], rl_sgf_update_mode=mode)
+            job = manifest["jobs"][0]
+            self.assertEqual(job["rl_sgf_update_mode"], mode)
+            self.assertEqual(sweep.training_values(job, Path("/tmp/sgf-run"), 0, False)["rl_sgf_update_mode"], mode)
+            legacy = dict(job)
+            del legacy["rl_sgf_update_mode"]
+            self.assertEqual(sweep.rl_sgf_mode(legacy), "reinforce")
+            self.assertEqual(sweep.training_values(legacy, Path("/tmp/sgf-run"), 0, False)["rl_sgf_update_mode"], "reinforce")
+
+    def test_selecting_ppo_alias_does_not_create_pspo_jobs(self):
+        manifest = sweep.build_manifest(
+            Path("/tmp/ppo-timing-test"), [0], ["media_streaming"], False,
+            methods=["ppo"],
+        )
+        self.assertEqual(len(manifest["jobs"]), 1)
+        self.assertEqual(manifest["jobs"][0]["method"], "ppo_policy")
+        with self.assertRaisesRegex(ValueError, "distinct supported"):
+            sweep.build_manifest(Path("/tmp/duplicate-timing-test"), [0], None, False,
+                                 methods=["ppo", "ppo_policy"])
+
+    def test_csv_preserves_per_seed_timings_and_failure_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = [dict(kind="training", environment="media_streaming", method="rl_sgf",
+                         seed=seed, budget=25000, relative_dir=f"runs/seed{seed}")
+                    for seed in (0, 1)]
+            output = Path(tmp)
+            sweep.write_json(output / jobs[0]["relative_dir"] / "training_time.json",
+                             dict(status="complete", training_loop_s=1.5, process_wall_time_s=2.0))
+            sweep.write_json(output / jobs[1]["relative_dir"] / "training_time.json",
+                             dict(status="failed", error="test failure"))
+            csv_path = sweep.write_training_time_csv(dict(output_dir=tmp, jobs=jobs))
+            with csv_path.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["training_loop_s"], "1.5")
+            self.assertEqual(rows[0]["rl_sgf_update_mode"], "reinforce")
+            self.assertEqual(rows[0]["method_label"], "RL-SGF-REINFORCE")
+            self.assertEqual(rows[1]["status"], "failed")
+            self.assertEqual(rows[1]["error"], "test failure")
+            self.assertEqual(rows[1]["training_loop_s"], "")
+
     def test_manifest_has_420_independent_training_jobs_and_12_shared_initialisations(
         self,
     ):

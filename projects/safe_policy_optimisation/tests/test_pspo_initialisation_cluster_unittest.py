@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-from projects.safe_policy_optimisation.scripts.lab_cluster import pspo_initialisation as cluster
+from projects.safe_policy_optimisation.scripts.experiments.lab_cluster import pspo_initialisation as cluster
 
 
 class CpuAndSchedulerTests(unittest.TestCase):

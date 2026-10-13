@@ -5,17 +5,41 @@ import tempfile
 import unittest
 import zipfile
 from argparse import Namespace
+from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.experiments import (
     run_safe_initialised_baseline_projection as experiment,
 )
 
 
 class SafeInitialisedBaselineProjectionTests(unittest.TestCase):
+    def test_rl_sgf_mode_is_forwarded_and_uses_separate_output_paths(self):
+        from projects.safe_policy_optimisation.utils.cli import PPO_HYPERPARAMETER_DEFAULTS
+        config = dict(training_hyperparameters=PPO_HYPERPARAMETER_DEFAULTS,
+                      base_policy_architecture=self._architecture(), env_id="CartPole-v1",
+                      env_kwargs={}, max_episode_steps=10, cost_limit=1.0,
+                      total_timesteps=8, eval_episodes=2, success_reward_threshold=1.0)
+        lid = SimpleNamespace(architecture=self._architecture(), base_policy_path=Path("/tmp/base.pt"))
+        for mode, method_dir in (("ppo", "rl_sgf_ppo"), ("reinforce", "rl_sgf")):
+            args = experiment.build_parser().parse_args([
+                "--methods", "rl_sgf", "--seeds", "0", "--rl-sgf-update-mode", mode,
+            ])
+            command = experiment.worker_command(args, "media_streaming", "rl_sgf", 0)
+            self.assertEqual(command[command.index("--rl-sgf-update-mode") + 1], mode)
+            jobs = experiment.make_wave_jobs(args, "media_streaming", ["rl_sgf"], [1])
+            self.assertEqual(jobs[0].run_dir.parent.name, method_dir)
+            with patch.object(experiment.baseline_suite, "reference_config", return_value=config):
+                training, run_dir = experiment.training_command("media_streaming", "rl_sgf", 0,
+                    output_root=Path("/tmp/projected-sgf-test"), lid=lid, smoke=True,
+                    rl_sgf_update_mode=mode)
+            self.assertEqual(run_dir.parent.name, method_dir)
+            self.assertEqual(training[training.index("--rl-sgf-update-mode") + 1], mode)
+
     def test_parse_mpstat_idle_uses_average_rows(self) -> None:
         output = """
 12:00:01  2  1.0 2.0 97.0

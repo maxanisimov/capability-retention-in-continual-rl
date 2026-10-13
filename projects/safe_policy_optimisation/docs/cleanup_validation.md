@@ -12,10 +12,10 @@ The reorganisation was checked against the local paper data before committing.
 Regenerated the following into temporary output directories:
 
 ```bash
-python projects/safe_policy_optimisation/scripts/plot_masa_learning_curve_comparisons.py --output-dir /tmp/pspo-cleanup-validation/masa
-python projects/safe_policy_optimisation/scripts/generate_masa_all_methods_table.py --output-dir /tmp/pspo-cleanup-validation/table
-python projects/safe_policy_optimisation/scripts/generate_safe_projection_comparison_assets.py --output-dir /tmp/pspo-cleanup-validation/projection
-python projects/safe_policy_optimisation/scripts/plot_frozenlake_scalability.py --output-dir /tmp/pspo-cleanup-validation/frozenlake
+python projects/safe_policy_optimisation/scripts/plots/plot_masa_learning_curve_comparisons.py --output-dir /tmp/pspo-cleanup-validation/masa
+python projects/safe_policy_optimisation/scripts/plots/generate_masa_all_methods_table.py --output-dir /tmp/pspo-cleanup-validation/table
+python projects/safe_policy_optimisation/scripts/plots/generate_safe_projection_comparison_assets.py --output-dir /tmp/pspo-cleanup-validation/projection
+python projects/safe_policy_optimisation/scripts/plots/plot_frozenlake_scalability.py --output-dir /tmp/pspo-cleanup-validation/frozenlake
 ```
 
 All **14 CSV outputs** matched the existing files in shape, column order and
@@ -38,3 +38,21 @@ validation checks relocation, imports, launcher wiring and reproducibility of
 the retained analysis; it does not revalidate the algorithms' formal guarantees.
 Archived research tests are excluded from the active suite. Bulk artifacts
 remain local and ignored by Git; the manifests document their locations.
+
+## Revamp merge validation — 2026-10-13
+
+- The active project and core safe-RL suites passed together: **419 tests,
+  zero failures/errors/skips**. Commands use `unittest discover` with
+  `test_*unittest.py` under `projects/safe_policy_optimisation/tests` and
+  `core/safe_rl_baselines`, with `PYTHONPATH=core:.`.
+- Tests requiring retired launchers/figures were preserved in `tests/archive/`
+  with a `historical_` prefix. Mixed modules retain 21 active baseline/plotting
+  tests. These historical files are excluded from default unittest/pytest
+  collection, matching the script archive's retained-workflow boundary.
+- New Python sources parsed successfully; active shell scripts passed
+  `bash -n`; `git diff --check` passed.
+- Validation covers the experiments/plots layout, default line-segment PSPO,
+  optional orthotope/verify-first modes, RL-SGF-PPO and explicit REINFORCE,
+  saved-mode compatibility, and training-time output wiring.
+- Existing training output directories remain ignored and local. The merge
+  uses an isolated worktree so running jobs keep their source paths available.

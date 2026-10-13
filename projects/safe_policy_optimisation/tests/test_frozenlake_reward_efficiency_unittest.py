@@ -6,7 +6,7 @@ from pathlib import Path
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / "scripts/plot_frozenlake_ppo_pspo_reward_efficiency.py"
+    / "scripts/plots/plot_frozenlake_ppo_pspo_reward_efficiency.py"
 )
 SPEC = importlib.util.spec_from_file_location("reward_efficiency", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

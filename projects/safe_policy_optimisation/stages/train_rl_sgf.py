@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     group = parser.add_argument_group("RL-SGF")
     group.add_argument(
+        "--rl-sgf-update-mode", choices=("ppo", "reinforce"), default="ppo",
+        help="PPO proposal followed by one SGF step (default), or original REINFORCE updates.",
+    )
+    group.add_argument(
         "--rl-sgf-step-size",
         type=float,
         default=0.1,
@@ -45,13 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--rl-sgf-episodes-per-iter",
         type=int,
         default=100,
-        help="Complete on-policy episodes N used for each estimate (paper: 100-200).",
+        help="Complete episodes for each SGF estimate, additional to n_steps in PPO mode.",
     )
     group.add_argument(
         "--rl-sgf-baseline",
         choices=("none", "critic"),
         default="none",
-        help="REINFORCE baseline: 'none' as in the paper, or learned reward/cost critics.",
+        help="Monte Carlo estimator baseline; PPO mode always trains its reward critic.",
     )
     return parser
 

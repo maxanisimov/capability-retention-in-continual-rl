@@ -6,8 +6,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import run_pspo_verify_first_segment as launcher
+import projects.safe_policy_optimisation.scripts.experiments.run_pspo_verify_first_segment as launcher
 
 from projects.safe_policy_optimisation.stages import train_pspo
 

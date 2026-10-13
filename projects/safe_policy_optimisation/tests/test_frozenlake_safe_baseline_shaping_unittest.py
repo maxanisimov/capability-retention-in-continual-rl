@@ -13,10 +13,10 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.experiments import (
     run_frozenlake_safe_baseline_shaping as worker,
 )
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.experiments import (
     run_frozenlake_shaping_sweep as sweep,
 )
 from projects.safe_policy_optimisation.tests.test_frozenlake_shaping_sweep_unittest import (

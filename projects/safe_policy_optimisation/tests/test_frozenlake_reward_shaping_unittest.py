@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from projects.safe_policy_optimisation.scripts.run_frozenlake_ppo_shaping import (
+from projects.safe_policy_optimisation.scripts.experiments.run_frozenlake_ppo_shaping import (
     build_parser,
     run,
 )

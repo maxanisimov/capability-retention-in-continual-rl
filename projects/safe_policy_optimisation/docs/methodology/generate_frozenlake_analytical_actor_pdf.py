@@ -489,7 +489,7 @@ def numerical_check():
     import numpy as np
     import torch
 
-    from projects.safe_policy_optimisation.scripts.run_stochastic_frozenlake_pspo import (
+    from projects.safe_policy_optimisation.scripts.experiments.run_stochastic_frozenlake_pspo import (
         build_safe_actor,
     )
     from projects.safe_policy_optimisation.utils.frozen_lake_experiment import (

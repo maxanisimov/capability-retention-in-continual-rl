@@ -121,7 +121,7 @@ standard-budget baselines, and the MiniPacman comparison remains provisional.
 All 40 MiniPacman jobs from the extended-budget sweep failed immediately on
 2026-08-26 at 10:36 with `ModuleNotFoundError: No module named 'yaml'` — the
 launching shell resolved a Python that was not the repo `.venv`. No MiniPacman
-training happened. `run_seed_experiments.py` hardcodes `.venv/bin/python`
+training happened. `experiments/run_seed_experiments.py` hardcodes `.venv/bin/python`
 (line 35) and works when invoked with that interpreter, verified by relaunching
 one MiniPacman CPO job.
 
@@ -132,10 +132,10 @@ cd <repo>
 ENVS=mini_pacman SMOKE_TIMESTEPS=2000000 \
 SEEDS=0,1,2,3,4,5,6,7,8,9 METHOD_GROUPS=ppo,baselines_lag,cpo,shielded \
 PAPER_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/rl_baselines_extended_budgets \
-.venv/bin/python projects/safe_policy_optimisation/scripts/run_seed_experiments.py
+.venv/bin/python projects/safe_policy_optimisation/scripts/experiments/run_seed_experiments.py
 ```
 
-`scripts/run_extended_rl_baseline_sweeps.sh` already drives exactly this, but its
+`scripts/experiments/run_extended_rl_baseline_sweeps.sh` already drives exactly this, but its
 Bridge Crossing v2 leg has completed, so rerunning the whole script would
 overwrite those results in place (see the artifacts-overwrite hazard). Run the
 MiniPacman leg on its own, or back up

@@ -13,7 +13,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 
-from projects.safe_policy_optimisation.scripts import (
+from projects.safe_policy_optimisation.scripts.experiments import (
     run_frozenlake_shaping_sweep as sweep,
 )
 from projects.safe_policy_optimisation.utils.frozen_lake_experiment import (

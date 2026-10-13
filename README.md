@@ -81,7 +81,7 @@ SEEDS=0,1,2,3,4,5,6,7,8,9 \
 METHOD_GROUPS=baselines_lag,cpo,shielded \
 PAPER_OUT_BASE=projects/safe_policy_optimisation/artifacts/paper_2503_07671/runs/safe_rl_baselines \
 .venv/bin/python \
-  projects/safe_policy_optimisation/scripts/run_seed_experiments.py
+  projects/safe_policy_optimisation/scripts/experiments/run_seed_experiments.py
 ```
 
 Run canonical region-first PSPO with:

@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-from projects.safe_policy_optimisation.scripts.launch_pspo_multi_env import (
+from projects.safe_policy_optimisation.scripts.experiments.launch_pspo_multi_env import (
     DEFAULT_ENVS,
     build_launch_environment,
     build_parser,

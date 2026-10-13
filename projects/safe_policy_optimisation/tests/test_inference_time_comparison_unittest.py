@@ -10,8 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import run_inference_time_comparison as benchmark
+import projects.safe_policy_optimisation.scripts.experiments.run_inference_time_comparison as benchmark
 from provably_safe_policy_optimisation import Shield
 
 

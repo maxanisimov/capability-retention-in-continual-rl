@@ -433,6 +433,11 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
         max_episode_steps=job["max_episode_steps"],
         env_kwargs=env_kwargs,
     )
+    constraint_env = None
+    if algorithm == "rl_sgf" and job["baseline_hyperparameters"].get("rl_sgf_update_mode", "ppo") == "ppo":
+        constraint_env = make_safe_rl_env(
+            str(job["env_id"]), max_episode_steps=job["max_episode_steps"], env_kwargs=env_kwargs,
+        )
     try:
         train_env.action_space.seed(train_seed)
         train_env.reset(seed=train_seed)
@@ -443,6 +448,7 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
             seed=train_seed,
             device=str(job["device"]),
             net_arch=tuple(job.get("net_arch") or (64, 64)),
+            constraint_env=constraint_env,
             **dict(job["baseline_hyperparameters"]),
         )
         warm_start = None
@@ -531,6 +537,8 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
                 "unshielded_reward_evaluations": reward_curve.evaluations,
             },
         }
+        if algorithm == "rl_sgf":
+            summary.update(model.update_metadata())
         save_checkpoint(
             output_dir / f"{algorithm}.pt",
             model,
@@ -545,6 +553,8 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
                 "final_timesteps": int(model.num_timesteps),
                 "early_stop_triggered": bool(early_stop.stop_triggered),
                 "cpu_ids": applied_cpu_ids,
+                "net_arch": list(job.get("net_arch") or (64, 64)),
+                "baseline_hyperparameters": dict(job["baseline_hyperparameters"]),
             },
         )
         log_info(
@@ -571,6 +581,8 @@ def _train_algorithm_impl(job: dict[str, Any]) -> dict[str, Any]:
             "training_rows": training_episode_rows(algorithm, training_records),
         }
     finally:
+        if constraint_env is not None:
+            constraint_env.close()
         train_env.close()
         curve_logger.close()
 

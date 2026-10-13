@@ -9,7 +9,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from projects.safe_policy_optimisation.scripts import generate_safe_projection_comparison_assets as plot
+from projects.safe_policy_optimisation.scripts.plots import generate_safe_projection_comparison_assets as plot
 
 
 def example_rows():

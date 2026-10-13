@@ -1385,7 +1385,7 @@ class DeprecatedPspoOptionAliasTests(unittest.TestCase):
 
     def test_plot_script_adaptive_root_alias(self) -> None:
         plots = importlib.import_module(
-            "projects.safe_policy_optimisation.scripts.plot_extended_budget_learning_curves"
+            "projects.safe_policy_optimisation.scripts.plots.plot_extended_budget_learning_curves"
         )
         canonical = plots.parse_args(["--pspo-root", "/tmp/pspo-root"])
         self.assertEqual(canonical.adaptive_root, Path("/tmp/pspo-root"))
@@ -1464,6 +1464,7 @@ class PspoRashomonBudgetOptionTests(unittest.TestCase):
         script = (
             Path(__file__).resolve().parents[1]
             / "scripts"
+            / "experiments"
             / "run_pspo_one_env.sh"
         ).read_text(encoding="utf-8")
         for name, flag in (

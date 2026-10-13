@@ -377,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--safe-region-shape",
         choices=("orthotope", "zonotope", "segment"),
-        default="orthotope",
+        default="segment",
         help=(
             "Certified region geometry. 'segment' is the rank-one zonotope "
             "spanning [last safe params, proposal]: the longest certified step "

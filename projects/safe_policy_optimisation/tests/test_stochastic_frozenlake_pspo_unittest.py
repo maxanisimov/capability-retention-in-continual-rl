@@ -8,7 +8,7 @@ import unittest
 import gymnasium as gym
 import numpy as np
 
-from projects.safe_policy_optimisation.scripts.run_stochastic_frozenlake_pspo import (
+from projects.safe_policy_optimisation.scripts.experiments.run_stochastic_frozenlake_pspo import (
     INITIALISATION_SCHEME,
     build_safe_actor,
     default_output,

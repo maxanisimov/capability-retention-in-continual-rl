@@ -32,7 +32,9 @@ checkout can use `PYTHONPATH=core:.`; use `OMP_NUM_THREADS=1` for small tests.
 | `run_experiment.py` | Declarative pipeline entry point; `--list-pipelines` lists settings |
 | `settings/` | Pipeline/task YAML and tracked PSPO launcher hyperparameters |
 | `stages/` | Training, shield synthesis, certification and evaluation stages |
-| `scripts/` | Paper study launchers, aggregation, tables and figures |
+| `scripts/experiments/` | Training, evaluation, sweeps and cluster launchers |
+| `scripts/plots/` | Figures, tables, renderers and result analyses |
+| `scripts/archive/` | Retired scripts preserved for reference |
 | `utils/` | Configuration, environments, logging, checkpoints and evaluation |
 | `tests/` | Active experiment and analysis regression tests |
 | `docs/` | Reproduction inventory, protocols and methodology |
@@ -58,10 +60,10 @@ the cohorts listed in the inventory, or new training runs with matching settings
 RL-SGF defaults resolve within this project and do not require another worktree.
 
 ```bash
-python projects/safe_policy_optimisation/scripts/plot_masa_learning_curve_comparisons.py
-python projects/safe_policy_optimisation/scripts/generate_masa_all_methods_table.py
-python projects/safe_policy_optimisation/scripts/generate_safe_projection_comparison_assets.py
-python projects/safe_policy_optimisation/scripts/plot_frozenlake_scalability.py
+python projects/safe_policy_optimisation/scripts/plots/plot_masa_learning_curve_comparisons.py
+python projects/safe_policy_optimisation/scripts/plots/generate_masa_all_methods_table.py
+python projects/safe_policy_optimisation/scripts/plots/generate_safe_projection_comparison_assets.py
+python projects/safe_policy_optimisation/scripts/plots/plot_frozenlake_scalability.py
 ```
 
 Use `--help` for output overrides. Main MASA learning-curve comparisons use
