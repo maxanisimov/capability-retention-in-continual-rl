@@ -9,13 +9,13 @@ import gymnasium as gym
 import numpy as np
 import torch as th
 
-from provably_safe_policy_optimisation import AdaptiveSafePPO
+from provably_safe_policy_optimisation import AdaptiveSafePPO, AdaptiveSafePPOV2
 from provably_safe_policy_optimisation import adaptive_safe_ppo as asp
 from provably_safe_policy_optimisation.adaptive_safe_ppo import (
-    verifier_compatible_actor,
     calibrate_inverse_temperature,
     select_certified_box,
     shield_safe_behaviour_dataset,
+    verifier_compatible_actor,
 )
 
 
@@ -76,7 +76,7 @@ def _stub_engine(record: list, *, min_hard_acc: float = 1.0, eps: float = 0.05):
 
 
 class AdaptiveSafePPOTests(unittest.TestCase):
-    def _make(self, mask=None, recorder=None, **extra) -> AdaptiveSafePPO:
+    def _make(self, mask=None, recorder=None, model_cls=AdaptiveSafePPO, **extra) -> AdaptiveSafePPO:
         env = recorder or gym.make("FrozenLake-v1")
         extra.setdefault("base_policy_state_dict", _safe_base_state_dict())
         extra.setdefault("n_steps", 32)
@@ -89,7 +89,7 @@ class AdaptiveSafePPOTests(unittest.TestCase):
         extra.setdefault("rashomon_surrogate", "auto")
         extra.setdefault("directional_rashomon_growth", False)
         extra.setdefault("stop_when_proposal_contained", False)
-        model = AdaptiveSafePPO(
+        model = model_cls(
             "MlpPolicy", env, shield=mask if mask is not None else _only_action_safe(1),
             seed=0, shield_seed=0, device="cpu", verbose=0,
             policy_kwargs={"net_arch": []}, **extra,
@@ -365,13 +365,35 @@ class AdaptiveSafePPOTests(unittest.TestCase):
 
     # -------------------------------------------------- inherited behaviours
 
-    def test_shielded_exploration_still_active(self) -> None:
-        mask = _only_action_safe(1)
-        recorder = _RecordActions(gym.make("FrozenLake-v1"))
-        model = self._make(mask=mask, recorder=recorder)
-        model.learn(total_timesteps=64)
-        self.assertTrue(recorder.records)
-        self.assertTrue(all(mask[s, a] == 1 for s, a in recorder.records))
+    def test_pspo_executes_and_stores_forbidden_proposals_without_override(self) -> None:
+        self._patch_engine([])
+        for model_cls in (AdaptiveSafePPO, AdaptiveSafePPOV2):
+            with self.subTest(model=model_cls.__name__):
+                recorder = _RecordActions(gym.make("FrozenLake-v1"))
+                model = self._make(
+                    recorder=recorder, model_cls=model_cls,
+                    learning_rate=0,
+                )
+
+                def forward(obs, deterministic=False):
+                    actions = th.zeros(obs.shape[0], dtype=th.long, device=obs.device)
+                    return (
+                        actions, model.policy.predict_values(obs),
+                        model.policy.get_distribution(obs).log_prob(actions),
+                    )
+
+                model.policy.forward = forward
+                events = []
+                model.set_exploration_unsafe_action_callback(lambda **row: events.append(row))
+                model.learn(total_timesteps=64)
+                self.assertFalse(model.shield_exploration)
+                self.assertTrue(recorder.records)
+                self.assertTrue(all(action == 0 for _, action in recorder.records))
+                self.assertTrue(np.all(model.rollout_buffer.actions == 0))
+                self.assertEqual(sum(row["unsafe_this_step"] for row in events), 64)
+                self.assertEqual(model.shield_diagnostics()["checked"], 0)
+                self.assertEqual(model.shield_diagnostics()["overridden"], 0)
+                self.assertEqual(model._greedy_safe_rate_now(), 1.0)
 
     def test_no_static_bounds_attached(self) -> None:
         model = self._make()

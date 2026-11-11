@@ -102,7 +102,7 @@ def _orthotope_contains_params(
 
 
 class AdaptiveSafePPOV2(AdaptiveSafePPO):
-    """PPO with shielded exploration and projection-triggered region updates."""
+    """PPO with unshielded exploration and projection-triggered region updates."""
 
     def __init__(
         self,

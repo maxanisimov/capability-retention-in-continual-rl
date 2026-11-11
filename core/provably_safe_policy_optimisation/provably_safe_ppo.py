@@ -10,6 +10,8 @@ or the executed shielded action in the rollout buffer. The default is
 ``shield_action_storage="proposed"``: PPO optimises the action emitted by the
 policy, while the environment transition comes from the shielded action. Use
 ``"executed"`` to store the overridden action and recompute its log-probability.
+Set ``shield_exploration=False`` to retain the mask for auditing while executing
+the policy's sampled actions directly. Adaptive PSPO uses this setting by default.
 
 Scope: ``predict()`` is not shielded; shielding applies to training exploration
 inside ``collect_rollouts``.
@@ -59,6 +61,7 @@ class ProvablySafePPO(ProjectedPPO):
         obs_to_state: Any = None,
         shield_seed: int | None = None,
         shield_action_storage: ShieldActionStorage = "proposed",
+        shield_exploration: bool = True,
         **kwargs: Any,
     ) -> None:
         if shield_action_storage not in ("proposed", "executed"):
@@ -69,6 +72,9 @@ class ProvablySafePPO(ProjectedPPO):
         self._shield: Shield | ContinuousStateShieldAdapter | None = None
         self._exploration_unsafe_action_callback: Any | None = None
         self.shield_action_storage: ShieldActionStorage = shield_action_storage
+        # PSPO uses the mask for certification/auditing without changing actions.
+        # PPO-Shield retains runtime overrides through the default True value.
+        self.shield_exploration = bool(shield_exploration)
         # _setup_model runs inside super().__init__; attaching the shield afterwards
         # is fine because collect_rollouts reads self._shield live.
         super().__init__(*args, **kwargs)
@@ -114,12 +120,14 @@ class ProvablySafePPO(ProjectedPPO):
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
     ) -> bool:
-        """Collect PPO rollouts with shielded execution.
+        """Collect PPO rollouts, optionally overriding forbidden proposals.
 
         ``shield_action_storage="proposed"`` (default) sends the shielded action to
         the environment but stores the policy-proposed action and its log-probability
         in the rollout buffer. ``"executed"`` stores the shielded action instead and
         recomputes its log-probability under the current policy.
+        With ``shield_exploration=False``, audit proposals but execute and store
+        them unchanged, preserving their actual environment consequences.
         """
 
         if self._shield is None:
@@ -151,13 +159,23 @@ class ProvablySafePPO(ProjectedPPO):
             if isinstance(self.action_space, spaces.Discrete):
                 proposed_flat = np.asarray(proposed_actions_np).astype(np.int64).reshape(-1)
                 if isinstance(self._shield, ContinuousStateShieldAdapter):
-                    executed_flat, unsafe_proposed_actions = self._shield.override_observations(
-                        self._last_obs, proposed_flat
-                    )
+                    if self.shield_exploration:
+                        executed_flat, unsafe_proposed_actions = self._shield.override_observations(
+                            self._last_obs, proposed_flat
+                        )
+                    else:
+                        executed_flat = proposed_flat
+                        unsafe_proposed_actions = np.asarray([
+                            not self._shield.is_safe_action(obs, action)
+                            for obs, action in zip(self._last_obs, proposed_flat)
+                        ], dtype=bool)
                 else:
                     states = np.asarray(self._shield.obs_to_state(obs_tensor)).astype(np.int64).reshape(-1)
                     unsafe_proposed_actions = ~self._shield.mask[states, proposed_flat]
-                    executed_flat = self._shield.override(states, proposed_flat)
+                    executed_flat = (
+                        self._shield.override(states, proposed_flat)
+                        if self.shield_exploration else proposed_flat
+                    )
                 env_actions = executed_flat
                 if self.shield_action_storage == "executed":
                     executed_actions = th.as_tensor(

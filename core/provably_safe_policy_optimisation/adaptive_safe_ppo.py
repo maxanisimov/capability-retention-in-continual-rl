@@ -1,7 +1,8 @@
 """Adaptive provably-safe PPO: verify each update, project only when needed.
 
 :class:`AdaptiveSafePPO` keeps :class:`~provably_safe_policy_optimisation.
-provably_safe_ppo.ProvablySafePPO`'s shielded exploration but replaces the
+provably_safe_ppo.ProvablySafePPO`'s rollout auditing, disables runtime action
+overrides by default, and replaces the
 *static* precomputed Rashomon bounds with an adaptive accept/project scheme
 over policy iterates:
 
@@ -24,7 +25,7 @@ over policy iterates:
     reverted to iterate ``k``.
   - ``"none"``: monitor-only ablation. The candidate is verified and the
     outcome recorded, but nothing is projected or reverted, so training is
-    exactly PPO from a BC-initialised policy with shielded exploration. Use it
+    exactly PPO from a BC-initialised policy with unshielded exploration. Use it
     to measure what the safety correction is actually buying:
     ``safe_update_fraction`` reports the share of updates that stayed safe by
     themselves, and the usual evaluation reports the resulting safety and
@@ -561,7 +562,7 @@ def select_certified_region(
 
 
 class AdaptiveSafePPO(ProvablySafePPO):
-    """PPO with shielded exploration and adaptive verify-then-project updates."""
+    """PPO with unshielded exploration and adaptive verify-then-project updates."""
 
     def __init__(
         self,
@@ -594,6 +595,7 @@ class AdaptiveSafePPO(ProvablySafePPO):
         state_to_features: Any = None,
         discrete_state_representation: Literal["one_hot", "state_id_lookup"] = "one_hot",
         interval_certificate_dataset: TensorDataset | None = None,
+        shield_exploration: bool = False,
         **kwargs: Any,
     ) -> None:
         """
@@ -648,6 +650,10 @@ class AdaptiveSafePPO(ProvablySafePPO):
         verify_base_policy:
             Verify the (possibly loaded) initial policy is greedy-safe and
             raise ``ValueError`` otherwise.
+        shield_exploration:
+            False by default: execute sampled policy actions without a runtime
+            shield. The mask still defines certification and exploration audits.
+            True reproduces historical shielded-exploration experiments.
         interval_certificate_dataset:
             Optional exhaustive ``TensorDataset(X_l, X_u, safe_mask)`` for a
             continuous Box observation space. Candidate policies and Rashomon
@@ -806,14 +812,16 @@ class AdaptiveSafePPO(ProvablySafePPO):
                 unsupported.append(
                     f"certification_method={self._rashomon_certification_method}"
                 )
-            if safe_region_shape != "orthotope":
+            # The segment certificate gathers the lookup layer's weight rows in
+            # src.verification.verify.bound_forward_pass.
+            if safe_region_shape not in ("orthotope", "segment"):
                 unsupported.append(f"safe_region_shape={safe_region_shape}")
             if interval_certificate_dataset is not None:
                 unsupported.append("interval_certificate_dataset")
             if unsupported:
                 raise ValueError(
                     "state_id_lookup currently supports discrete IBP orthotopes "
-                    "only; got " + ", ".join(unsupported) + "."
+                    "and segments only; got " + ", ".join(unsupported) + "."
                 )
         from src.verification import verify
 
@@ -858,7 +866,7 @@ class AdaptiveSafePPO(ProvablySafePPO):
         self._last_rashomon_iterations_run = 0
         self._last_rashomon_target_contained_and_certified = False
 
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, shield_exploration=shield_exploration, **kwargs)
 
         # On SB3's load path (_init_setup_model=False) the policy does not
         # exist yet; adaptive state is rebuilt lazily by _ensure_adaptive_state.
